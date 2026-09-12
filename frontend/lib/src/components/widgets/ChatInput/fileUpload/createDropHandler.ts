@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,80 @@
  * limitations under the License.
  */
 
-import zip from "lodash/zip"
-import { ErrorCode as FileErrorCode, FileRejection } from "react-dropzone"
+import { zip } from "lodash-es"
+import { ErrorCode as FileErrorCode } from "react-dropzone"
 
-import { FileURLs as FileURLsProto, IFileURLs } from "@streamlit/protobuf"
+import {
+  ChatInput as ChatInputProto,
+  FileURLs as FileURLsProto,
+} from "@streamlit/protobuf"
 
+import { UploadFileInfo } from "~lib/components/shared/UploadedFile/UploadFileInfo"
 import { FileUploadClient } from "~lib/FileUploadClient"
-import { UploadFileInfo } from "~lib/components/widgets/FileUploader/UploadFileInfo"
-import { getRejectedFileInfo } from "~lib/util/FileHelper"
+import { type FileRejection, getRejectedFileInfo } from "~lib/util/FileHelper"
+
+import { validateFileType } from "./fileUploadUtils"
 
 interface CreateDropHandlerParams {
   acceptMultipleFiles: boolean
   maxFileSize: number
   uploadClient: FileUploadClient
-  uploadFile: (fileURLs: FileURLsProto, file: File) => void
+  uploadFile: (fileURLs: FileURLsProto.$Properties, file: File) => void
   addFiles: (files: UploadFileInfo[]) => void
   getNextLocalFileId: () => number
   deleteExistingFiles: () => void
   onUploadComplete: () => void
+  element: ChatInputProto
+}
+
+/**
+ * Validates files against type and size constraints, separating them into
+ * accepted and rejected lists. This validation is necessary because:
+ * 1. Directory uploads (webkitdirectory) bypass react-dropzone's validation
+ * 2. Retry uploads call the drop handler directly, bypassing react-dropzone
+ */
+const filterFiles = (
+  files: File[],
+  element: ChatInputProto,
+  maxFileSize: number
+): { accepted: File[]; rejected: FileRejection[] } => {
+  const accepted: File[] = []
+  const rejected: FileRejection[] = []
+
+  files.forEach(file => {
+    // Check file size first
+    if (file.size > maxFileSize) {
+      rejected.push({
+        file,
+        errors: [
+          {
+            code: FileErrorCode.FileTooLarge,
+            message: `File is too large. Maximum size is ${maxFileSize} bytes.`,
+          },
+        ],
+      })
+      return
+    }
+
+    // Check file type
+    const validation = validateFileType(file, element.fileType)
+    if (!validation.isValid) {
+      rejected.push({
+        file,
+        errors: [
+          {
+            code: FileErrorCode.FileInvalidType,
+            message: validation.errorMessage || "File type not allowed.",
+          },
+        ],
+      })
+      return
+    }
+
+    accepted.push(file)
+  })
+
+  return { accepted, rejected }
 }
 
 export const createDropHandler =
@@ -44,8 +100,23 @@ export const createDropHandler =
     getNextLocalFileId,
     deleteExistingFiles,
     onUploadComplete,
+    element,
   }: CreateDropHandlerParams) =>
   (acceptedFiles: File[], rejectedFiles: FileRejection[]): void => {
+    // Always validate files - this catches files that bypass react-dropzone's
+    // validation, such as:
+    // 1. Directory uploads (webkitdirectory bypasses react-dropzone)
+    // 2. Retry uploads (dropHandler is called directly, bypassing react-dropzone)
+    if (acceptedFiles.length > 0) {
+      const { accepted, rejected } = filterFiles(
+        acceptedFiles,
+        element,
+        maxFileSize
+      )
+      acceptedFiles = accepted
+      rejectedFiles = [...rejectedFiles, ...rejected]
+    }
+
     // If only single file upload is allowed but multiple were dropped/selected,
     // all files will be rejected by default. In this case, we take the first
     // valid file into acceptedFiles, and reject the rest.
@@ -65,26 +136,55 @@ export const createDropHandler =
       }
     }
 
+    // When uploads bypass react-dropzone (e.g. pasting multiple files), more
+    // than one valid file can reach here even in single-file mode. Keep the
+    // first file and reject the rest, mirroring the drag-and-drop behavior.
+    if (!acceptMultipleFiles && acceptedFiles.length > 1) {
+      const [firstFile, ...extraFiles] = acceptedFiles
+      acceptedFiles = [firstFile]
+      rejectedFiles = [
+        ...rejectedFiles,
+        ...extraFiles.map(file => ({
+          file,
+          errors: [
+            {
+              code: FileErrorCode.TooManyFiles,
+              message: "Only one file is allowed.",
+            },
+          ],
+        })),
+      ]
+    }
+
     if (!acceptMultipleFiles && acceptedFiles.length > 0) {
       deleteExistingFiles()
     }
 
     uploadClient
       .fetchFileURLs(acceptedFiles)
-      .then((fileURLsArray: IFileURLs[]) => {
+      .then((fileURLsArray: FileURLsProto.$Properties[]) => {
         zip(fileURLsArray, acceptedFiles).forEach(
           ([fileURLs, acceptedFile]) => {
-            uploadFile(fileURLs as FileURLsProto, acceptedFile as File)
+            uploadFile(
+              fileURLs as FileURLsProto.$Properties,
+              acceptedFile as File
+            )
           }
         )
       })
       .catch((errorMessage: string) => {
         addFiles(
           acceptedFiles.map(f => {
-            return new UploadFileInfo(f.name, f.size, getNextLocalFileId(), {
-              type: "error",
-              errorMessage,
-            })
+            return new UploadFileInfo(
+              f.name,
+              f.size,
+              getNextLocalFileId(),
+              {
+                type: "error",
+                errorMessage,
+              },
+              f
+            )
           })
         )
       })

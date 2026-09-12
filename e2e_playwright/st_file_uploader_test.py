@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,109 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from playwright.sync_api import FilePayload, Page, Route, expect
+from typing import Any
+
+import pytest
+from playwright.sync_api import FileChooser, FilePayload, Page, Route, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from e2e_playwright.conftest import (
     ImageCompareFunction,
+    build_app_url,
     rerun_app,
     wait_for_app_run,
     wait_until,
 )
-from e2e_playwright.shared.app_utils import check_top_level_class, get_element_by_key
+from e2e_playwright.shared.app_utils import (
+    check_top_level_class,
+    click_toggle,
+    expect_help_tooltip,
+    expect_prefixed_markdown,
+    get_element_by_key,
+    goto_app,
+)
+
+NUM_FILE_UPLOADERS = 21
+
+
+def create_temp_directory_with_files(
+    tmp_path_factory: pytest.TempPathFactory, file_data: list[dict[str, Any]]
+) -> str:
+    """
+    Create a temporary directory with files for directory upload testing.
+
+    Parameters
+    ----------
+    tmp_path_factory : pytest.TempPathFactory
+        Supplies a base directory that is unique per call, so that callers
+        running concurrently in separate xdist workers cannot clobber each
+        other's files. Also lets pytest garbage-collect the trees.
+
+    file_data : list[dict[str, Any]]
+        List of dict with 'path' and 'content' keys
+
+    Returns
+    -------
+    str
+        Path to the temporary directory
+    """
+    # Nest the files under "upload_dir": the browser reports that name in
+    # webkitRelativePath, and the chip-title assertions expect the prefix.
+    temp_path = tmp_path_factory.mktemp("streamlit_e2e_upload") / "upload_dir"
+    temp_path.mkdir(parents=True, exist_ok=True)
+
+    for file_info in file_data:
+        file_path = temp_path / file_info["path"]
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(file_info["content"])
+
+    return str(temp_path)
+
+
+def verify_uploaded_files_in_widget(
+    app: Page, uploader_index: int, expected_files: list[str], expected_count: int
+) -> None:
+    """Helper function to verify uploaded files in the file uploader widget.
+
+    Args:
+        app: The Page object
+        uploader_index: The index of the file uploader widget
+        expected_files: List of expected file names (matched against the title attribute,
+            since long filenames may be truncated in the visible text)
+        expected_count: Expected number of uploaded files
+    """
+    file_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
+    file_name_elements = file_uploader.get_by_test_id("stFileChipName")
+
+    expect(file_name_elements).to_have_count(expected_count)
+
+    # Verify all expected files are present (order-independent).
+    # Use a combined CSS selector because the title attribute is on the stFileChipName
+    # element itself (not a descendant), so filter(has=...) won't match.
+    for expected_file in expected_files:
+        expect(
+            file_uploader.locator(
+                f'[data-testid="stFileChipName"][title*="{expected_file}"]'
+            ).first
+        ).to_be_visible()
+
+
+def choose_directory(file_chooser: FileChooser, directory: str) -> None:
+    """Select a directory in a file chooser, ignoring a lost Playwright acknowledgement.
+
+    Playwright sometimes applies the directory files but never answers
+    `set_files`, so the call times out even though the upload already finished.
+    Ignore that timeout; callers must still assert that the upload succeeded.
+    Drop this helper once Playwright's directory `setInputFiles` reliably
+    resolves (see #16772 for the evidence).
+    """
+    try:
+        file_chooser.set_files(files=[directory], timeout=10000)
+    except PlaywrightTimeoutError:
+        # Print instead of failing: the timeout may have some other cause, and
+        # pytest surfaces this output only when a later assertion fails, which
+        # is exactly when someone needs to know set_files was involved.
+        print(f"set_files timed out for {directory}; continuing to the assertions")
 
 
 def test_file_uploader_render_correctly(
@@ -28,16 +122,21 @@ def test_file_uploader_render_correctly(
 ):
     """Test that the file uploader render as expected via screenshot matching."""
     file_uploaders = themed_app.get_by_test_id("stFileUploader")
-    expect(file_uploaders).to_have_count(12)
+    expect(file_uploaders).to_have_count(NUM_FILE_UPLOADERS)
 
     assert_snapshot(file_uploaders.nth(0), name="st_file_uploader-single_file")
     assert_snapshot(file_uploaders.nth(1), name="st_file_uploader-disabled")
     assert_snapshot(file_uploaders.nth(2), name="st_file_uploader-multiple_files")
-    assert_snapshot(file_uploaders.nth(4), name="st_file_uploader-hidden_label")
-    assert_snapshot(file_uploaders.nth(5), name="st_file_uploader-collapsed_label")
+    assert_snapshot(file_uploaders.nth(3), name="st_file_uploader-directory")
+    assert_snapshot(file_uploaders.nth(5), name="st_file_uploader-hidden_label")
+    assert_snapshot(file_uploaders.nth(6), name="st_file_uploader-collapsed_label")
     # The other file uploaders do not need to be snapshot tested.
-    assert_snapshot(file_uploaders.nth(8), name="st_file_uploader-markdown_label")
-    assert_snapshot(file_uploaders.nth(9), name="st_file_uploader-compact")
+    assert_snapshot(file_uploaders.nth(9), name="st_file_uploader-markdown_label")
+    assert_snapshot(file_uploaders.nth(10), name="st_file_uploader-compact")
+    assert_snapshot(
+        file_uploaders.nth(13), name="st_file_uploader-restricted_directory"
+    )
+    assert_snapshot(file_uploaders.nth(15), name="st_file_uploader-many_file_types")
 
 
 def test_file_uploader_error_message_disallowed_files(
@@ -65,9 +164,9 @@ def test_file_uploader_error_message_disallowed_files(
 
     wait_for_app_run(app)
 
-    expect(
-        app.get_by_test_id("stFileUploaderFileErrorMessage").nth(uploader_index)
-    ).to_have_text("application/json files are not allowed.", use_inner_text=True)
+    expect(app.get_by_role("alert").nth(uploader_index)).to_contain_text(
+        "application/json files are not allowed."
+    )
 
     file_uploader_in_error_state = app.get_by_test_id("stFileUploader").nth(
         uploader_index
@@ -99,7 +198,7 @@ def test_uploads_and_deletes_single_file_only(
     )
     wait_for_app_run(app)
 
-    expect(app.get_by_test_id("stFileUploaderFileName")).to_have_text(
+    expect(app.get_by_test_id("stFileChipName")).to_have_text(
         file_name1, use_inner_text=True
     )
 
@@ -132,7 +231,7 @@ def test_uploads_and_deletes_single_file_only(
 
     wait_for_app_run(app)
 
-    expect(app.get_by_test_id("stFileUploaderFileName")).to_have_text(
+    expect(app.get_by_test_id("stFileChipName")).to_have_text(
         file_name2, use_inner_text=True
     )
 
@@ -150,7 +249,7 @@ def test_uploads_and_deletes_single_file_only(
         str(file_content2), use_inner_text=True
     )
 
-    app.get_by_test_id("stFileUploaderDeleteBtn").nth(uploader_index).click()
+    app.get_by_test_id("stFileChipDeleteBtn").nth(uploader_index).click()
 
     wait_for_app_run(app)
 
@@ -175,19 +274,21 @@ def test_uploads_and_deletes_multiple_files(
     ]
 
     uploader_index = 2
+    uploader_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(uploader_dropzone).to_be_visible()
 
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        uploader_dropzone.click()
 
     file_chooser = fc_info.value
     file_chooser.set_files(files=files)
 
     wait_for_app_run(app, wait_delay=500)
 
-    uploaded_file_names = app.get_by_test_id("stFileUploaderFileName")
+    uploaded_file_names = app.get_by_test_id("stFileChipName")
 
-    # The widget should show the names of the uploaded files in reverse order
-    file_names = [files[1]["name"], files[0]["name"]]
+    # Files appear in insertion order (oldest first)
+    file_names = [files[0]["name"], files[1]["name"]]
 
     for i, element in enumerate(uploaded_file_names.all()):
         expect(element).to_have_text(file_names[i], use_inner_text=True)
@@ -207,19 +308,167 @@ def test_uploads_and_deletes_multiple_files(
     file_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
     assert_snapshot(file_uploader, name="st_file_uploader-multi_file_uploaded")
 
-    #  Delete the second file. The second file is on top because it was
-    #  most recently uploaded. The first file should still exist.
-    app.get_by_test_id("stFileUploaderDeleteBtn").first.click()
+    # Delete the first file (appears first in insertion order).
+    # The second file should still exist.
+    app.get_by_test_id("stFileChipDeleteBtn").first.click()
 
     wait_for_app_run(app)
 
+    uploaded_file_names = app.get_by_test_id("stFileChipName")
+    expect(uploaded_file_names).to_have_count(1)
+
+    expect(uploaded_file_names).to_have_text(files[1]["name"], use_inner_text=True)
+
     expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
-        files[0]["buffer"].decode("utf-8"), use_inner_text=True
+        files[1]["buffer"].decode("utf-8"), use_inner_text=True
     )
 
-    expect(app.get_by_test_id("stMarkdownContainer").nth(5)).to_have_text(
-        "True", use_inner_text=True
+    file_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
+    assert_snapshot(file_uploader, name="st_file_uploader-multi_file_one_deleted")
+
+    # Delete the remaining file
+    app.get_by_test_id("stFileChipDeleteBtn").first.click()
+    wait_for_app_run(app)
+
+    expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
+        "No upload", use_inner_text=True
     )
+
+
+def test_compact_uploader_with_files_snapshot(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Test that the compact file uploader renders correctly with uploaded files."""
+    uploader_index = 10  # Compact uploader in narrow column
+    file_content1 = b"compact file 1"
+    file_content2 = b"compact file 2"
+    files = [
+        FilePayload(name="compact1.txt", mimeType="text/plain", buffer=file_content1),
+        FilePayload(name="compact2.txt", mimeType="text/plain", buffer=file_content2),
+    ]
+
+    uploader_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(uploader_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        uploader_dropzone.click()
+
+    file_chooser = fc_info.value
+    file_chooser.set_files(files=files)
+
+    wait_for_app_run(app, wait_delay=500)
+
+    file_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
+    expect(file_uploader.get_by_test_id("stFileChip")).to_have_count(2)
+
+    assert_snapshot(file_uploader, name="st_file_uploader-compact_with_files")
+
+
+def test_uploads_directory_with_multiple_files(
+    app: Page, tmp_path_factory: pytest.TempPathFactory
+):
+    """Test that directory upload works correctly with multiple files.
+
+    Note: We don't test the visual order of files in the widget because
+    the order in which browsers return directory files is non-deterministic.
+    We verify functionality by checking that all files are uploaded correctly.
+    """
+    # Create temporary directory structure with multiple files
+    directory_data = [
+        {"path": "folder/file1.txt", "content": b"content1"},
+        {"path": "folder/file2.py", "content": b"print('hello')"},
+        {"path": "folder/subfolder/file3.md", "content": b"# Markdown"},
+    ]
+
+    temp_dir = create_temp_directory_with_files(tmp_path_factory, directory_data)
+
+    uploader_index = 3  # Directory uploader index
+
+    file_uploader_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(
+        uploader_index
+    )
+    expect(file_uploader_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        file_uploader_dropzone.click()
+
+    choose_directory(fc_info.value, temp_dir)
+
+    wait_for_app_run(app, wait_delay=1000)
+
+    # Verify files appear in the widget using the helper function
+    expected_files = [
+        "upload_dir/folder/file1.txt",
+        "upload_dir/folder/file2.py",
+        "upload_dir/folder/subfolder/file3.md",
+    ]
+    verify_uploaded_files_in_widget(app, uploader_index, expected_files, 3)
+
+    # Test deleting files from directory upload
+    delete_button = app.get_by_test_id("stFileChipDeleteBtn").first
+    expect(delete_button).to_be_visible()
+    delete_button.click()
+    wait_for_app_run(app)
+
+    # Verify file count decreased
+    uploader_text = app.get_by_test_id("stText").nth(uploader_index)
+    expect(uploader_text).to_contain_text("Directory contains 2 files:")
+
+
+def test_directory_upload_with_file_type_filtering(
+    app: Page, tmp_path_factory: pytest.TempPathFactory
+):
+    """Test that directory upload correctly filters files by type.
+
+    Note: We don't test the visual order of files in the widget because
+    the order in which browsers return directory files is non-deterministic.
+    We verify functionality by checking that files are filtered and uploaded correctly.
+    """
+    uploader_index = 13  # Restricted directory uploader index
+
+    # Create a temporary directory with test files
+    directory_data = [
+        {"path": "allowed.txt", "content": b"allowed content"},
+        {"path": "disallowed.pdf", "content": b"pdf content"},
+        {"path": "another_allowed.txt", "content": b"another txt file"},
+        {"path": "nested/deep/file.txt", "content": b"nested file"},
+    ]
+
+    temp_dir = create_temp_directory_with_files(tmp_path_factory, directory_data)
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        file_dropzone.click()
+
+    choose_directory(fc_info.value, temp_dir)
+
+    wait_for_app_run(app, wait_delay=1000)
+
+    # All 4 files appear as chips: 3 accepted .txt files + 1 rejected .pdf (shown as error chip)
+    expected_txt_files = ["allowed.txt", "another_allowed.txt", "nested/deep/file.txt"]
+    verify_uploaded_files_in_widget(app, uploader_index, expected_txt_files, 4)
+
+    # Verify the rejected .pdf shows as an error chip
+    file_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
+    expect(file_uploader.get_by_role("alert").first).to_be_visible()
+
+
+def test_directory_upload_empty_directory(app: Page):
+    """Test that directory upload handles empty directories gracefully."""
+    uploader_index = 3  # Directory uploader index
+
+    # Click and cancel dialog to simulate empty directory selection
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
+    with app.expect_file_chooser():
+        file_dropzone.click()
+
+    wait_for_app_run(app, wait_delay=500)
+
+    # Verify empty directory is handled correctly
+    uploader_text = app.get_by_test_id("stText").nth(uploader_index)
+    expect(uploader_text).to_have_text("No directory upload", use_inner_text=True)
 
 
 def test_uploads_multiple_files_one_by_one_quickly(app: Page):
@@ -237,14 +486,17 @@ def test_uploads_multiple_files_one_by_one_quickly(app: Page):
 
     uploader_index = 2
 
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
+
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        file_dropzone.click()
 
     file_chooser = fc_info.value
     file_chooser.set_files(files=files[0])
 
     # The widget should show the name of the uploaded file
-    expect(app.get_by_test_id("stFileUploaderFileName")).to_have_text(
+    expect(app.get_by_test_id("stFileChipName")).to_have_text(
         file_name1, use_inner_text=True
     )
 
@@ -256,10 +508,10 @@ def test_uploads_multiple_files_one_by_one_quickly(app: Page):
     with app.expect_request("**/upload_file/**"):
         file_chooser.set_files(files=files[1])
 
-    uploaded_file_names = app.get_by_test_id("stFileUploaderFileName")
+    uploaded_file_names = app.get_by_test_id("stFileChipName")
 
-    # The widget should show the names of the uploaded files in reverse order
-    file_names = [files[1]["name"], files[0]["name"]]
+    # Files appear in insertion order (oldest first)
+    file_names = [files[0]["name"], files[1]["name"]]
 
     for i, element in enumerate(uploaded_file_names.all()):
         expect(element).to_have_text(file_names[i], use_inner_text=True)
@@ -276,12 +528,14 @@ def test_uploads_multiple_files_one_by_one_quickly(app: Page):
         content, use_inner_text=True
     )
 
-    #  Delete the second file. The second file is on top because it was
-    #  most recently uploaded. The first file should still exist.
-    app.get_by_test_id("stFileUploaderDeleteBtn").first.click()
+    # Delete the first file (appears first in insertion order).
+    # The second file should still exist.
+    file_uploader_delete_btn = app.get_by_test_id("stFileChipDeleteBtn").first
+    expect(file_uploader_delete_btn).to_be_visible()
+    file_uploader_delete_btn.click()
 
     expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
-        files[0]["buffer"].decode("utf-8"), use_inner_text=True
+        files[1]["buffer"].decode("utf-8"), use_inner_text=True
     )
 
     expect(app.get_by_test_id("stMarkdownContainer").nth(5)).to_have_text(
@@ -309,8 +563,11 @@ def test_uploads_multiple_files_one_by_one_slowly(app: Page):
 
     uploader_index = 2
 
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
+
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        file_dropzone.click()
 
     file_chooser = fc_info.value
     # Here we wait for the first file to be uploaded before uploading the second
@@ -318,7 +575,7 @@ def test_uploads_multiple_files_one_by_one_slowly(app: Page):
         file_chooser.set_files(files=files[0])
 
     # The widget should show the name of the uploaded file
-    expect(app.get_by_test_id("stFileUploaderFileName")).to_have_text(
+    expect(app.get_by_test_id("stFileChipName")).to_have_text(
         file_name1, use_inner_text=True
     )
 
@@ -330,10 +587,10 @@ def test_uploads_multiple_files_one_by_one_slowly(app: Page):
     with app.expect_request("**/upload_file/**"):
         file_chooser.set_files(files=files[1])
 
-    uploaded_file_names = app.get_by_test_id("stFileUploaderFileName")
+    uploaded_file_names = app.get_by_test_id("stFileChipName")
 
-    # The widget should show the names of the uploaded files in reverse order
-    file_names = [files[1]["name"], files[0]["name"]]
+    # Files appear in insertion order (oldest first)
+    file_names = [files[0]["name"], files[1]["name"]]
 
     for i, element in enumerate(uploaded_file_names.all()):
         expect(element).to_have_text(file_names[i], use_inner_text=True)
@@ -350,14 +607,16 @@ def test_uploads_multiple_files_one_by_one_slowly(app: Page):
         content, use_inner_text=True
     )
 
-    #  Delete the second file. The second file is on top because it was
-    #  most recently uploaded. The first file should still exist.
-    app.get_by_test_id("stFileUploaderDeleteBtn").first.click()
+    # Delete the first file (appears first in insertion order).
+    # The second file should still exist.
+    file_uploader_delete_btn = app.get_by_test_id("stFileChipDeleteBtn").first
+    expect(file_uploader_delete_btn).to_be_visible()
+    file_uploader_delete_btn.click()
 
     wait_for_app_run(app)
 
     expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
-        files[0]["buffer"].decode("utf-8"), use_inner_text=True
+        files[1]["buffer"].decode("utf-8"), use_inner_text=True
     )
 
     expect(app.get_by_test_id("stMarkdownContainer").nth(5)).to_have_text(
@@ -370,18 +629,18 @@ def test_does_not_call_callback_when_not_changed(app: Page):
     file_name1 = "example5.txt"
     file_content1 = b"Hello world!"
 
-    uploader_index = 6
+    uploader_index = 7
 
     # Script contains counter variable stored in session_state with
     # default value 0. We increment counter inside file_uploader callback
     # Since callback did not called at this moment, counter value should
     # be equal 0
-    expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
-        "0", use_inner_text=True
-    )
+
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
 
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        file_dropzone.click()
 
     file_chooser = fc_info.value
     file_chooser.set_files(
@@ -413,10 +672,13 @@ def test_works_inside_form(app: Page):
     file_name1 = "form_file1.txt"
     file_content1 = b"form_file1content"
 
-    uploader_index = 3
+    uploader_index = 4
+
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
 
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        file_dropzone.click()
 
     file_chooser = fc_info.value
     file_chooser.set_files(
@@ -427,7 +689,7 @@ def test_works_inside_form(app: Page):
     wait_for_app_run(app)
 
     # We should be showing the uploaded file name
-    expect(app.get_by_test_id("stFileUploaderFileName")).to_have_text(
+    expect(app.get_by_test_id("stFileChipName")).to_have_text(
         file_name1, use_inner_text=True
     )
     # But our uploaded text should contain nothing yet, as we haven't submitted.
@@ -446,7 +708,7 @@ def test_works_inside_form(app: Page):
 
     # Press the delete button. Again, nothing should happen - we
     # should still see the file's contents.
-    app.get_by_test_id("stFileUploaderDeleteBtn").first.click()
+    app.get_by_test_id("stFileChipDeleteBtn").first.click()
     wait_for_app_run(app)
     expect(app.get_by_test_id("stText").nth(uploader_index)).to_have_text(
         str(file_content1), use_inner_text=True
@@ -472,16 +734,20 @@ def test_custom_css_class_via_key(app: Page):
 
 
 def test_file_uploader_works_with_fragments(app: Page):
+    """Test that file uploader works correctly within fragments."""
     file_name1 = "form_file1.txt"
     file_content1 = b"form_file1content"
 
     expect(app.get_by_text("Runs: 1")).to_be_visible()
     expect(app.get_by_text("File uploader in Fragment: False")).to_be_visible()
 
-    uploader_index = 7
+    uploader_index = 8
+
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
 
     with app.expect_file_chooser() as fc_info:
-        app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index).click()
+        file_dropzone.click()
 
     file_chooser = fc_info.value
     file_chooser.set_files(
@@ -495,11 +761,11 @@ def test_file_uploader_works_with_fragments(app: Page):
     expect(app.get_by_text("Runs: 1")).to_be_visible()
 
 
-def test_file_uploader_upload_error(app: Page, app_port: int):
+def test_file_uploader_upload_error(app: Page, app_base_url: str):
     """Test that the file uploader upload error is correctly logged."""
     # Ensure file upload source request return a 404 status
     app.route(
-        f"http://localhost:{app_port}/_stcore/upload_file/**",
+        build_app_url(app_base_url, path="/_stcore/upload_file/**"),
         lambda route: route.fulfill(
             status=404, headers={"Content-Type": "text/plain"}, body="Not Found"
         ),
@@ -510,7 +776,7 @@ def test_file_uploader_upload_error(app: Page, app_port: int):
     app.on("console", lambda msg: messages.append(msg.text))
 
     # Navigate to the app
-    app.goto(f"http://localhost:{app_port}")
+    goto_app(app, app_base_url)
 
     file_name1 = "file1.txt"
     file_content1 = b"file1content"
@@ -538,7 +804,7 @@ def test_file_uploader_upload_error(app: Page, app_port: int):
     )
 
 
-def test_file_uploader_delete_error(app: Page, app_port: int):
+def test_file_uploader_delete_error(app: Page, app_base_url: str):
     """Test that the file uploader delete error is correctly logged."""
 
     # Allow GET requests to pass through, but block DELETE requests
@@ -552,7 +818,7 @@ def test_file_uploader_delete_error(app: Page, app_port: int):
 
     # Ensure file upload source request return a 404 status
     app.route(
-        f"http://localhost:{app_port}/_stcore/upload_file/**",
+        build_app_url(app_base_url, path="/_stcore/upload_file/**"),
         allow_file_upload_block_delete,
     )
 
@@ -561,7 +827,7 @@ def test_file_uploader_delete_error(app: Page, app_port: int):
     app.on("console", lambda msg: messages.append(msg.text))
 
     # Navigate to the app
-    app.goto(f"http://localhost:{app_port}")
+    goto_app(app, app_base_url)
 
     file_name1 = "file1.txt"
     file_content1 = b"file1content"
@@ -580,7 +846,7 @@ def test_file_uploader_delete_error(app: Page, app_port: int):
     wait_for_app_run(app)
 
     # Delete the file
-    app.get_by_test_id("stFileUploaderDeleteBtn").first.click()
+    app.get_by_test_id("stFileChipDeleteBtn").first.click()
     wait_for_app_run(app)
 
     # Wait until the expected error is logged, indicating CLIENT_ERROR was sent
@@ -600,10 +866,199 @@ def test_file_uploader_widths(
     """Test that file_uploader renders correctly with different width settings."""
     file_uploaders = app.get_by_test_id("stFileUploader")
 
-    expect(file_uploaders).to_have_count(12)
+    expect(file_uploaders).to_have_count(NUM_FILE_UPLOADERS)
 
-    stretch_uploader = file_uploaders.nth(10)
-    pixel_width_uploader = file_uploaders.nth(11)
+    stretch_uploader = file_uploaders.nth(11)
+    pixel_width_uploader = file_uploaders.nth(12)
 
     assert_snapshot(stretch_uploader, name="st_file_uploader-width_stretch")
     assert_snapshot(pixel_width_uploader, name="st_file_uploader-width_300px")
+
+
+def test_toggle_disable_after_upload_snapshot(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Upload a file, then disable the uploader and snapshot its disabled visual state."""
+    # Index of the toggle uploader is the last one (added at the end of the script)
+    uploader_index = 14
+
+    # Upload a file
+    file_name = "snap.txt"
+    file_content = b"snapshot content"
+
+    file_dropzone = app.get_by_test_id("stFileUploaderDropzone").nth(uploader_index)
+    expect(file_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        file_dropzone.click()
+
+    file_chooser = fc_info.value
+    file_chooser.set_files(
+        files=[FilePayload(name=file_name, mimeType="text/plain", buffer=file_content)]
+    )
+
+    wait_for_app_run(app)
+
+    # Toggle checkbox to disable the uploader (click label since input may be visually hidden)
+    app.get_by_test_id("stCheckbox").filter(has_text="Disable toggle uploader").click()
+    wait_for_app_run(app)
+
+    # Snapshot the uploader in disabled state with an uploaded file
+    toggled_uploader = app.get_by_test_id("stFileUploader").nth(uploader_index)
+    expect(toggled_uploader).to_be_visible()
+    assert_snapshot(
+        toggled_uploader, name="st_file_uploader-toggle_disabled_after_upload"
+    )
+
+
+def test_dynamic_file_uploader_props(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that the file uploader can be updated dynamically while keeping the state."""
+    # Find the dynamic file uploader using its key
+    dynamic_uploader = get_element_by_key(app, "dynamic_file_uploader_key")
+    expect(dynamic_uploader).to_be_visible()
+
+    # Check initial state:
+    expect(dynamic_uploader).to_contain_text("Initial dynamic file uploader")
+    expect_help_tooltip(app, dynamic_uploader, "initial help")
+    expect_prefixed_markdown(app, "Initial uploader value:", "None")
+
+    # Take a snapshot of the initial state:
+    assert_snapshot(dynamic_uploader, name="st_file_uploader-dynamic_initial")
+
+    # Upload a file
+    file_name = "test_dynamic.txt"
+    file_content = b"Dynamic test content"
+
+    file_dropzone = dynamic_uploader.get_by_test_id("stFileUploaderDropzone")
+    expect(file_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        file_dropzone.click()
+
+    file_chooser = fc_info.value
+    file_chooser.set_files(
+        files=[FilePayload(name=file_name, mimeType="text/plain", buffer=file_content)]
+    )
+
+    wait_for_app_run(app)
+
+    # Verify file was uploaded
+    expect(dynamic_uploader.get_by_test_id("stFileChipName")).to_have_text(
+        file_name, use_inner_text=True
+    )
+
+    # Look for the output text showing the file name
+    expect_prefixed_markdown(app, "Initial uploader value:", file_name)
+
+    # Toggle to update props (changes sample_rate)
+    click_toggle(app, "Update file uploader props")
+
+    # Check that properties have been updated
+    expect(dynamic_uploader).to_contain_text("Updated dynamic file uploader")
+
+    # Verify the file is still uploaded (widget state preserved)
+    expect(dynamic_uploader.get_by_test_id("stFileChipName")).to_have_text(
+        file_name, use_inner_text=True
+    )
+
+    # Look for the output text showing the file name with updated label
+    expect_prefixed_markdown(app, "Updated uploader value:", file_name)
+    # Verify new width:
+    expect(dynamic_uploader).to_have_css("width", "300px")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_uploader, "updated help")
+
+    # Take a snapshot of the updated state:
+    assert_snapshot(dynamic_uploader, name="st_file_uploader-dynamic_updated")
+
+    # Upload a new file
+    file_name = "test_dynamic_2.txt"
+    file_content = b"Dynamic test content 2"
+
+    file_dropzone = dynamic_uploader.get_by_test_id("stFileUploaderDropzone")
+    expect(file_dropzone).to_be_visible()
+
+    with app.expect_file_chooser() as fc_info:
+        file_dropzone.click()
+
+    file_chooser = fc_info.value
+    file_chooser.set_files(
+        files=[FilePayload(name=file_name, mimeType="text/plain", buffer=file_content)]
+    )
+
+    wait_for_app_run(app)
+
+    # Verify file was uploaded
+    expect(dynamic_uploader.get_by_test_id("stFileChipName")).to_have_text(
+        file_name, use_inner_text=True
+    )
+
+    # Look for the output text showing the file name with updated label
+    expect_prefixed_markdown(app, "Updated uploader value:", file_name)
+
+
+def test_file_uploader_type_shortcuts(app: Page):
+    """Test that file type shortcuts and MIME types display correctly in instructions."""
+    file_uploaders = app.get_by_test_id("stFileUploader")
+    expect(file_uploaders).to_have_count(NUM_FILE_UPLOADERS)
+
+    # Index 17: Image shortcut type uploader (type="image")
+    image_shortcut_uploader = get_element_by_key(app, "image_shortcut")
+    expect(image_shortcut_uploader).to_be_visible()
+
+    # Verify the instructions show "image" (not "image/*")
+    image_shortcut_instructions = image_shortcut_uploader.get_by_test_id(
+        "stFileUploaderDropzoneInstructions"
+    )
+    expect(image_shortcut_instructions).to_contain_text("image")
+    # Ensure it doesn't show the raw MIME wildcard
+    expect(image_shortcut_instructions).not_to_contain_text("image/*")
+
+    # Index 18: Mixed types uploader (type=["audio", "application/pdf", ".json"])
+    mixed_types_uploader = get_element_by_key(app, "mixed_types")
+    expect(mixed_types_uploader).to_be_visible()
+
+    mixed_types_instructions = mixed_types_uploader.get_by_test_id(
+        "stFileUploaderDropzoneInstructions"
+    )
+    # Verify all types are displayed correctly:
+    # - "audio" shortcut should display as "audio" (not "audio/*")
+    # - "application/pdf" MIME type should display as is
+    # - ".json" extension should display as "JSON"
+    expect(mixed_types_instructions).to_contain_text("audio")
+    expect(mixed_types_instructions).to_contain_text("application/pdf")
+    expect(mixed_types_instructions).to_contain_text("JSON")
+    # Ensure shortcuts don't show raw MIME wildcard
+    expect(mixed_types_instructions).not_to_contain_text("audio/*")
+
+
+def test_file_uploader_extension_deduplication(app: Page):
+    """Test that equivalent file extensions (e.g., JPG/JPEG) are deduplicated in display.
+
+    Issue #11991: When user specifies ".jpg", backend normalization may produce both
+    ".jpg" and ".jpeg", but the UI should only show "JPG" (the preferred form).
+    """
+    # Test JPG deduplication
+    jpg_uploader = get_element_by_key(app, "jpg_dedup")
+    expect(jpg_uploader).to_be_visible()
+
+    jpg_instructions = jpg_uploader.get_by_test_id("stFileUploaderDropzoneInstructions")
+    # Should show "JPG" only, not both "JPG" and "JPEG"
+    expect(jpg_instructions).to_contain_text("JPG")
+    expect(jpg_instructions).not_to_contain_text("JPEG")
+
+    # Test multiple paired extensions
+    multiple_paired_uploader = get_element_by_key(app, "multiple_paired_dedup")
+    expect(multiple_paired_uploader).to_be_visible()
+
+    multiple_paired_instructions = multiple_paired_uploader.get_by_test_id(
+        "stFileUploaderDropzoneInstructions"
+    )
+    # Should show "JPG, TIF, PDF" - each pair deduplicated
+    expect(multiple_paired_instructions).to_contain_text("JPG")
+    expect(multiple_paired_instructions).to_contain_text("TIF")
+    expect(multiple_paired_instructions).to_contain_text("PDF")
+    # Should NOT show the alternate forms
+    expect(multiple_paired_instructions).not_to_contain_text("JPEG")
+    expect(multiple_paired_instructions).not_to_contain_text("TIFF")

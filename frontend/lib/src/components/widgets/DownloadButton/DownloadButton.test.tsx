@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,38 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import { screen } from "@testing-library/react"
+import { act, screen } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
+import { vi } from "vitest"
 
 import { DownloadButton as DownloadButtonProto } from "@streamlit/protobuf"
 
-import { render } from "~lib/test_util"
-import { WidgetStateManager } from "~lib/WidgetStateManager"
+import { BackendOperationClient } from "~lib/BackendOperationClient"
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
 import { mockEndpoints } from "~lib/mocks/mocks"
+import { render, renderWithContexts } from "~lib/test_util"
+import createDownloadLinkElement from "~lib/util/createDownloadLinkElement"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
-import DownloadButton, { createDownloadLink, Props } from "./DownloadButton"
+import DownloadButton, { Props } from "./DownloadButton"
 
+vi.mock("~lib/hooks/useRegisterShortcut", () => ({
+  useRegisterShortcut: vi.fn(),
+  formatShortcutForDisplay: vi.fn(
+    (shortcut: string | null | undefined) =>
+      shortcut?.replaceAll("+", " + ") || undefined
+  ),
+}))
 vi.mock("~lib/WidgetStateManager")
 vi.mock("~lib/StreamlitEndpoints")
+
+const anchorClickSpy = vi
+  .spyOn(HTMLAnchorElement.prototype, "click")
+  .mockImplementation(() => {})
+
+afterAll(() => {
+  anchorClickSpy.mockRestore()
+})
 
 const getProps = (
   elementProps: Partial<DownloadButtonProto> = {},
@@ -50,6 +67,10 @@ const getProps = (
 })
 
 describe("DownloadButton widget", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("renders without crashing", () => {
     const props = getProps()
     render(<DownloadButton {...props} />)
@@ -78,15 +99,24 @@ describe("DownloadButton widget", () => {
     expect(downloadButton).toBeInTheDocument()
   })
 
+  it("renders shortcut label when provided", () => {
+    const props = getProps({ shortcut: "Ctrl+Enter" })
+    render(<DownloadButton {...props} />)
+
+    expect(screen.getByText("Ctrl + Enter")).toBeVisible()
+  })
+
   it("renders with help properly", async () => {
     const user = userEvent.setup()
     render(<DownloadButton {...getProps({ help: "mockHelpText" })} />)
 
-    // Ensure both the button and the tooltip target have the correct width
+    // Ensure both the button and the tooltip target have the correct width.
+    // These will be 100% and the ElementContainer will have styles to determine
+    // the button width.
     const downloadButton = screen.getByRole("button")
-    expect(downloadButton).toHaveStyle("width: auto")
+    expect(downloadButton).toHaveStyle("width: 100%")
     const tooltipTarget = screen.getByTestId("stTooltipHoverTarget")
-    expect(tooltipTarget).toHaveStyle("width: auto")
+    expect(tooltipTarget).toHaveStyle("width: 100%")
 
     // Ensure the tooltip content is visible and has the correct text
     await user.hover(tooltipTarget)
@@ -105,30 +135,29 @@ describe("DownloadButton widget", () => {
       await user.click(downloadButton)
 
       expect(props.widgetMgr.setTriggerValue).toHaveBeenCalledWith(
-        props.element,
-        { fromUi: true },
-        undefined
+        props.element.id,
+        { formId: props.element.formId, fragmentId: undefined, fromUser: true }
       )
 
-      expect(props.endpoints.buildMediaURL).toHaveBeenCalledWith(
+      expect(props.endpoints.buildDownloadUrl).toHaveBeenCalledWith(
         "/media/mockDownloadURL"
       )
     })
 
     it("has a correct new tab behaviour download link", () => {
       const props = getProps()
-      const sameTabLink = createDownloadLink(
-        props.endpoints,
-        props.element.url,
-        false
-      )
+      const sameTabLink = createDownloadLinkElement({
+        enforceDownloadInNewTab: false,
+        url: props.element.url,
+        filename: "",
+      })
       expect(sameTabLink.getAttribute("target")).toBe("_self")
 
-      const newTabLink = createDownloadLink(
-        props.endpoints,
-        props.element.url,
-        true
-      )
+      const newTabLink = createDownloadLinkElement({
+        enforceDownloadInNewTab: true,
+        url: props.element.url,
+        filename: "",
+      })
       expect(newTabLink.getAttribute("target")).toBe("_blank")
     })
 
@@ -141,9 +170,12 @@ describe("DownloadButton widget", () => {
       await user.click(downloadButton)
 
       expect(props.widgetMgr.setTriggerValue).toHaveBeenCalledWith(
-        props.element,
-        { fromUi: true },
-        "myFragmentId"
+        props.element.id,
+        {
+          formId: props.element.formId,
+          fragmentId: "myFragmentId",
+          fromUser: true,
+        }
       )
     })
 
@@ -154,15 +186,314 @@ describe("DownloadButton widget", () => {
       const downloadButton = screen.getByRole("button")
       expect(downloadButton).toBeDisabled()
     })
+
+    it.each([
+      { type: "primary", testId: "stBaseButton-primary" },
+      { type: "tertiary", testId: "stBaseButton-tertiary" },
+    ])("renders a $type button", ({ type, testId }) => {
+      const props = getProps({ type })
+      render(<DownloadButton {...props} />)
+
+      expect(screen.getByTestId(testId)).toBeVisible()
+      expect(
+        screen.queryByTestId("stBaseButton-secondary")
+      ).not.toBeInTheDocument()
+    })
+
+    it("does not download when a shortcut is activated while disabled", () => {
+      const props = getProps({ shortcut: "Ctrl+Enter" }, { disabled: true })
+      const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
+
+      render(<DownloadButton {...props} />)
+
+      const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+      onActivate()
+
+      expect(props.widgetMgr.setTriggerValue).not.toHaveBeenCalled()
+      expect(anchorClickSpy).not.toHaveBeenCalled()
+    })
+
+    it("triggers the click handler when shortcut is activated", () => {
+      const props = getProps({ shortcut: "Ctrl+Enter" })
+      const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
+
+      render(<DownloadButton {...props} />)
+
+      const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+      onActivate()
+
+      expect(props.widgetMgr.setTriggerValue).toHaveBeenCalledWith(
+        props.element.id,
+        { formId: props.element.formId, fragmentId: undefined, fromUser: true }
+      )
+    })
   })
 
   it("triggers checkSourceUrlResponse to check download url", () => {
     const props = getProps()
+    props.endpoints.buildDownloadUrl = vi.fn(url => url)
     render(<DownloadButton {...props} />)
 
     expect(props.endpoints.checkSourceUrlResponse).toHaveBeenCalledWith(
       props.element.url,
       "Download Button"
     )
+  })
+
+  describe("Deferred downloads", () => {
+    it("renders deferred download button", () => {
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      render(<DownloadButton {...props} />)
+
+      const downloadButton = screen.getByRole("button")
+      expect(downloadButton).toBeInTheDocument()
+    })
+
+    it("checks URL once deferred download URL resolves", async () => {
+      const user = userEvent.setup()
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi.fn().mockResolvedValue({
+          url: "/media/generated_file",
+        }),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      props.endpoints.buildDownloadUrl = vi.fn(url => `resolved${url}`)
+
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      // Should not check before the download starts.
+      expect(props.endpoints.checkSourceUrlResponse).not.toHaveBeenCalled()
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should request deferred file
+      expect(
+        mockBackendOperationClient.requestDeferredFile
+      ).toHaveBeenCalledWith("test_file_id")
+
+      await vi.waitFor(() => {
+        expect(props.endpoints.checkSourceUrlResponse).toHaveBeenCalledWith(
+          "resolved/media/generated_file",
+          "Download Button"
+        )
+      })
+    })
+
+    it("handles successful deferred download", async () => {
+      const user = userEvent.setup()
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi.fn().mockResolvedValue({
+          url: "/media/generated_file",
+        }),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should request deferred file
+      expect(
+        mockBackendOperationClient.requestDeferredFile
+      ).toHaveBeenCalledWith("test_file_id")
+
+      // Should build download URL with returned URL
+      await vi.waitFor(() => {
+        expect(props.endpoints.buildDownloadUrl).toHaveBeenCalledWith(
+          "/media/generated_file"
+        )
+      })
+    })
+
+    it("shows loading state during deferred download", async () => {
+      const user = userEvent.setup()
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi
+          .fn()
+          .mockImplementation(
+            () =>
+              new Promise(resolve =>
+                setTimeout(
+                  () => resolve({ url: "/media/generated_file" }),
+                  100
+                )
+              )
+          ),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+        label: "Download File",
+      })
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should show spinner and keep original label
+      await screen.findByTestId("stSpinnerIcon")
+      expect(screen.getByText("Download File")).toBeInTheDocument()
+
+      // Button should be disabled during loading
+      expect(downloadButton).toBeDisabled()
+
+      // Wait for completion
+      await vi.waitFor(() => {
+        expect(
+          mockBackendOperationClient.requestDeferredFile
+        ).toHaveBeenCalled()
+      })
+    })
+
+    it("displays error message when deferred download fails", async () => {
+      const user = userEvent.setup()
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi
+          .fn()
+          .mockRejectedValue(
+            new Error("Callable execution failed: Test error")
+          ),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should display error message
+      await vi.waitFor(() => {
+        const error = screen.getByTestId("stDownloadButtonError")
+        expect(error).toHaveTextContent(
+          "Callable execution failed: Test error"
+        )
+      })
+    })
+
+    it("displays error when request promise rejects", async () => {
+      const user = userEvent.setup()
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi
+          .fn()
+          .mockRejectedValue(new Error("Network error")),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should display error message
+      await vi.waitFor(() => {
+        const error = screen.getByTestId("stDownloadButtonError")
+        expect(error).toHaveTextContent("Network error")
+      })
+    })
+
+    it("clears error after 5 seconds", async () => {
+      vi.useFakeTimers()
+      const user = userEvent.setup({ delay: null })
+      const mockBackendOperationClient = {
+        requestDeferredFile: vi
+          .fn()
+          .mockRejectedValue(new Error("Test error")),
+      } as unknown as BackendOperationClient
+
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+        label: "Download File",
+      })
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: {
+          backendOperationClient: mockBackendOperationClient,
+        },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Wait for error to appear
+      await vi.waitFor(() => {
+        expect(screen.getByTestId("stDownloadButtonError")).toBeInTheDocument()
+      })
+
+      // Fast-forward 5 seconds (wrapped in act() to handle the state update)
+      act(() => {
+        vi.advanceTimersByTime(5000)
+      })
+
+      // Error should be cleared
+      await vi.waitFor(() => {
+        expect(
+          screen.queryByTestId("stDownloadButtonError")
+        ).not.toBeInTheDocument()
+      })
+
+      vi.useRealTimers()
+    })
+
+    it("shows error when backendOperationClient is not provided", async () => {
+      const user = userEvent.setup()
+      const props = getProps({
+        deferredFileId: "test_file_id",
+        url: "",
+      })
+      // Don't provide backendOperationClient - use renderWithContexts with undefined
+      renderWithContexts(<DownloadButton {...props} />, {
+        backendOperationContext: { backendOperationClient: undefined },
+      })
+
+      const downloadButton = screen.getByRole("button")
+      await user.click(downloadButton)
+
+      // Should display configuration error
+      await vi.waitFor(() => {
+        const error = screen.getByTestId("stDownloadButtonError")
+        expect(error).toHaveTextContent(
+          "Deferred download not properly configured"
+        )
+      })
+    })
   })
 })

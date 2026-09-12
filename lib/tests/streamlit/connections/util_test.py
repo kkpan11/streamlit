@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,10 @@ class ConnectionUtilTest(unittest.TestCase):
         assert extracted == {"k1": "v1", "k2": "v2"}
         assert d == {"k3": "v3", "k4": "v4"}
 
+    @pytest.mark.filterwarnings("ignore:pkg_resources is deprecated")
+    @pytest.mark.filterwarnings(
+        "ignore:Deprecated call to `pkg_resources.declare_namespace"
+    )
     def test_not_running_in_sis(self):
         assert not running_in_sis()
 

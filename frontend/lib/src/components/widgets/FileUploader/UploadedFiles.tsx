@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,39 +14,34 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement } from "react"
+import { memo, ReactElement, ReactNode } from "react"
 
-import withPagination, { PaginationProps } from "./withPagination"
-import UploadedFile from "./UploadedFile"
-import {
-  StyledUploadedFiles,
-  StyledUploadedFilesList,
-  StyledUploadedFilesListItem,
-} from "./styled-components"
-import { UploadFileInfo } from "./UploadFileInfo"
+import UploadedFileChips from "~lib/components/shared/UploadedFile/UploadedFileChips"
+import { UploadFileInfo } from "~lib/components/shared/UploadedFile/UploadFileInfo"
 
-export interface Props {
+import { StyledUploadedFiles } from "./styled-components"
+
+interface Props {
   items: UploadFileInfo[]
   onDelete: (id: number) => void
+  disabled?: boolean
+  trailingContent?: ReactNode
 }
 
-const UploadedFileList = ({ items, onDelete }: Props): ReactElement => {
-  return (
-    <StyledUploadedFilesList>
-      {items.map(file => (
-        <StyledUploadedFilesListItem key={file.id}>
-          <UploadedFile fileInfo={file} onDelete={onDelete} />
-        </StyledUploadedFilesListItem>
-      ))}
-    </StyledUploadedFilesList>
-  )
-}
-
-export const PaginatedFiles = withPagination(UploadedFileList)
-
-const UploadedFiles = (props: Props & PaginationProps): ReactElement => (
+const UploadedFiles = ({
+  items,
+  onDelete,
+  disabled,
+  trailingContent,
+}: Props): ReactElement => (
   <StyledUploadedFiles>
-    <PaginatedFiles {...props} />
+    <UploadedFileChips
+      items={items}
+      onDelete={onDelete}
+      disabled={disabled}
+      trailingContent={trailingContent}
+    />
   </StyledUploadedFiles>
 )
+
 export default memo(UploadedFiles)

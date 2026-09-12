@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +26,14 @@ import {
   toSafeString,
 } from "./utils"
 
-export interface TextColumnParams {
-  // The maximum number of characters the user can enter into the text input.
+interface TextColumnParams {
+  /**
+   * The maximum number of characters the user can enter into the text input.
+   */
   readonly max_chars?: number
-  // Regular expression that the input's value must match for the value to pass
+  /**
+   * Regular expression that the input's value must match for the value to pass.
+   */
   readonly validate?: string
 }
 
@@ -66,8 +70,7 @@ function TextColumn(props: BaseColumnProps): BaseColumn {
     style: props.isPinned ? "faded" : "normal",
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  const validateInput = (data?: any): boolean | string => {
+  const validateInput = (data?: unknown): boolean | string => {
     if (isNullOrUndefined(data)) {
       if (props.isRequired) {
         return false
@@ -100,9 +103,9 @@ function TextColumn(props: BaseColumnProps): BaseColumn {
     ...props,
     kind: "text",
     sortMode: "default",
+    typeIcon: ":material/notes:",
     validateInput,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any, validate?: boolean): GridCell {
+    getCell(data?: unknown, validate?: boolean): GridCell {
       if (typeof validateRegex === "string") {
         // The regex is invalid, we return an error to indicate this
         // to the developer:

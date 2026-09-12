@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,65 @@
  * limitations under the License.
  */
 
-import React, { FC } from "react"
+import { FC, useMemo } from "react"
 
-import { useLayoutStyles } from "~lib/components/core/Layout/useLayoutStyles"
 import type { ElementNode } from "~lib/AppNode"
+import { StyledElementContainer } from "~lib/components/core/Block/styled-components"
+import { FlexContext } from "~lib/components/core/Layout/FlexContext"
+import {
+  extractLayoutSubElement,
+  useLayoutStyles,
+} from "~lib/components/core/Layout/useLayoutStyles"
+import { useRequiredContext } from "~lib/hooks/useRequiredContext"
 
-import { StyledElementContainer } from "./styled-components"
+import { ElementContainerConfig } from "./ElementContainerConfig"
 
 export const StyledElementContainerLayoutWrapper: FC<
   Omit<
     Parameters<typeof StyledElementContainer>[0],
-    "width" | "height" | "overflow"
+    "width" | "height" | "overflow" | "minWidth" | "flex"
   > & {
     node: ElementNode
+    config: ElementContainerConfig
   }
-> = ({ node, ...rest }) => {
-  const styles = useLayoutStyles({
+> = ({ node, config, ...rest }) => {
+  const { isInHorizontalLayout } = useRequiredContext(FlexContext)
+
+  const styleOverrides = useMemo(
+    () => config.computeStyleOverrides(),
+    [config]
+  )
+  const minStretchBehavior = useMemo(
+    () => config.getMinStretchBehavior(),
+    [config]
+  )
+
+  let styles = useLayoutStyles({
     element: node.element,
-    subElement:
-      (node.element?.type && node.element[node.element.type]) || undefined,
+    subElement: extractLayoutSubElement(node.element),
+    styleOverrides,
+    minStretchBehavior,
   })
+
+  // Special handling for space elements: apply only relevant dimension
+  // to prevent unintended cross-axis spacing
+  if (node.element.type === "space") {
+    if (isInHorizontalLayout) {
+      // In horizontal layout: keep width, clear height
+      // This prevents unwanted vertical spacing
+      styles = {
+        ...styles,
+        height: "auto",
+      }
+    } else {
+      // In vertical layout (default): keep height, clear width
+      // This prevents unwanted horizontal spacing
+      styles = {
+        ...styles,
+        width: "auto",
+      }
+    }
+  }
 
   return <StyledElementContainer {...rest} {...styles} />
 }

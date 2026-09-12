@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,4 +40,4 @@ st.markdown(str(test_case[1].expected_data_format))
 for _ in range(selected_test_case):
     st.empty()
 
-st.dataframe(data, use_container_width=False)
+st.dataframe(data, width="content")

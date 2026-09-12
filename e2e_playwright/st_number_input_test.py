@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,158 +13,220 @@
 # limitations under the License.
 
 
+import re
+
+import pytest
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    build_app_url,
+    wait_for_app_loaded,
+    wait_for_app_run,
+)
 from e2e_playwright.shared.app_utils import (
     check_top_level_class,
+    click_toggle,
     expect_help_tooltip,
-    expect_markdown,
+    expect_prefixed_markdown,
     fill_number_input,
     get_element_by_key,
+    get_number_input,
+    reset_hovering,
 )
 
-NUMBER_INPUT_COUNT = 17
+NUMBER_INPUT_COUNT = 25
 
 
 def test_number_input_widget_display(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
     """Test that st.number_input renders correctly."""
-    number_input_elements = themed_app.get_by_test_id("stNumberInput")
-    expect(number_input_elements).to_have_count(NUMBER_INPUT_COUNT)
+    expect(themed_app.get_by_test_id("stNumberInput")).to_have_count(NUMBER_INPUT_COUNT)
+    # Reset hovering to avoid some flakiness with hovered clear button:
+    reset_hovering(themed_app)
 
-    assert_snapshot(number_input_elements.nth(0), name="st_number_input-default")
-    assert_snapshot(number_input_elements.nth(1), name="st_number_input-value_1")
-    assert_snapshot(number_input_elements.nth(2), name="st_number_input-min_max")
-    assert_snapshot(number_input_elements.nth(3), name="st_number_input-step_2")
-    assert_snapshot(number_input_elements.nth(4), name="st_number_input-max_10")
-    assert_snapshot(number_input_elements.nth(5), name="st_number_input-disabled_true")
-    assert_snapshot(number_input_elements.nth(6), name="st_number_input-label_hidden")
     assert_snapshot(
-        number_input_elements.nth(7), name="st_number_input-label_collapsed"
-    )
-    assert_snapshot(number_input_elements.nth(8), name="st_number_input-on_change")
-    assert_snapshot(number_input_elements.nth(9), name="st_number_input-small_width")
-    assert_snapshot(number_input_elements.nth(10), name="st_number_input-value_none")
-    assert_snapshot(
-        number_input_elements.nth(11), name="st_number_input-value_none_min_1"
+        get_number_input(themed_app, "number input 1 (default)"),
+        name="st_number_input-default",
     )
     assert_snapshot(
-        number_input_elements.nth(12), name="st_number_input-markdown_label"
+        get_number_input(themed_app, "number input 2 (value=1)"),
+        name="st_number_input-value_1",
     )
-    assert_snapshot(number_input_elements.nth(13), name="st_number_input-emoji_icon")
-    assert_snapshot(number_input_elements.nth(14), name="st_number_input-material_icon")
-    assert_snapshot(number_input_elements.nth(15), name="st_number_input-width_200px")
-    assert_snapshot(number_input_elements.nth(16), name="st_number_input-width_stretch")
+    assert_snapshot(
+        get_number_input(themed_app, "number input 3 (min & max)"),
+        name="st_number_input-min_max",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 4 (step=2)"),
+        name="st_number_input-step_2",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 5 (max=10)"),
+        name="st_number_input-max_10",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 6 (disabled=True)"),
+        name="st_number_input-disabled_true",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 7 (label=hidden)"),
+        name="st_number_input-label_hidden",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 8 (label=collapsed)"),
+        name="st_number_input-label_collapsed",
+    )
+    assert_snapshot(
+        get_element_by_key(themed_app, "number_input_9"),
+        name="st_number_input-on_change",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 10 (small width)"),
+        name="st_number_input-small_width",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 11 (value=None)"),
+        name="st_number_input-value_none",
+    )
+    assert_snapshot(
+        get_element_by_key(themed_app, "number_input_12"),
+        name="st_number_input-value_none_min_1",
+    )
+    # Use regex to avoid matching full markdown label text
+    assert_snapshot(
+        get_number_input(themed_app, re.compile(r"^number input 13")),
+        name="st_number_input-markdown_label",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 14 - emoji icon"),
+        name="st_number_input-emoji_icon",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 15 - material icon"),
+        name="st_number_input-material_icon",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 16 (width=200px)"),
+        name="st_number_input-width_200px",
+    )
+    assert_snapshot(
+        get_number_input(themed_app, "number input 17 (width='stretch')"),
+        name="st_number_input-width_stretch",
+    )
 
 
 def test_help_tooltip_works(app: Page):
-    expect_help_tooltip(app, app.get_by_test_id("stNumberInput").nth(0), "Help text")
+    expect_help_tooltip(
+        app, get_number_input(app, "number input 1 (default)"), "Help text"
+    )
 
 
 def test_number_input_has_correct_default_values(app: Page):
     """Test that st.number_input has the correct initial values."""
-    markdown_elements = app.get_by_test_id("stMarkdown")
-    # 1 st.write for each number input value (inputs 1-12)
-    # + 1 extra st.write for number input 9 (on_change)
-    expect(markdown_elements).to_have_count(NUMBER_INPUT_COUNT - 4)
-
-    expected = [
-        "number input 1 (default) - value: 0.0",
-        "number input 2 (value=1) - value: 1",
-        "number input 3 (min & max) - value: 1",
-        "number input 4 (step=2) - value: 0",
-        "number input 5 (max=10) - value: 0",
-        "number input 6 (disabled=True) - value: 0.0",
-        "number input 7 (label=hidden) - value: 0.0",
-        "number input 8 (label=collapsed) - value: 0.0",
-        "number input 9 (on_change) - value: 0.0",
-        "number input 9 (on_change) - changed: False",
-        "number input 10 (small width) - value: 0",
-        "number input 11 (value=None) - value: None",
-        "number input 12 (value from state & min=1) - value: 10",
-    ]
-
-    for markdown_element, expected_text in zip(markdown_elements.all(), expected):
-        expect(markdown_element).to_have_text(expected_text, use_inner_text=True)
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 2 (value=1) - value:", "1")
+    expect_prefixed_markdown(app, "number input 3 (min & max) - value:", "1")
+    expect_prefixed_markdown(app, "number input 4 (step=2) - value:", "0")
+    expect_prefixed_markdown(app, "number input 5 (max=10) - value:", "0")
+    expect_prefixed_markdown(app, "number input 6 (disabled=True) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 7 (label=hidden) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 8 (label=collapsed) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 9 (on_change) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 9 (on_change) - changed:", "False")
+    expect_prefixed_markdown(app, "number input 10 (small width) - value:", "0")
+    expect_prefixed_markdown(app, "number input 11 (value=None) - value:", "None")
+    expect_prefixed_markdown(
+        app, "number input 12 (value from state & min=1) - value:", "10"
+    )
 
 
 def test_number_input_shows_instructions_when_dirty(
     app: Page, assert_snapshot: ImageCompareFunction
 ):
     """Test that st.number_input shows the instructions correctly when dirty."""
-    first_number_input = app.get_by_test_id("stNumberInput").first
-    first_number_input.locator("input").fill("10")
-
-    assert_snapshot(first_number_input, name="st_number_input-input_instructions")
+    number_input_el = get_number_input(app, "number input 1 (default)")
+    number_input_el.locator("input").first.fill("10")
+    assert_snapshot(number_input_el, name="st_number_input-input_instructions")
 
 
 def test_number_input_updates_value_correctly_on_enter(app: Page):
     """Test that st.number_input updates the value correctly on enter."""
     fill_number_input(app, "number input 1 (default)", 10)
-    expect_markdown(app, "number input 1 (default) - value: 10.0")
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "10.0")
 
 
 def test_number_input_has_correct_value_on_increment_click(app: Page):
     """Test that st.number_input has the correct value on increment click."""
-    number_input_up_buttons = app.get_by_test_id("stNumberInput").get_by_test_id(
-        "stNumberInputStepUp"
+
+    def click_step_up(label: str) -> None:
+        el = get_number_input(app, label)
+        btn = el.get_by_test_id("stNumberInputStepUp").first
+        expect(btn).to_be_visible()
+
+        # Force click if the button is disabled
+        btn.click(force=not btn.is_enabled())
+        wait_for_app_run(app)
+
+    click_step_up("number input 1 (default)")
+    click_step_up("number input 2 (value=1)")
+    click_step_up("number input 3 (min & max)")
+    click_step_up("number input 4 (step=2)")
+    click_step_up("number input 5 (max=10)")
+    click_step_up("number input 6 (disabled=True)")
+    click_step_up("number input 7 (label=hidden)")
+    click_step_up("number input 8 (label=collapsed)")
+    click_step_up("number input 9 (on_change)")
+    click_step_up("number input 12 (value from state & min=1)")
+
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "0.01")
+    expect_prefixed_markdown(app, "number input 2 (value=1) - value:", "2")
+    expect_prefixed_markdown(app, "number input 3 (min & max) - value:", "2")
+    expect_prefixed_markdown(app, "number input 4 (step=2) - value:", "2")
+    expect_prefixed_markdown(app, "number input 5 (max=10) - value:", "1")
+    expect_prefixed_markdown(app, "number input 6 (disabled=True) - value:", "0.0")
+    expect_prefixed_markdown(app, "number input 7 (label=hidden) - value:", "0.01")
+    expect_prefixed_markdown(app, "number input 8 (label=collapsed) - value:", "0.01")
+    expect_prefixed_markdown(app, "number input 9 (on_change) - value:", "0.01")
+    expect_prefixed_markdown(app, "number input 9 (on_change) - changed:", "True")
+    expect_prefixed_markdown(app, "number input 10 (small width) - value:", "0")
+    expect_prefixed_markdown(app, "number input 11 (value=None) - value:", "None")
+    expect_prefixed_markdown(
+        app, "number input 12 (value from state & min=1) - value:", "11"
     )
-    # The small number input doesn't have the increment button
-    expect(number_input_up_buttons).to_have_count(NUMBER_INPUT_COUNT - 1)
-    for i, button in enumerate(number_input_up_buttons.all()):
-        if i not in [5, 9]:
-            button.click()
-            wait_for_app_run(app)
-
-    markdown_elements = app.get_by_test_id("stMarkdown")
-
-    expected = [
-        "number input 1 (default) - value: 0.01",
-        "number input 2 (value=1) - value: 2",
-        "number input 3 (min & max) - value: 2",
-        "number input 4 (step=2) - value: 2",
-        "number input 5 (max=10) - value: 1",
-        "number input 6 (disabled=True) - value: 0.0",
-        "number input 7 (label=hidden) - value: 0.01",
-        "number input 8 (label=collapsed) - value: 0.01",
-        "number input 9 (on_change) - value: 0.01",
-        "number input 9 (on_change) - changed: True",
-        "number input 10 (small width) - value: 0",
-        "number input 11 (value=None) - value: None",
-        "number input 12 (value from state & min=1) - value: 11",
-    ]
-
-    for markdown_element, expected_text in zip(markdown_elements.all(), expected):
-        expect(markdown_element).to_have_text(expected_text, use_inner_text=True)
 
 
 def test_number_input_has_correct_value_on_arrow_up(app: Page):
     """Test that st.number_input has the correct value on arrow up."""
     first_number_input_field = (
-        app.get_by_test_id("stNumberInput").nth(0).locator("input")
+        get_number_input(app, "number input 1 (default)").locator("input").first
     )
     first_number_input_field.press("ArrowUp")
-
-    expect(app.get_by_test_id("stMarkdown").nth(0)).to_have_text(
-        "number input 1 (default) - value: 0.01", use_inner_text=True
-    )
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "0.01")
 
 
 def test_number_input_has_correct_value_on_blur(app: Page):
     """Test that st.number_input has the correct value on blur."""
-
     first_number_input_field = (
-        app.get_by_test_id("stNumberInput").nth(0).locator("input")
+        get_number_input(app, "number input 1 (default)").locator("input").first
     )
     first_number_input_field.focus()
     first_number_input_field.fill("10")
     first_number_input_field.blur()
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "10.0")
 
-    expect(app.get_by_test_id("stMarkdown").nth(0)).to_have_text(
-        "number input 1 (default) - value: 10.0", use_inner_text=True
-    )
+
+def test_number_input_typing_decimal_via_keyboard(app: Page):
+    """Typing a decimal value using the keyboard should work and commit correctly."""
+    first_number_input_field = app.get_by_label("number input 1 (default)", exact=True)
+    first_number_input_field.click()
+    first_number_input_field.select_text()
+    first_number_input_field.type("12.34")
+    first_number_input_field.press("Enter")
+    wait_for_app_run(app)
+
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "12.34")
 
 
 def test_empty_number_input_behaves_correctly(
@@ -172,43 +234,157 @@ def test_empty_number_input_behaves_correctly(
 ):
     """Test that st.number_input behaves correctly when empty."""
     # Enter 10 in the first empty input:
-    empty_number_input = app.get_by_test_id("stNumberInput").nth(10)
+    empty_number_input = get_number_input(app, "number input 11 (value=None)")
     empty_number_input_field = empty_number_input.locator("input").first
     empty_number_input_field.fill("10")
     empty_number_input_field.press("Enter")
 
-    expect(app.get_by_test_id("stMarkdown").nth(11)).to_have_text(
-        "number input 11 (value=None) - value: 10.0", use_inner_text=True
-    )
+    expect_prefixed_markdown(app, "number input 11 (value=None) - value:", "10.0")
 
     assert_snapshot(empty_number_input, name="st_number_input-clearable_input")
 
-    # Press escape to clear value:
-    empty_number_input.focus()
-    empty_number_input.press("Escape")
-    empty_number_input.press("Enter")
+    # Press Escape to clear value — verifies Escape-to-clear behavior end-to-end:
+    empty_number_input_field.focus()
+    # Clear button should be visible while input has a value:
+    expect(
+        empty_number_input.locator('[data-testid="stNumberInputClearButton"]')
+    ).to_be_visible()
+    empty_number_input_field.press("Escape")
+    # After Escape, the field should be empty and clear button should disappear:
+    expect(empty_number_input_field).to_have_value("")
+    expect(
+        empty_number_input.locator('[data-testid="stNumberInputClearButton"]')
+    ).not_to_be_visible()
+    empty_number_input_field.press("Enter")
 
-    # Should be empty again:
-    expect(app.get_by_test_id("stMarkdown").nth(11)).to_have_text(
-        "number input 11 (value=None) - value: None", use_inner_text=True
-    )
+    # Backend should reflect None:
+    expect_prefixed_markdown(app, "number input 11 (value=None) - value:", "None")
 
     # Check with second empty input, this one should be integer since the min_value was
     # set to an integer:
     empty_number_input_with_min = (
-        app.get_by_test_id("stNumberInput").nth(11).locator("input").first
+        get_number_input(app, "number input 12 (value from state & min=1)")
+        .locator("input")
+        .first
     )
     empty_number_input_with_min.fill("15")
     empty_number_input_with_min.press("Enter")
 
-    expect(app.get_by_test_id("stMarkdown").nth(12)).to_have_text(
-        "number input 12 (value from state & min=1) - value: 15", use_inner_text=True
+    expect_prefixed_markdown(
+        app, "number input 12 (value from state & min=1) - value:", "15"
     )
+
+
+def test_number_input_in_form_submits_typed_value_on_single_enter(app: Page):
+    """A number_input inside st.form must submit the freshly typed value on the
+    first Enter press, not the previously committed value.
+
+    Regression test: the frontend used to write the committed value to widget
+    state asynchronously (in an effect) while submitting the form synchronously
+    in the same keydown event, so the first Enter submitted the stale value.
+    """
+    number_input = get_element_by_key(app, "number_input_in_form")
+    input_field = number_input.get_by_test_id("stNumberInputField")
+
+    # The form initially submits the default value (5).
+    expect_prefixed_markdown(app, "number input in form - value:", "5")
+
+    # Type a new value and press Enter exactly once.
+    input_field.fill("8")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    # The form must submit the freshly typed value (8) on the first Enter...
+    expect_prefixed_markdown(app, "number input in form - value:", "8")
+    # ...and the input keeps showing the typed value.
+    expect(input_field).to_have_value("8")
+
+
+def test_number_input_shows_range_validation_error(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Out-of-range values show a custom validation error instead of committing.
+
+    Regression test replacing the native browser validation popup with a
+    Streamlit-styled error (red styling, error icon + tooltip, screen-reader
+    alert) and blocking the commit while invalid.
+    """
+    number_input = get_number_input(app, "number input 3 (min & max)")
+    input_field = number_input.get_by_test_id("stNumberInputField")
+
+    # Type a value above the max (10) and commit with Enter.
+    input_field.fill("20")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    # The invalid value stays visible, is flagged invalid, and is NOT committed.
+    expect(input_field).to_have_value("20")
+    expect(input_field).to_have_attribute("aria-invalid", "true")
+    expect_prefixed_markdown(app, "number input 3 (min & max) - value:", "1")
+
+    # The screen-reader alert carries the range message.
+    expect(number_input.get_by_role("alert")).to_have_text(
+        "Error: Number is outside the allowed range. "
+        "Please enter a value between 1 and 10."
+    )
+
+    error_icon = number_input.get_by_test_id("stTooltipErrorHoverTarget")
+    expect(error_icon).to_be_visible()
+
+    assert_snapshot(number_input, name="st_number_input-range_validation_error")
+
+    # Hovering the error icon reveals the message in a tooltip.
+    error_icon.hover()
+    expect(app.get_by_test_id("stTooltipErrorContent")).to_contain_text(
+        "Number is outside the allowed range. Please enter a value between 1 and 10."
+    )
+    reset_hovering(app)
+
+    # Correcting to a valid value clears the invalid state immediately, before
+    # re-committing. Regression test for a bug where React Aria's native
+    # constraint validation kept `aria-invalid` set (and the text styled red)
+    # until the next commit, leaving a red value with no accompanying error.
+    input_field.fill("5")
+    expect(input_field).not_to_have_attribute("aria-invalid", "true")
+    expect(number_input.get_by_role("alert")).to_have_count(0)
+    expect(number_input.get_by_test_id("stTooltipErrorHoverTarget")).to_have_count(0)
+
+    # Committing the corrected value persists it.
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    expect(input_field).not_to_have_attribute("aria-invalid", "true")
+    expect(number_input.get_by_role("alert")).to_have_count(0)
+    expect(number_input.get_by_test_id("stTooltipErrorHoverTarget")).to_have_count(0)
+    expect_prefixed_markdown(app, "number input 3 (min & max) - value:", "5")
+
+
+def test_number_input_range_validation_single_bound_message(app: Page):
+    """A single-bound input shows a bound-specific message without sentinel leakage."""
+    number_input = get_number_input(app, "number input 5 (max=10)")
+    input_field = number_input.get_by_test_id("stNumberInputField")
+
+    input_field.fill("20")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    alert = number_input.get_by_role("alert")
+    expect(alert).to_have_text(
+        "Error: Number is above the allowed range. "
+        "Please enter a value less than or equal to 10."
+    )
+    # Only max_value is set, so the unset (sentinel) min bound must not leak in.
+    expect(alert).not_to_contain_text("between")
+    expect(alert).not_to_contain_text("9007199254740991")
 
 
 def test_number_input_does_not_allow_wheel_events(app: Page):
     """Test that st.number_input does not allow wheel events."""
-    number_input = app.locator(".stNumberInput input[type='number']").nth(1)
+    number_input = (
+        get_number_input(app, "number input 2 (value=1)")
+        .locator("input[type='number']")
+        .first
+    )
 
     # Click/focus needed to bring mouse to center of input
     number_input.click()
@@ -232,3 +408,398 @@ def test_custom_css_class_via_key(app: Page):
 def test_check_top_level_class(app: Page):
     """Check that the top level class is correctly set."""
     check_top_level_class(app, "stNumberInput")
+
+
+# Firefox has some issues with sub-pixel flakiness
+# but functional everything is working fine with firefox.
+@pytest.mark.skip_browser("firefox")
+def test_dynamic_number_input_props(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that the number input can be updated dynamically while keeping the state.
+
+    This tests that:
+    1. Value is preserved when it remains valid after bound changes
+    2. Value resets to default when it becomes invalid after bound changes
+    """
+    dynamic_number_input = get_element_by_key(app, "dynamic_number_input_with_key")
+    expect(dynamic_number_input).to_be_visible()
+
+    expect(dynamic_number_input).to_contain_text("Initial dynamic number input")
+    assert_snapshot(dynamic_number_input, name="st_number_input-dynamic_initial")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_number_input, "initial help")
+
+    # Type a value that's valid in both ranges [0, 100] and [10, 50]
+    input_field = dynamic_number_input.locator("input").first
+    input_field.fill("25")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    expect_prefixed_markdown(app, "Initial number input value:", "25")
+
+    # Click the toggle to update the number input props (min changes to 10, max to 50)
+    click_toggle(app, "Update number input props")
+
+    # New number input is visible:
+    expect(dynamic_number_input).to_contain_text("Updated dynamic number input")
+
+    # Value 25 is still valid in [10, 50], so it should be preserved
+    expect_prefixed_markdown(app, "Updated number input value:", "25")
+
+    dynamic_number_input.scroll_into_view_if_needed()
+    assert_snapshot(dynamic_number_input, name="st_number_input-dynamic_updated")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_number_input, "updated help")
+
+    # Now set a value that will be invalid when we toggle back
+    # Set to 5, which is valid in [0, 100] but NOT in [10, 50]
+    click_toggle(app, "Update number input props")
+    expect(dynamic_number_input).to_contain_text("Initial dynamic number input")
+
+    input_field = dynamic_number_input.locator("input").first
+    input_field.fill("5")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    expect_prefixed_markdown(app, "Initial number input value:", "5")
+
+    # Toggle again - now min becomes 10, so value 5 is invalid and should reset to 15
+    click_toggle(app, "Update number input props")
+
+    expect(dynamic_number_input).to_contain_text("Updated dynamic number input")
+    # Value should have been reset to 15 (the new default) since 5 < 10 (new min)
+    expect_prefixed_markdown(app, "Updated number input value:", "15")
+
+
+def test_number_input_tab_focus_behavior(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Test that st.number_input tab focus behavior works correctly.
+
+    Regression test for issue #12526: tab selects full existing value
+    with non-integer values
+    """
+    # Need to tab to a number input with a non-integer value, like the sixth one,
+    # so starting at the fifth one
+    fifth_number_input_field = (
+        get_number_input(app, "number input 5 (max=10)").locator("input").first
+    )
+    fifth_number_input_field.click()
+    fifth_number_input_field.press("Tab")
+
+    seventh_number_input = get_number_input(app, "number input 7 (label=hidden)")
+    assert_snapshot(seventh_number_input, name="st_number_input-tab_focus")
+
+
+def test_number_input_maintains_floating_point_precision_increment(app: Page):
+    """Test that repeated increment clicks maintain proper floating point precision.
+
+    Regression test: Values like 0.06 should never display as 0.060000000000000005
+    due to JavaScript floating point arithmetic errors.
+    """
+    number_input = get_number_input(app, "number input 1 (default)")
+    step_up_btn = number_input.get_by_test_id("stNumberInputStepUp")
+
+    # Starting value is 0.0, step is 0.01 (default for float)
+    # Click increment 20 times and verify each displayed value has correct precision
+    for _ in range(20):
+        step_up_btn.click()
+        wait_for_app_run(app)
+
+        # Verify the displayed value has at most 2 decimal places (no floating point
+        # artifacts like 0.060000000000000005). Pattern matches: 0.01, 0.1, 0.2, etc.
+        expect(
+            app.get_by_text(
+                re.compile(r"number input 1 \(default\) - value:\s*\d+\.\d{1,2}\s*$")
+            )
+        ).to_be_visible()
+
+    # Verify final value is correct (0.0 + 20 * 0.01 = 0.20)
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "0.2")
+
+
+def test_number_input_maintains_floating_point_precision_decrement(app: Page):
+    """Test that repeated decrement clicks maintain proper floating point precision."""
+    number_input = get_number_input(app, "number input 1 (default)")
+    step_down_btn = number_input.get_by_test_id("stNumberInputStepDown")
+
+    # Starting value is 0.0, step is 0.01 (default for float)
+    # Click decrement 20 times and verify each displayed value has correct precision
+    for _ in range(20):
+        step_down_btn.click()
+        wait_for_app_run(app)
+
+        # Verify the displayed value has at most 2 decimal places (no floating point
+        # artifacts like -0.060000000000000005). Pattern matches: -0.01, -0.1, -0.2, etc.
+        expect(
+            app.get_by_text(
+                re.compile(r"number input 1 \(default\) - value:\s*-\d+\.\d{1,2}\s*$")
+            )
+        ).to_be_visible()
+
+    # Verify final value is correct (0.0 - 20 * 0.01 = -0.20)
+    expect_prefixed_markdown(app, "number input 1 (default) - value:", "-0.2")
+
+
+def test_number_input_scientific_notation_step_increment(app: Page):
+    """Test that increment with very small step values (scientific notation) works.
+
+    JavaScript represents very small numbers in scientific notation (e.g., 0.0000001
+    becomes "1e-7"). This test verifies that increment operations maintain precision.
+    """
+    number_input = get_element_by_key(app, "number_input_18")
+    step_up_btn = number_input.get_by_test_id("stNumberInputStepUp")
+
+    # Starting value is 0.0, step is 0.0000001 (1e-7)
+    # Click increment 5 times and verify the value is correct
+    for _ in range(5):
+        step_up_btn.click()
+        wait_for_app_run(app)
+
+        # Verify the displayed value has at most 7 decimal places (no floating point
+        # artifacts). Pattern matches values like: 0.0000001, 0.0000002, etc.
+        expect(
+            app.get_by_text(
+                re.compile(
+                    r"number input 18 \(small step increment\) - value:\s*\d+\.\d{1,7}\s*$"
+                )
+            )
+        ).to_be_visible()
+
+    # Verify final value is correct (0.0 + 5 * 0.0000001 = 0.0000005)
+    expect_prefixed_markdown(
+        app, "number input 18 (small step increment) - value:", "0.0000005"
+    )
+
+
+def test_number_input_scientific_notation_step_decrement(app: Page):
+    """Test that decrement with very small step values (scientific notation) works.
+
+    JavaScript represents very small numbers in scientific notation (e.g., 0.0000001
+    becomes "1e-7"). This test verifies that decrement operations maintain precision.
+    """
+    number_input = get_element_by_key(app, "number_input_19")
+    step_down_btn = number_input.get_by_test_id("stNumberInputStepDown")
+
+    # Starting value is 0.0000005, step is 0.0000001 (1e-7)
+    # Click decrement 5 times and verify the value is correct
+    for _ in range(5):
+        step_down_btn.click()
+        wait_for_app_run(app)
+
+        # Verify the displayed value has at most 7 decimal places (no floating point
+        # artifacts). Pattern matches values like: 0.0000004, 0.0000003, etc.
+        expect(
+            app.get_by_text(
+                re.compile(
+                    r"number input 19 \(small step decrement\) - value:\s*\d+\.\d{1,7}\s*$"
+                )
+            )
+        ).to_be_visible()
+
+    # Verify final value is correct (0.0000005 - 5 * 0.0000001 = 0.0)
+    expect_prefixed_markdown(
+        app, "number input 19 (small step decrement) - value:", "0.0000000"
+    )
+
+
+def test_number_input_query_param_seeding_int(page: Page, app_base_url: str):
+    """Test that number input (int) value can be seeded from URL query params."""
+    page.goto(build_app_url(app_base_url, query={"bound_int": "42"}))
+    wait_for_app_loaded(page)
+
+    # bound_int uses value=None (no type hints), so defaults to float type.
+    # Seeding with "42" from URL produces 42.0.
+    expect_prefixed_markdown(page, "bound int value:", "42.0", exact_match=True)
+    # Guard against cross-widget pollution
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
+
+
+def test_number_input_query_param_seeding_float(page: Page, app_base_url: str):
+    """Test that number input (float) value can be seeded from URL query params."""
+    page.goto(build_app_url(app_base_url, query={"bound_float": "2.718"}))
+    wait_for_app_loaded(page)
+
+    # Number input should show "2.718" (overriding "3.14" default)
+    expect_prefixed_markdown(page, "bound float value:", "2.718")
+    # Guard against cross-widget pollution
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_int="))
+
+
+def test_number_input_query_param_updates_url(app: Page):
+    """Test that changing a bound number input updates the URL."""
+    # Use the float widget which has a default value (easier to test)
+    number_input = get_element_by_key(app, "bound_float")
+    input_field = number_input.get_by_test_id("stNumberInputField")
+
+    # Change from default (3.14) to a new value
+    input_field.fill("2.718")
+    input_field.press("Enter")
+    wait_for_app_run(app)
+
+    # URL should now contain the query param
+    expect(app).to_have_url(re.compile(r"[?&]bound_float=2\.718"))
+    expect_prefixed_markdown(app, "bound float value:", "2.718")
+
+
+def test_number_input_query_param_default_override(page: Page, app_base_url: str):
+    """Test number input with custom default: seeding and param removal."""
+    # Load app with query param overriding the "3.14" default
+    page.goto(build_app_url(app_base_url, query={"bound_float": "9.99"}))
+    wait_for_app_loaded(page)
+
+    # Number input should show "9.99"
+    expect_prefixed_markdown(page, "bound float value:", "9.99")
+
+    # Change back to default ("3.14")
+    number_input = get_element_by_key(page, "bound_float")
+    input_field = number_input.get_by_test_id("stNumberInputField")
+    input_field.fill("3.14")
+    input_field.press("Enter")
+    wait_for_app_run(page)
+
+    # Query param should be removed since value is back to default
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
+    expect_prefixed_markdown(page, "bound float value:", "3.14")
+
+
+def test_number_input_query_param_out_of_range_resets_to_default(
+    page: Page, app_base_url: str
+):
+    """Test that URL values exceeding min/max reset to default and URL is cleared."""
+    # Load app with value exceeding max=100 (default is 50)
+    page.goto(build_app_url(app_base_url, query={"bound_minmax": "999"}))
+    wait_for_app_loaded(page)
+
+    # Number input should reset to default value (50)
+    expect_prefixed_markdown(page, "bound minmax value:", "50")
+    # URL param should be cleared (default values are not kept in URL)
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_minmax="))
+
+    # Now test below min
+    page.goto(build_app_url(app_base_url, query={"bound_minmax": "-50"}))
+    wait_for_app_loaded(page)
+
+    # Number input should reset to default value (50)
+    expect_prefixed_markdown(page, "bound minmax value:", "50")
+    # URL param should be cleared
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_minmax="))
+
+
+def test_number_input_query_param_invalid_value(page: Page, app_base_url: str):
+    """Test that invalid URL values are cleared and widget uses default."""
+    # Load app with invalid query param value (not a number)
+    page.goto(build_app_url(app_base_url, query={"bound_int": "notanumber"}))
+    wait_for_app_loaded(page)
+
+    # Number input should use default (None), and invalid param should be cleared
+    expect_prefixed_markdown(page, "bound int value:", "None")
+    # Invalid param should be removed from URL
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_int="))
+    # Guard against cross-widget pollution
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
+
+
+def test_number_input_query_param_invalid_value_non_clearable(
+    page: Page, app_base_url: str
+):
+    """Test that invalid URL values on non-clearable widget reset to default."""
+    # bound_float has value=3.14 (non-clearable)
+    page.goto(build_app_url(app_base_url, query={"bound_float": "notanumber"}))
+    wait_for_app_loaded(page)
+
+    # Widget should show default value (3.14), invalid param should be cleared
+    expect_prefixed_markdown(page, "bound float value:", "3.14")
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
+
+
+def test_number_input_query_param_clearable_empty_value(page: Page, app_base_url: str):
+    """Test that empty URL value clears a clearable number input to None."""
+    # bound_int has value=None (clearable)
+    page.goto(build_app_url(app_base_url, query={"bound_int": ""}))
+    wait_for_app_loaded(page)
+
+    # Clearable number input should accept the empty value and show None
+    expect_prefixed_markdown(page, "bound int value:", "None")
+
+
+def test_number_input_query_param_non_clearable_empty_value(
+    page: Page, app_base_url: str
+):
+    """Test that empty URL value is rejected for non-clearable number input."""
+    # bound_float has value=3.14 (non-clearable)
+    page.goto(build_app_url(app_base_url, query={"bound_float": ""}))
+    wait_for_app_loaded(page)
+
+    # Non-clearable number input should reject empty value, show default 3.14
+    expect_prefixed_markdown(page, "bound float value:", "3.14")
+    expect(page).not_to_have_url(re.compile(r"[?&]bound_float="))
+
+
+def test_number_input_on_change_ignore(app: Page):
+    """Test that on_change='ignore' suppresses rerun and sends value on next rerun."""
+    expect(app.get_by_text("Runs: 1", exact=True)).to_be_visible()
+    expect_prefixed_markdown(app, "Ignore number value:", "25")
+
+    number_input = get_number_input(app, "Ignore change number input")
+    number_input_field = number_input.locator("input").first
+
+    # Fill without committing - URL should not update until Enter.
+    number_input_field.fill("30")
+    expect(number_input_field).to_have_value("30")
+    wait_for_app_run(app)
+    expect(app).not_to_have_url(re.compile(r"[?&]ignore_number="))
+
+    # Commit with Enter - should NOT trigger a rerun, but should update the URL
+    number_input_field.press("Enter")
+
+    # Give a spurious rerun a chance to land before asserting the counter.
+    wait_for_app_run(app)
+
+    # Verify no rerun occurred (run count should still be 1)
+    expect(app.get_by_text("Runs: 1", exact=True)).to_be_visible()
+    expect(app.get_by_text("Runs: 2", exact=True)).not_to_be_visible()
+    expect(number_input_field).to_have_value("30")
+    expect_prefixed_markdown(app, "Ignore number value:", "25")
+    expect(app).to_have_url(re.compile(r"[?&]ignore_number=30"))
+
+    # Click button to trigger a rerun - buffered value should be sent
+    app.get_by_role("button", name="Apply ignore number", exact=True).click()
+    wait_for_app_run(app)
+
+    # Verify the updated value is now visible
+    expect(app.get_by_text("Ignore number value: 30", exact=True)).to_be_visible()
+    expect(
+        app.get_by_text("Applied ignore number value: 30", exact=True)
+    ).to_be_visible()
+
+    # Type-then-click: blur commits the dirty value, then the button reruns.
+    number_input_field.fill("40")
+    expect(number_input_field).to_have_value("40")
+    app.get_by_role("button", name="Apply ignore number", exact=True).click()
+    wait_for_app_run(app)
+
+    expect(app.get_by_text("Ignore number value: 40", exact=True)).to_be_visible()
+    expect(
+        app.get_by_text("Applied ignore number value: 40", exact=True)
+    ).to_be_visible()
+
+    # Stepper commits immediately without a rerun, and updates the bound URL.
+    expect(app.get_by_text("Runs: 3", exact=True)).to_be_visible()
+    number_input.get_by_test_id("stNumberInputStepUp").click()
+    wait_for_app_run(app)
+
+    expect(app.get_by_text("Runs: 3", exact=True)).to_be_visible()
+    expect(app.get_by_text("Runs: 4", exact=True)).not_to_be_visible()
+    expect(number_input_field).to_have_value("41")
+    expect(app.get_by_text("Ignore number value: 40", exact=True)).to_be_visible()
+    expect(app).to_have_url(re.compile(r"[?&]ignore_number=41"))
+
+    # Bound ignore-mode values persist across reload via the URL.
+    app.reload()
+    wait_for_app_loaded(app)
+    expect(
+        get_number_input(app, "Ignore change number input").locator("input").first
+    ).to_have_value("41")
+    expect_prefixed_markdown(app, "Ignore number value:", "41")

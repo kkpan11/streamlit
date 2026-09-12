@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,38 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement } from "react"
+import {
+  memo,
+  ReactElement,
+  useCallback,
+  useContext,
+  useRef,
+  useState,
+} from "react"
 
-import { Exception as ExceptionProto } from "@streamlit/protobuf"
+import { Config, Exception as ExceptionProto } from "@streamlit/protobuf"
 import { isLocalhost } from "@streamlit/utils"
 
-import { notNullOrUndefined } from "~lib/util/utils"
-import AlertContainer, { Kind } from "~lib/components/shared/AlertContainer"
-import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown"
-import { StyledCode } from "~lib/components/elements/CodeBlock/styled-components"
-import { StyledStackTrace } from "~lib/components/shared/ErrorElement/styled-components"
-
+import { LibConfigContext } from "~lib/components/core/LibConfigContext"
 import {
+  SkillsInstallContext,
+  useSkillsCalloutSlot,
+} from "~lib/components/core/SkillsInstallContext"
+import { StyledCode } from "~lib/components/elements/CodeBlock/styled-components"
+import AlertContainer, {
+  Kind,
+} from "~lib/components/shared/AlertContainer/AlertContainer"
+import { StyledStackTrace } from "~lib/components/shared/ErrorElement/styled-components"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { useCopyToClipboard } from "~lib/hooks/useCopyToClipboard"
+import { notNullOrUndefined } from "~lib/util/utils"
+
+import SkillsInstallCallout from "./SkillsInstallCallout"
+import {
+  StyledExceptionLinkButton,
   StyledExceptionLinks,
   StyledExceptionMessage,
+  StyledExceptionWithCallout,
   StyledExceptionWrapper,
   StyledMessageType,
   StyledStackTraceContent,
@@ -89,7 +107,7 @@ function StackTrace({ stackTrace }: Readonly<StackTraceProps>): ReactElement {
       <StyledStackTraceTitle>Traceback:</StyledStackTraceTitle>
       <StyledStackTrace>
         <StyledStackTraceContent>
-          <StyledCode>
+          <StyledCode wrapLines={false}>
             {stackTrace.map((row: string, index: number) => (
               <StyledStackTraceRow
                 // TODO: Update to match React best practices
@@ -113,40 +131,107 @@ function StackTrace({ stackTrace }: Readonly<StackTraceProps>): ReactElement {
 function ExceptionElement({
   element,
 }: Readonly<ExceptionElementProps>): ReactElement {
-  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(
-    `${element.type}: ${element.message}`
-  )}`
-  const chatGptUrl = `https://chatgpt.com/?q=${encodeURIComponent(
-    `${element.type}: ${element.message}\n\n${element.stackTrace?.join("\n")}`
+  const { showErrorLinks = Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO } =
+    useContext(LibConfigContext)
+
+  const shouldShowLinks =
+    showErrorLinks === Config.ShowErrorLinks.SHOW_ERROR_LINKS_TRUE ||
+    (showErrorLinks === Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO &&
+      isLocalhost())
+
+  // Offer a one-click "install Streamlit skills" CTA in local development, in its
+  // own box directly below this error. Reuses `shouldShowLinks` — the same
+  // localhost gate as the AI help links above — and scopes tightly so the nudge
+  // only appears where the skills would actually help:
+  //   - Streamlit-raised exceptions only (`element.isStreamlitException`) —
+  //     API misuse the skills can fix, not arbitrary user errors like a
+  //     ZeroDivisionError. The broad startup toast (#15473) still covers those.
+  //   - Real errors, not warnings (`!element.isWarning`).
+  // At most one callout shows app-wide, enforced by claiming a single shared
+  // slot. The slot is sticky once claimed, so the callout isn't yanked when a
+  // successful install flips the recommendation off — it dismisses itself after
+  // confirming.
+  const skillsInstall = useContext(SkillsInstallContext)
+  const skillsCalloutEligible =
+    shouldShowLinks &&
+    !element.isWarning &&
+    element.isStreamlitException &&
+    skillsInstall.enabled
+  // The slot is only claimed if this box is actually on screen — a collapsed
+  // expander or an inactive tab keeps its errors mounted, and one of those must
+  // not take the single slot from a visible error.
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const ownsSkillsCalloutSlot = useSkillsCalloutSlot(
+    skillsCalloutEligible,
+    wrapperRef
+  )
+  const [skillsCalloutDismissed, setSkillsCalloutDismissed] = useState(false)
+  const handleSkillsCalloutDismiss = useCallback(
+    () => setSkillsCalloutDismissed(true),
+    []
+  )
+  const showSkillsCallout = ownsSkillsCalloutSlot && !skillsCalloutDismissed
+
+  const formattedExceptionShort = `${element.type}: ${element.message}`
+  const formattedExceptionFull = `${formattedExceptionShort}\n\n${element.stackTrace?.join(
+    "\n"
   )}`
 
+  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(
+    formattedExceptionShort
+  )}`
+  const chatGptUrl = `https://chatgpt.com/?q=${encodeURIComponent(
+    formattedExceptionFull
+  )}`
+
+  const { copyToClipboard } = useCopyToClipboard()
+
+  const handleCopy = useCallback(() => {
+    copyToClipboard(formattedExceptionFull)
+  }, [copyToClipboard, formattedExceptionFull])
+
   return (
-    <div className="stException" data-testid="stException">
-      <AlertContainer kind={element.isWarning ? Kind.WARNING : Kind.ERROR}>
-        <StyledExceptionWrapper>
-          <StyledExceptionMessage data-testid="stExceptionMessage">
-            <ExceptionMessage
-              type={element.type}
-              message={element.message}
-              messageIsMarkdown={element.messageIsMarkdown}
-            />
-          </StyledExceptionMessage>
-          {element.stackTrace && element.stackTrace.length > 0 ? (
-            <StackTrace stackTrace={element.stackTrace} />
-          ) : null}
-          {isLocalhost() && (
-            <StyledExceptionLinks>
-              <a href={searchUrl} target="_blank" rel="noopener noreferrer">
-                Ask Google
-              </a>
-              <a href={chatGptUrl} target="_blank" rel="noopener noreferrer">
-                Ask ChatGPT
-              </a>
-            </StyledExceptionLinks>
-          )}
-        </StyledExceptionWrapper>
-      </AlertContainer>
-    </div>
+    <StyledExceptionWithCallout ref={wrapperRef}>
+      <div className="stException" data-testid="stException">
+        <AlertContainer kind={element.isWarning ? Kind.WARNING : Kind.ERROR}>
+          <StyledExceptionWrapper>
+            <StyledExceptionMessage data-testid="stExceptionMessage">
+              <ExceptionMessage
+                type={element.type}
+                message={element.message}
+                messageIsMarkdown={element.messageIsMarkdown}
+              />
+            </StyledExceptionMessage>
+            {element.stackTrace && element.stackTrace.length > 0 ? (
+              <StackTrace stackTrace={element.stackTrace} />
+            ) : null}
+            {shouldShowLinks && (
+              <StyledExceptionLinks>
+                <StyledExceptionLinkButton onClick={handleCopy}>
+                  Copy
+                </StyledExceptionLinkButton>
+                <a href={searchUrl} target="_blank" rel="noopener noreferrer">
+                  Ask Google
+                </a>
+                <a href={chatGptUrl} target="_blank" rel="noopener noreferrer">
+                  Ask ChatGPT
+                </a>
+              </StyledExceptionLinks>
+            )}
+          </StyledExceptionWrapper>
+        </AlertContainer>
+      </div>
+      {/* Its own box below the error, not a row inside it (per the design), so
+          `stException` keeps meaning "the error box" for anyone targeting it. */}
+      {showSkillsCallout && (
+        <SkillsInstallCallout
+          enabled={skillsCalloutEligible}
+          onInstall={skillsInstall.onInstall}
+          onShown={skillsInstall.onShown}
+          onDismiss={handleSkillsCalloutDismiss}
+        />
+      )}
+    </StyledExceptionWithCallout>
   )
 }
 

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,12 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitInvalidWidthError
+from streamlit.elements.json import _LOGGER
+from streamlit.errors import (
+    StreamlitInvalidParameterTypeError,
+    StreamlitInvalidWidthError,
+)
+from streamlit.user_info import UserInfoProxy
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
@@ -39,20 +47,24 @@ class StJsonAPITest(DeltaGeneratorTestCase):
         )
         assert el.width_config.use_stretch is True
 
-        # Test that an object containing non-json-friendly keys can still
-        # be displayed.  Resultant json body will be missing those keys.
-
+    def test_st_json_warns_and_logs_for_unserializable_keys(self):
+        """Non-JSON keys are omitted, logged, and shown as a warning."""
         n = np.array([1, 2, 3, 4, 5])
         data = {n[0]: "this key will not render as JSON", "array": n}
-        st.json(data)
+        with self.assertLogs(_LOGGER) as logs:
+            st.json(data)
 
-        el = self.get_delta_from_queue().new_element
-        assert el.json.body == '{"array": "array([1, 2, 3, 4, 5])"}'
-        assert (
-            el.width_config.WhichOneof("width_spec")
-            == WidthConfigFields.USE_STRETCH.value
-        )
-        assert el.width_config.use_stretch is True
+        log_message = logs.records[0].getMessage()
+        assert "not fully serializable as JSON" in log_message
+        assert not log_message.startswith("Warning:")
+        assert logs.records[0].stack_info is not None
+
+        json_el = self.get_delta_from_queue().new_element
+        # Warning is enqueued first; JSON is last.
+        warning_el = self.get_delta_from_queue(-2).new_element
+        assert json_el.json.body == '{"array": "array([1, 2, 3, 4, 5])"}'
+        assert warning_el.alert.body.startswith("Warning:")
+        assert "not fully serializable as JSON" in warning_el.alert.body
 
     def test_expanded_param(self):
         """Test expanded parameter for `st.json`"""
@@ -72,7 +84,7 @@ class StJsonAPITest(DeltaGeneratorTestCase):
         )
         assert el.width_config.use_stretch is True
 
-        with pytest.raises(TypeError):
+        with pytest.raises(StreamlitInvalidParameterTypeError):
             st.json(
                 {
                     "level1": {"level2": {"level3": {"a": "b"}}, "c": "d"},
@@ -116,3 +128,114 @@ class StJsonAPITest(DeltaGeneratorTestCase):
         with pytest.raises(StreamlitInvalidWidthError) as e:
             st.json('{"some": "json"}', width=width)
         assert "Invalid width" in str(e.value)
+
+    def test_st_json_masks_user_info_tokens(self):
+        """Test that st.json masks token values when displaying UserInfoProxy."""
+        with patch(
+            "streamlit.user_info._get_user_info",
+            return_value={
+                "email": "test@example.com",
+                "name": "Test User",
+                "tokens": {
+                    "id": "secret_id_token_value",
+                    "access": "secret_access_token_value",
+                },
+            },
+        ):
+            user = UserInfoProxy()
+
+            st.json(user)
+
+            el = self.get_delta_from_queue().new_element
+            body = json.loads(el.json.body)
+            assert body["email"] == "test@example.com"
+            assert body["name"] == "Test User"
+            assert body["tokens"]["id"] == "***"
+            assert body["tokens"]["access"] == "***"
+
+    def test_st_json_with_namedtuple(self):
+        """Test st.json converts namedtuple to dict via _asdict."""
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+
+        p = Point(1, 2)
+        st.json(p)
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == {"x": 1, "y": 2}
+
+    def test_st_json_with_mapping_proxy(self):
+        """Test st.json converts MappingProxyType to dict."""
+        import types
+
+        d = types.MappingProxyType({"a": 1, "b": 2})
+        st.json(d)
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == {"a": 1, "b": 2}
+
+    def test_st_json_with_list_like(self):
+        """Test st.json converts list-like (tuple, set) to list."""
+        st.json((1, 2, 3))
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == [1, 2, 3]
+
+    def test_st_json_user_info_without_tokens(self):
+        """Test that st.json handles UserInfoProxy without tokens correctly."""
+        with patch(
+            "streamlit.user_info._get_user_info",
+            return_value={
+                "email": "test@example.com",
+                "name": "Test User",
+            },
+        ):
+            user = UserInfoProxy()
+
+            st.json(user)
+
+            el = self.get_delta_from_queue().new_element
+            body = json.loads(el.json.body)
+            assert body["email"] == "test@example.com"
+            assert body["name"] == "Test User"
+            assert "tokens" not in body
+
+    def test_st_json_dumps_sequence_of_pydantic_models(self) -> None:
+        """A sequence of Pydantic models is dumped before JSON serialization."""
+        with (
+            patch(
+                "streamlit.elements.json.is_sequence_of_pydantic_models",
+                return_value=True,
+            ),
+            patch(
+                "streamlit.elements.json.dump_pydantic_sequence",
+                return_value=[{"x": 1}, {"x": 2}],
+            ),
+        ):
+            st.json([object(), object()])
+
+        el = self.get_delta_from_queue().new_element
+        assert json.loads(el.json.body) == [{"x": 1}, {"x": 2}]
+
+    def test_st_json_pydantic_sequence_attribute_error_falls_back_to_list(self) -> None:
+        """``AttributeError`` while dumping Pydantic models falls back to ``list()``."""
+        with (
+            patch(
+                "streamlit.elements.json.is_sequence_of_pydantic_models",
+                return_value=True,
+            ),
+            patch(
+                "streamlit.elements.json.dump_pydantic_sequence",
+                side_effect=AttributeError("not a model"),
+            ),
+        ):
+            st.json((1, 2, 3))
+
+        el = self.get_delta_from_queue().new_element
+        assert json.loads(el.json.body) == [1, 2, 3]

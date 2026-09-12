@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,36 +16,27 @@
 
 import styled from "@emotion/styled"
 
-export interface StyledNavLinkContainerProps {
-  // If true, the button should take up container's full width
-  containerWidth?: boolean
-}
+export const StyledNavLinkContainer = styled.div({
+  display: "flex",
+  flexDirection: "column",
+  width: "100%",
+})
 
-export const StyledNavLinkContainer = styled.div<StyledNavLinkContainerProps>(
-  ({ containerWidth }) => ({
-    display: "flex",
-    flexDirection: "column",
-    width: containerWidth ? "100%" : "fit-content",
-  })
-)
-
-export interface StyledNavLinkProps {
+interface StyledNavLinkProps {
   disabled: boolean
   isCurrentPage: boolean
-  // If true, the button should take up container's full width
-  containerWidth?: boolean
 }
 
 export const StyledNavLink = styled.a<StyledNavLinkProps>(
-  ({ disabled, isCurrentPage, containerWidth, theme }) => ({
+  ({ disabled, isCurrentPage, theme }) => ({
     textDecoration: "none",
-    width: containerWidth ? "100%" : "fit-content",
+    width: "100%",
     display: "flex",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-start",
     gap: theme.spacing.sm,
-    borderRadius: theme.radii.button,
+    borderRadius: theme.radii.default,
     paddingLeft: theme.spacing.sm,
     paddingRight: theme.spacing.sm,
     marginTop: theme.spacing.threeXS,
@@ -93,7 +84,7 @@ export const StyledNavLink = styled.a<StyledNavLinkProps>(
   })
 )
 
-export interface StyledNavLinkTextProps {
+interface StyledNavLinkTextProps {
   disabled: boolean
 }
 

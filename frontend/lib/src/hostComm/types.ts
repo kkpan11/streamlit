@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,14 @@
  */
 
 import {
-  IAppPage,
-  ICustomThemeConfig,
+  type AppPage,
+  type CustomThemeConfig,
   MetricsEvent,
 } from "@streamlit/protobuf"
 
-import { ExportedTheme } from "~lib/theme"
 import { ScriptRunState } from "~lib/ScriptRunState"
-import { PresetThemeName } from "~lib/theme/types"
+import type { PresetThemeName } from "~lib/theme/types"
+import type { ExportedTheme } from "~lib/theme/utils"
 
 /**
  * The app config contains various configurations that the host platform can
@@ -91,6 +91,9 @@ export type IHostToGuestMessage = {
       type: "CLOSE_MODALS"
     }
   | {
+      type: "CLOSE_MODAL"
+    }
+  | {
       type: "REQUEST_PAGE_CHANGE"
       pageScriptHash: string
     }
@@ -151,16 +154,30 @@ export type IHostToGuestMessage = {
       type: "SET_CUSTOM_THEME_CONFIG"
       themeName?: PresetThemeName
       // TODO: Consider removing themeInfo once stakeholders no longer use it
-      themeInfo?: ICustomThemeConfig
+      themeInfo?: CustomThemeConfig.$Properties
     }
   | {
       type: "SEND_APP_HEARTBEAT"
+      // If provided and non-zero, the frontend will start a timeout expecting
+      // a heartbeat_ack from the server. If the ack is not received within the
+      // specified time (in milliseconds), the frontend will attempt to reconnect.
+      // This allows hosts to opt-in to connection health monitoring and configure
+      // the timeout based on their heartbeat interval.
+      ackTimeoutMilliseconds?: number
     }
   | {
       type: "RESTART_WEBSOCKET_CONNECTION"
     }
   | {
       type: "TERMINATE_WEBSOCKET_CONNECTION"
+    }
+  | {
+      type: "SET_FILE_UPLOAD_CLIENT_CONFIG"
+      prefix: string
+      headers: Record<string, string>
+    }
+  | {
+      type: "PRINT_APP"
     }
 )
 
@@ -180,7 +197,7 @@ export type IGuestToHostMessage =
     }
   | {
       type: "SET_APP_PAGES"
-      appPages: IAppPage[]
+      appPages: AppPage.$Properties[]
     }
   | {
       type: "SET_CURRENT_PAGE_NAME"
@@ -251,3 +268,14 @@ export type IGuestToHostMessage =
 export type VersionedMessage<Message> = {
   stCommVersion: number
 } & Message
+
+/**
+ * Guest→host postMessage envelope. `isGuestToHostEcho` is set only on the
+ * same-window copy Streamlit posts when embedded. Hosts that observe both this
+ * window and `window.parent` should ignore tagged copies to avoid
+ * double-counting; a host running inside the app frame sees only the tagged
+ * copy and should handle it. See `HostCommunicationManager.postMessageToParentAndEcho`.
+ */
+export type GuestToHostEnvelope = VersionedMessage<IGuestToHostMessage> & {
+  isGuestToHostEcho?: boolean
+}

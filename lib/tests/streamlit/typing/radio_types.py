@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from typing_extensions import assert_type
 
@@ -31,17 +31,49 @@ if TYPE_CHECKING:
         WALLACE = 2
         GREENE = 3
 
-    assert_type(radio("foo", []), None)
+    # ty infers `Unknown` for empty options.
+    assert_type(radio("foo", []), None)  # ty: ignore[type-assertion-failure]
 
     assert_type(radio("foo", [1, 2, 3]), int)
-    assert_type(radio("foo", [1, 2, 3], index=None), Union[int, None])
-    assert_type(radio("foo", [1.0, 2.0, 3.0]), float)
-    assert_type(radio("foo", [1.0, 2.0, 3.0], index=None), Union[float, None])
+    assert_type(radio("foo", [1, 2, 3], index=None), int | None)
+    # ty infers `float*` (not equivalent to `float`).
+    assert_type(radio("foo", [1.0, 2.0, 3.0]), float)  # ty: ignore[type-assertion-failure]
+    assert_type(radio("foo", [1.0, 2.0, 3.0], index=None), float | None)
     assert_type(radio("foo", [1.0, 2, 3.0]), float)
-    assert_type(radio("foo", [1.0, 2, 3.0], index=None), Union[float, None])
+    assert_type(radio("foo", [1.0, 2, 3.0], index=None), float | None)
     assert_type(radio("foo", ["foo", "bar"]), str)
-    assert_type(radio("foo", ["foo", "bar"], index=None), Union[str, None])
+    assert_type(radio("foo", ["foo", "bar"], index=None), str | None)
     assert_type(radio("foo", Alfred), Alfred)
     assert_type(radio("foo", [Alfred.HITCHCOCK, Alfred.GREENE]), Alfred)
-    assert_type(radio("foo", Alfred, index=None), Union[Alfred, None])
-    assert_type(radio("foo", [1, Alfred.HITCHCOCK, "five"], index=None), object)
+    assert_type(radio("foo", Alfred, index=None), Alfred | None)
+    # ty infers `int | Alfred | str | None` rather than `object`.
+    assert_type(radio("foo", [1, Alfred.HITCHCOCK, "five"], index=None), object)  # ty: ignore[type-assertion-failure]
+
+    # Check bind parameter
+    assert_type(radio("foo", ["a", "b"], bind="query-params"), str)
+    assert_type(radio("foo", [1, 2, 3], bind="query-params"), int)
+    assert_type(radio("foo", ["a", "b"], bind=None), str)
+    assert_type(radio("foo", ["a", "b"], index=None, bind="query-params"), str | None)
+
+    def on_radio_change(prefix: str) -> None: ...
+
+    # Common parameters combined
+    assert_type(
+        radio(
+            "foo",
+            [1, 2, 3],
+            format_func=lambda value: f"Option {value}",
+            key="choice",
+            help="Choose one",
+            on_change=on_radio_change,
+            args=("choice",),
+            kwargs={},
+            disabled=False,
+            horizontal=True,
+            captions=["First", "Second", "Third"],
+            label_visibility="visible",
+            width="stretch",
+            persist_state="session",
+        ),
+        int,
+    )

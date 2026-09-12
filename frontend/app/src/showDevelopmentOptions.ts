@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,12 +21,12 @@ export const showDevelopmentOptions = (
   hostIsOwner: boolean | undefined,
   toolbarMode: Config.ToolbarMode
 ): boolean => {
-  if (toolbarMode == Config.ToolbarMode.DEVELOPER) {
+  if (toolbarMode === Config.ToolbarMode.DEVELOPER) {
     return true
   }
   if (
-    Config.ToolbarMode.VIEWER == toolbarMode ||
-    Config.ToolbarMode.MINIMAL == toolbarMode
+    Config.ToolbarMode.VIEWER === toolbarMode ||
+    Config.ToolbarMode.MINIMAL === toolbarMode
   ) {
     return false
   }

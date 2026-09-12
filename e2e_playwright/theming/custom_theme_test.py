@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
 import os
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page
 
 from e2e_playwright.conftest import ImageCompareFunction
+from e2e_playwright.shared.app_utils import expect_no_skeletons
 
 
 @pytest.fixture(scope="module")
@@ -34,9 +35,12 @@ def configure_custom_theme():
     os.environ["STREAMLIT_THEME_BUTTON_RADIUS"] = "0.57rem"
     os.environ["STREAMLIT_THEME_BORDER_COLOR"] = "#0B4C0B"
     os.environ["STREAMLIT_THEME_DATAFRAME_BORDER_COLOR"] = "#f0ee86"
+    os.environ["STREAMLIT_THEME_DATAFRAME_HEADER_BACKGROUND_COLOR"] = "#70aec1"
     os.environ["STREAMLIT_THEME_SHOW_WIDGET_BORDER"] = "True"
     os.environ["STREAMLIT_THEME_LINK_COLOR"] = "#2EC163"
-    os.environ["STREAMLIT_THEME_CODE_BACKGROUND_COLOR"] = "#29361e"
+    os.environ["STREAMLIT_THEME_CODE_FONT_SIZE"] = "15px"
+    os.environ["STREAMLIT_THEME_CODE_TEXT_COLOR"] = "#301934"
+    os.environ["STREAMLIT_THEME_CODE_BACKGROUND_COLOR"] = "#d4c6f5"
     os.environ["STREAMLIT_THEME_SHOW_SIDEBAR_BORDER"] = "True"
     os.environ["STREAMLIT_THEME_HEADING_FONT"] = "bold, serif"
     os.environ["STREAMLIT_CLIENT_TOOLBAR_MODE"] = "minimal"
@@ -50,8 +54,11 @@ def configure_custom_theme():
     del os.environ["STREAMLIT_THEME_BUTTON_RADIUS"]
     del os.environ["STREAMLIT_THEME_BORDER_COLOR"]
     del os.environ["STREAMLIT_THEME_DATAFRAME_BORDER_COLOR"]
+    del os.environ["STREAMLIT_THEME_DATAFRAME_HEADER_BACKGROUND_COLOR"]
     del os.environ["STREAMLIT_THEME_SHOW_WIDGET_BORDER"]
     del os.environ["STREAMLIT_THEME_LINK_COLOR"]
+    del os.environ["STREAMLIT_THEME_CODE_FONT_SIZE"]
+    del os.environ["STREAMLIT_THEME_CODE_TEXT_COLOR"]
     del os.environ["STREAMLIT_THEME_CODE_BACKGROUND_COLOR"]
     del os.environ["STREAMLIT_THEME_SHOW_SIDEBAR_BORDER"]
     del os.environ["STREAMLIT_THEME_HEADING_FONT"]
@@ -61,7 +68,7 @@ def configure_custom_theme():
 @pytest.mark.usefixtures("configure_custom_theme")
 def test_custom_theme(app: Page, assert_snapshot: ImageCompareFunction):
     # Make sure that all elements are rendered and no skeletons are shown:
-    expect(app.get_by_test_id("stSkeleton")).to_have_count(0, timeout=25000)
+    expect_no_skeletons(app, timeout=25000)
     # Add some additional timeout to ensure that fonts can load without
     # creating flakiness:
     app.wait_for_timeout(10000)

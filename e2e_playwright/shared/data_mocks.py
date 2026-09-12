@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -281,7 +281,7 @@ DATETIME_TYPES_DF = pd.DataFrame(
                 [
                     pd.Timestamp(random_date()),
                     np.datetime64("2022-03-11T17:13:00")
-                    - np.random.randint(400000, 1500000),
+                    - np.timedelta64(np.random.randint(400000, 1500000), "s"),
                     pd.to_datetime(10, unit="s"),
                 ]
             )
@@ -388,7 +388,7 @@ SPECIAL_TYPES_DF = pd.DataFrame(
             [
                 Decimal("1.1"),
                 Decimal("-0.03864734299516908213"),
-                Decimal("1000"),
+                Decimal(1000),
                 Decimal("2.212"),
                 None,
             ]

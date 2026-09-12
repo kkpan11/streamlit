@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,24 +26,40 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+from parameterized import parameterized
 
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit.components.lib.local_component_registry import LocalComponentRegistry
 from streamlit.components.types.base_component_registry import BaseComponentRegistry
 from streamlit.components.v1 import component_arrow
+from streamlit.components.v1.component_arrow import _maybe_tuple_to_list
 from streamlit.components.v1.component_registry import (
     ComponentRegistry,
     _get_module_name,
 )
-from streamlit.components.v1.custom_component import CustomComponent
-from streamlit.errors import DuplicateWidgetID, StreamlitAPIException
+from streamlit.components.v1.custom_component import (
+    CustomComponent,
+    MarshallComponentException,
+)
+from streamlit.dataframe_util import (
+    is_pandas_version_less_than,
+    is_pyarrow_version_less_than,
+)
+from streamlit.errors import (
+    DuplicateWidgetID,
+    StreamlitAPIException,
+    StreamlitInvalidParameterTypeError,
+    StreamlitValueError,
+)
+from streamlit.proto.Components_pb2 import ArrowTable as ArrowTableProto
 from streamlit.proto.Components_pb2 import SpecialArg
 from streamlit.proto.WidgetStates_pb2 import WidgetState, WidgetStates
 from streamlit.runtime import Runtime, RuntimeConfig
 from streamlit.runtime.memory_media_file_storage import MemoryMediaFileStorage
 from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
 from streamlit.runtime.scriptrunner import add_script_run_ctx
+from streamlit.testing.v1.util import patch_config_options
 from streamlit.type_util import to_bytes
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 from tests.testutil import create_mock_script_run_ctx
@@ -75,7 +91,6 @@ class DeclareComponentTest(unittest.TestCase):
     def setUp(self) -> None:
         config = RuntimeConfig(
             script_path="mock/script/path.py",
-            command_line=None,
             component_registry=LocalComponentRegistry(),
             media_file_storage=MemoryMediaFileStorage("/mock/media"),
             uploaded_file_manager=MemoryUploadedFileManager("/mock/upload"),
@@ -87,6 +102,9 @@ class DeclareComponentTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         Runtime._instance = None
+
+    def mock_isdir(self, path: str) -> bool:
+        return path == PATH or path == os.path.abspath(PATH)
 
     def test_name(self):
         """Test component name generation"""
@@ -122,12 +140,9 @@ class DeclareComponentTest(unittest.TestCase):
     def test_only_path_str(self):
         """Succeed when a path is provided via str."""
 
-        def isdir(path):
-            return path == PATH or path == os.path.abspath(PATH)
-
         with mock.patch(
             "streamlit.components.v1.component_registry.os.path.isdir",
-            side_effect=isdir,
+            side_effect=self.mock_isdir,
         ):
             component = components.declare_component("test", path=PATH)
 
@@ -142,12 +157,9 @@ class DeclareComponentTest(unittest.TestCase):
     def test_only_path_pathlib(self):
         """Succeed when a path is provided via Path."""
 
-        def isdir(path):
-            return path == PATH or path == os.path.abspath(PATH)
-
         with mock.patch(
             "streamlit.components.v1.component_registry.os.path.isdir",
-            side_effect=isdir,
+            side_effect=self.mock_isdir,
         ):
             component = components.declare_component("test", path=Path(PATH))
 
@@ -170,23 +182,37 @@ class DeclareComponentTest(unittest.TestCase):
             == component.abspath
         )
 
-    def test_path_and_url(self):
-        """Fail if path AND url are provided."""
-        with pytest.raises(StreamlitAPIException) as exception_message:
-            components.declare_component("test", path=PATH, url=URL)
+    def test_both_path_and_url_ok(self):
+        with mock.patch(
+            "streamlit.components.v1.component_registry.os.path.isdir",
+            side_effect=self.mock_isdir,
+        ):
+            component = components.declare_component("test", path=PATH, url=URL)
+
+        assert component.url == URL
+        assert component.path == PATH
+
+    @patch_config_options(
+        {"server.customComponentBaseUrlPath": "https://example.com/my/custom/component"}
+    )
+    def test_url_via_base_path_config(self):
+        with mock.patch(
+            "streamlit.components.v1.component_registry.os.path.isdir",
+            side_effect=self.mock_isdir,
+        ):
+            component = components.declare_component("test", path=PATH)
+
         assert (
-            str(exception_message.value)
-            == "Either 'path' or 'url' must be set, but not both."
+            component.url
+            == "https://example.com/my/custom/component/tests.streamlit.components_test.test/"
         )
+        assert component.path == PATH
 
     def test_no_path_and_no_url(self):
         """Fail if neither path nor url is provided."""
         with pytest.raises(StreamlitAPIException) as exception_message:
             components.declare_component("test", path=None, url=None)
-        assert (
-            str(exception_message.value)
-            == "Either 'path' or 'url' must be set, but not both."
-        )
+        assert str(exception_message.value) == "Either 'path' or 'url' must be set."
 
     def test_module_name_not_none(self):
         caller_frame = inspect.currentframe()
@@ -197,6 +223,23 @@ class DeclareComponentTest(unittest.TestCase):
         assert (
             ComponentRegistry.instance().get_module_name(component.name) == module_name
         )
+
+    def test_module_name_from_main_uses_filename(self) -> None:
+        """Scripts executed as ``__main__`` use the filename as the module name."""
+        caller_frame = MagicMock()
+        module = MagicMock()
+        module.__name__ = "__main__"
+        with (
+            patch(
+                "streamlit.components.v1.component_registry.inspect.getmodule",
+                return_value=module,
+            ),
+            patch(
+                "streamlit.components.v1.component_registry.inspect.getfile",
+                return_value="/tmp/my_component.py",
+            ),
+        ):
+            assert _get_module_name(caller_frame=caller_frame) == "my_component"
 
     def test_get_registered_components(self):
         component1 = components.declare_component("test1", url=URL)
@@ -227,7 +270,7 @@ class DeclareComponentTest(unittest.TestCase):
         """Test that declare_component raises RuntimeError if inspect.currentframe returns None."""
         mock_currentframe.return_value = None
         with pytest.raises(
-            RuntimeError, match="current_frame is None. This should never happen."
+            RuntimeError, match=r"current_frame is None. This should never happen."
         ):
             components.declare_component("test_component", url="http://example.com")
 
@@ -240,7 +283,7 @@ class DeclareComponentTest(unittest.TestCase):
         mock_frame.f_back = None
         mock_currentframe.return_value = mock_frame
         with pytest.raises(
-            RuntimeError, match="caller_frame is None. This should never happen."
+            RuntimeError, match=r"caller_frame is None. This should never happen."
         ):
             components.declare_component("test_component", url="http://example.com")
 
@@ -251,7 +294,7 @@ class DeclareComponentTest(unittest.TestCase):
         """Test that declare_component raises RuntimeError if inspect.getmodule returns None."""
         mock_getmodule.return_value = None
         with pytest.raises(
-            RuntimeError, match="module is None. This should never happen."
+            RuntimeError, match=r"module is None. This should never happen."
         ):
             components.declare_component("test_component", url="http://example.com")
 
@@ -262,7 +305,6 @@ class ComponentRegistryTest(unittest.TestCase):
     def setUp(self) -> None:
         config = RuntimeConfig(
             script_path="mock/script/path.py",
-            command_line=None,
             component_registry=LocalComponentRegistry(),
             media_file_storage=MemoryMediaFileStorage("/mock/media"),
             uploaded_file_manager=MemoryUploadedFileManager("/mock/upload"),
@@ -322,7 +364,7 @@ class ComponentRegistryTest(unittest.TestCase):
         test_path_2 = "/another/test/component/directory"
 
         def isdir(path):
-            return path in (test_path_1, test_path_2)
+            return path in {test_path_1, test_path_2}
 
         registry = ComponentRegistry.instance()
         with mock.patch(
@@ -390,6 +432,18 @@ class InvokeComponentTest(DeltaGeneratorTestCase):
         self.assertJSONEqual({"key": None, "default": None}, proto.json_args)
         assert str(proto.special_args) == "[]"
 
+    def test_positional_args_need_a_label(self) -> None:
+        """Positional arguments are rejected because they need a label."""
+        with pytest.raises(MarshallComponentException, match="needs a label"):
+            self.test_component("positional")
+
+    def test_unserializable_json_args_raise(self) -> None:
+        """Values that cannot be JSON-encoded raise MarshallComponentException."""
+        with pytest.raises(
+            MarshallComponentException, match="Could not convert component args"
+        ):
+            self.test_component(bad=object())
+
     def test_bytes_args(self):
         self.test_component(foo=b"foo", bar=b"bar")
         proto = self.get_delta_from_queue().new_element.component_instance
@@ -440,7 +494,7 @@ class InvokeComponentTest(DeltaGeneratorTestCase):
         self.assertJSONEqual({"key": None, "default": None}, proto.json_args)
 
     def test_widget_id_with_key(self):
-        """UNLIKE OTHER WIDGET TYPES, a component with a user-supplied `key` will have a stable widget ID
+        """A component with a user-supplied `key` will have a stable widget ID
         even when the component's other parameters change.
 
         This is important because a component's iframe gets unmounted and remounted - wiping all its
@@ -457,8 +511,8 @@ class InvokeComponentTest(DeltaGeneratorTestCase):
 
         # Clear some ScriptRunCtx data so that we can re-register the same component
         # without getting a DuplicateWidgetID error
-        self.script_run_ctx.widget_user_keys_this_run.clear()
-        self.script_run_ctx.widget_ids_this_run.clear()
+        self.script_run_ctx.shared.widget_user_keys_this_run.clear()
+        self.script_run_ctx.shared.widget_ids_this_run.clear()
 
         # Create a second component instance with the same key, and different custom data
         self.test_component(key="key", some_data=678, more_data="foo")
@@ -608,16 +662,22 @@ class InvokeComponentTest(DeltaGeneratorTestCase):
         proto = self.get_delta_from_queue().new_element.component_instance
         assert not proto.HasField("tab_index")
 
-    def test_invalid_tab_index(self):
-        """Test that invalid tab_index values raise StreamlitAPIException."""
-        with pytest.raises(StreamlitAPIException):
-            self.test_component(tab_index=-2, key="invalid_tab_index_1")
+    @parameterized.expand(
+        [
+            ("not_an_int", "invalid_tab_index_not_int"),
+            (True, "invalid_tab_index_bool"),
+            (1.5, "invalid_tab_index_float"),
+        ]
+    )
+    def test_invalid_tab_index_type(self, tab_index: object, key: str) -> None:
+        """Non-integer tab_index values raise StreamlitInvalidParameterTypeError."""
+        with pytest.raises(StreamlitInvalidParameterTypeError):
+            self.test_component(tab_index=tab_index, key=key)
 
-        with pytest.raises(StreamlitAPIException):
-            self.test_component(tab_index="not_an_int", key="invalid_tab_index_2")
-
-        with pytest.raises(StreamlitAPIException):
-            self.test_component(tab_index=True, key="invalid_tab_index_3")
+    def test_invalid_tab_index_value(self) -> None:
+        """Integers below -1 raise StreamlitValueError."""
+        with pytest.raises(StreamlitValueError):
+            self.test_component(tab_index=-2, key="invalid_tab_index_too_small")
 
 
 class IFrameTest(DeltaGeneratorTestCase):
@@ -628,9 +688,9 @@ class IFrameTest(DeltaGeneratorTestCase):
         el = self.get_delta_from_queue().new_element
         assert el.iframe.src == "http://not.a.url"
         assert el.iframe.srcdoc == ""
-        assert el.iframe.width == 200
-        assert el.iframe.has_width
         assert el.iframe.scrolling
+
+        assert el.width_config.pixel_width == 200
 
     def test_html(self):
         """Test components.html"""
@@ -640,9 +700,9 @@ class IFrameTest(DeltaGeneratorTestCase):
         el = self.get_delta_from_queue().new_element
         assert el.iframe.src == ""
         assert el.iframe.srcdoc == html
-        assert el.iframe.width == 200
-        assert el.iframe.has_width
         assert el.iframe.scrolling
+
+        assert el.width_config.pixel_width == 200
 
 
 class AlternativeComponentRegistryTest(unittest.TestCase):
@@ -651,7 +711,6 @@ class AlternativeComponentRegistryTest(unittest.TestCase):
     class AlternativeComponentRegistry(BaseComponentRegistry):
         def __init__(self):
             """Dummy implementation"""
-            pass
 
         def register_component(self, component: BaseCustomComponent) -> None:
             return None
@@ -675,3 +734,190 @@ class AlternativeComponentRegistryTest(unittest.TestCase):
         assert isinstance(
             registry, AlternativeComponentRegistryTest.AlternativeComponentRegistry
         )
+
+
+class ComponentArrowTest(unittest.TestCase):
+    """Test component_arrow utilities."""
+
+    @pytest.mark.skipif(
+        is_pyarrow_version_less_than("14.0.1"),
+        reason="arrow_proto_to_dataframe requires pyarrow >= 14.0.1",
+    )
+    def test_arrow_proto_to_dataframe(self):
+        """Test converting ArrowTable proto to pandas DataFrame."""
+
+        # Create a test DataFrame
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+
+        # Marshal it to proto
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        # Convert back to DataFrame
+        result = component_arrow.arrow_proto_to_dataframe(proto)
+
+        # Verify the roundtrip
+        assert list(result.columns) == [("a",), ("b",)]
+        assert result.shape == (3, 2)
+
+    @pytest.mark.skipif(
+        is_pyarrow_version_less_than("14.0.1"),
+        reason="arrow_proto_to_dataframe requires pyarrow >= 14.0.1",
+    )
+    def test_arrow_proto_to_dataframe_with_empty_df(self):
+        """Test converting empty DataFrame to proto and back."""
+
+        # Create an empty DataFrame
+        df = pd.DataFrame()
+
+        # Marshal it to proto
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        # Convert back to DataFrame
+        result = component_arrow.arrow_proto_to_dataframe(proto)
+
+        # Verify empty result
+        assert result.empty
+
+    def test_marshall_with_tuple_index(self):
+        """Test marshalling DataFrame with tuple index."""
+
+        # Create DataFrame with tuple index
+        df = pd.DataFrame(
+            {"a": [1, 2]}, index=pd.MultiIndex.from_tuples([(0, "x"), (1, "y")])
+        )
+
+        # Marshal it to proto
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        # Verify proto has data
+        assert len(proto.data) > 0
+        assert len(proto.index) > 0
+
+    def test_marshall_with_tuple_columns(self):
+        """Test marshalling DataFrame with tuple columns."""
+
+        # Create DataFrame with multi-level columns
+        df = pd.DataFrame(
+            [[1, 2], [3, 4]],
+            columns=pd.MultiIndex.from_tuples([("a", "x"), ("b", "y")]),
+        )
+
+        # Marshal it to proto
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        # Verify proto has data
+        assert len(proto.data) > 0
+        assert len(proto.columns) > 0
+
+    @pytest.mark.skipif(
+        is_pandas_version_less_than("3.0.0"),
+        reason="Downcasting is only enabled for pandas >= 3.0",
+    )
+    def test_marshall_downcasts_large_string(self):
+        """Test that large_string columns are downcast to string for custom components."""
+        import pyarrow as pa
+
+        df = pd.DataFrame({"col": pd.array(["a", "b", "c"], dtype="string[pyarrow]")})
+
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        result_table = pa.ipc.open_stream(proto.data).read_all()
+        for field in result_table.schema:
+            assert field.type == pa.string(), f"Expected string type, got {field.type}"
+
+    @pytest.mark.skipif(
+        is_pandas_version_less_than("3.0.0"),
+        reason="Downcasting is only enabled for pandas >= 3.0",
+    )
+    def test_marshall_downcasts_large_binary(self):
+        """Test that large_binary columns are downcast to binary for custom components."""
+        import pyarrow as pa
+
+        table = pa.table({"col": pa.array([b"x", b"y", b"z"], type=pa.large_binary())})
+        df = table.to_pandas()
+
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        result_table = pa.ipc.open_stream(proto.data).read_all()
+        for field in result_table.schema:
+            if field.name == "col":
+                assert field.type == pa.binary(), (
+                    f"Expected binary type, got {field.type}"
+                )
+
+    @pytest.mark.skipif(
+        is_pandas_version_less_than("3.0.0"),
+        reason="Downcasting is only enabled for pandas >= 3.0",
+    )
+    def test_marshall_downcasts_large_list(self):
+        """Test that large_list columns are downcast to list for custom components."""
+        import pyarrow as pa
+
+        large_list_type = pa.large_list(pa.int64())
+        table = pa.table({"col": pa.array([[1, 2], [3]], type=large_list_type)})
+        df = table.to_pandas()
+
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        result_table = pa.ipc.open_stream(proto.data).read_all()
+        for field in result_table.schema:
+            if field.name == "col":
+                assert field.type == pa.list_(pa.int64()), (
+                    f"Expected list type, got {field.type}"
+                )
+
+    @pytest.mark.skipif(
+        is_pandas_version_less_than("3.0.0"),
+        reason="Downcasting is only enabled for pandas >= 3.0",
+    )
+    def test_marshall_downcasts_nested_large_list_with_large_string(self):
+        """Test that large_list(large_string()) is recursively downcast to list(string)."""
+        import pyarrow as pa
+
+        nested_type = pa.large_list(pa.large_string())
+        table = pa.table({"col": pa.array([["a", "b"], ["c"]], type=nested_type)})
+        df = table.to_pandas()
+
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        result_table = pa.ipc.open_stream(proto.data).read_all()
+        col_field = result_table.schema.field("col")
+        assert col_field.type == pa.list_(pa.string()), (
+            f"Expected list(string), got {col_field.type}"
+        )
+
+    def test_marshall_preserves_non_large_types(self):
+        """Test that non-large types are not modified during marshalling."""
+        import pyarrow as pa
+
+        df = pd.DataFrame({"int_col": [1, 2, 3], "float_col": [1.0, 2.0, 3.0]})
+
+        proto = ArrowTableProto()
+        component_arrow.marshall(proto, df)
+
+        result_table = pa.ipc.open_stream(proto.data).read_all()
+        type_names = {field.name: field.type for field in result_table.schema}
+        assert pa.types.is_integer(type_names["int_col"])
+        assert pa.types.is_floating(type_names["float_col"])
+
+
+@pytest.mark.parametrize(
+    ("input_value", "expected"),
+    [
+        ((1, 2, 3), [1, 2, 3]),
+        ([1, 2, 3], [1, 2, 3]),
+        ("string", "string"),
+        (123, 123),
+    ],
+)
+def test_maybe_tuple_to_list(input_value, expected):
+    """Test _maybe_tuple_to_list utility function."""
+    assert _maybe_tuple_to_list(input_value) == expected

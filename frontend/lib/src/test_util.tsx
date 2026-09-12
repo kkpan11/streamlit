@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,33 +14,150 @@
  * limitations under the License.
  */
 
-import React, { FC, PropsWithChildren, ReactElement } from "react"
+import { FC, PropsWithChildren, ReactElement, useRef } from "react"
 
-import { Vector } from "apache-arrow"
 import {
   render as reactTestingLibraryRender,
   RenderOptions,
   RenderResult,
 } from "@testing-library/react"
 
-import ThemeProvider from "./components/core/ThemeProvider"
-import { baseTheme } from "./theme"
-import { mockTheme } from "./mocks/mockTheme"
+import { Config, PageConfig } from "@streamlit/protobuf"
+
+import {
+  BackendOperationContext,
+  BackendOperationContextProps,
+} from "./components/core/BackendOperationContext"
 import {
   FormsContext,
   FormsContextProps,
 } from "./components/core/FormsContext"
-import { LibContext, LibContextProps } from "./components/core/LibContext"
-import { ScriptRunState } from "./ScriptRunState"
+import { FlexContext } from "./components/core/Layout/FlexContext"
+import { Direction } from "./components/core/Layout/utils"
+import {
+  LibConfigContext,
+  LibConfigContextProps,
+} from "./components/core/LibConfigContext"
+import {
+  NavigationContext,
+  NavigationContextProps,
+} from "./components/core/NavigationContext"
+import {
+  ScriptRunContext,
+  ScriptRunContextProps,
+} from "./components/core/ScriptRunContext"
+import {
+  SidebarConfigContext,
+  SidebarConfigContextProps,
+} from "./components/core/SidebarConfigContext"
+import {
+  SkillsInstallContext,
+  SkillsInstallContextProps,
+} from "./components/core/SkillsInstallContext"
+import {
+  ThemeContext,
+  ThemeContextProps,
+} from "./components/core/ThemeContext"
+import ThemeProvider from "./components/core/ThemeProvider"
+import {
+  ViewStateContext,
+  ViewStateContextProps,
+} from "./components/core/ViewStateContext"
 import { WindowDimensionsProvider } from "./components/shared/WindowDimensions/Provider"
+import { mockTheme } from "./mocks/mockTheme"
+import { ScriptRunState } from "./ScriptRunState"
 import { createFormsData } from "./WidgetStateManager"
-import { ComponentRegistry } from "./components/widgets/CustomComponent/ComponentRegistry"
-import { mockEndpoints } from "./mocks/mocks"
+
+const flexContextValue = {
+  direction: Direction.VERTICAL,
+  isInHorizontalLayout: false,
+  isDirectlyInColumn: false,
+  isInRoot: false,
+  isInContentWidthContainer: false,
+}
+
+const defaultLibConfigContextValue = {
+  locale: "en-US",
+  mapboxToken: undefined,
+  enforceDownloadInNewTab: undefined,
+  resourceCrossOriginMode: undefined,
+  showErrorLinks: Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO,
+  disableDataExport: false,
+}
+
+const defaultSidebarConfigContextValue = {
+  initialSidebarState: PageConfig.SidebarState.AUTO,
+  appLogo: null,
+  sidebarChevronDownshift: 0,
+  expandSidebarNav: false,
+  hideSidebarNav: false,
+  isSidebarLocked: false,
+}
+
+const defaultThemeContextValue = {
+  activeTheme: mockTheme,
+  setTheme: () => {},
+  availableThemes: [],
+}
+
+const defaultNavigationContextValue = {
+  pageLinkBaseUrl: "",
+  currentPageScriptHash: "",
+  onPageChange: () => {},
+  navSections: [],
+  appPages: [],
+}
+
+const defaultViewStateContextValue = {
+  isFullScreen: false,
+  setFullScreen: () => {},
+}
+
+const defaultScriptRunContextValue = {
+  stopScript: () => {},
+  scriptRunState: ScriptRunState.NOT_RUNNING,
+  scriptRunId: "script run 123",
+  fragmentIdsThisRun: [],
+  scriptRunFinishedSequence: 0,
+  scriptRunFinishedFragmentIds: [],
+}
+
+const defaultBackendOperationContextValue = {
+  backendOperationClient: undefined,
+}
 
 export const TestAppWrapper: FC<PropsWithChildren> = ({ children }) => {
   return (
     <ThemeProvider theme={mockTheme.emotion}>
-      <WindowDimensionsProvider>{children}</WindowDimensionsProvider>
+      <WindowDimensionsProvider>
+        <FlexContext.Provider value={flexContextValue}>
+          <LibConfigContext.Provider value={defaultLibConfigContextValue}>
+            <SidebarConfigContext.Provider
+              value={defaultSidebarConfigContextValue}
+            >
+              <ThemeContext.Provider value={defaultThemeContextValue}>
+                <ViewStateContext.Provider
+                  value={defaultViewStateContextValue}
+                >
+                  <NavigationContext.Provider
+                    value={defaultNavigationContextValue}
+                  >
+                    <ScriptRunContext.Provider
+                      value={defaultScriptRunContextValue}
+                    >
+                      <BackendOperationContext.Provider
+                        value={defaultBackendOperationContextValue}
+                      >
+                        {children}
+                      </BackendOperationContext.Provider>
+                    </ScriptRunContext.Provider>
+                  </NavigationContext.Provider>
+                </ViewStateContext.Provider>
+              </ThemeContext.Provider>
+            </SidebarConfigContext.Provider>
+          </LibConfigContext.Provider>
+        </FlexContext.Provider>
+      </WindowDimensionsProvider>
     </ThemeProvider>
   )
 }
@@ -65,76 +182,387 @@ export function mockWindowLocation(hostname: string): void {
   // @ts-expect-error
   delete window.location
 
+  const hasScheme = /^https?:\/\//.test(hostname)
+  const origin = hasScheme ? new URL(hostname).origin : `https://${hostname}`
+
   // @ts-expect-error
   window.location = {
     assign: vi.fn(),
-    hostname: hostname,
+    hostname: hasScheme ? new URL(hostname).hostname : hostname,
+    origin,
   }
 }
 
 /**
+ * Options for overriding context values in renderWithContexts.
+ * All properties are optional - only provide the contexts you need to override.
+ */
+export interface RenderWithContextsOptions {
+  viewStateContext?: Partial<ViewStateContextProps>
+  libConfigContext?: Partial<LibConfigContextProps>
+  /**
+   * Sidebar config context overrides. Note: `appRootRef` accepts a boolean here -
+   * when true, the helper creates a wrapper div with data-testid="stApp" and
+   * provides the ref through context (mirroring App.tsx behavior).
+   */
+  sidebarConfigContext?: Partial<
+    Omit<SidebarConfigContextProps, "appRootRef" | "isSidebarLocked">
+  > & {
+    appRootRef?: boolean
+  }
+  themeContext?: Partial<ThemeContextProps>
+  navigationContext?: Partial<NavigationContextProps>
+  formsContext?: Partial<FormsContextProps>
+  scriptRunContext?: Partial<ScriptRunContextProps>
+  backendOperationContext?: Partial<BackendOperationContextProps>
+  skillsInstallContext?: Partial<SkillsInstallContextProps>
+}
+
+/**
+ * Extended RenderResult that includes a rerender function supporting context updates
+ */
+export interface RenderWithContextsResult extends RenderResult {
+  /**
+   * Re-render the component with updated context values.
+   * Merges new context props with existing ones (shallow merge).
+   *
+   * @param component The component to render (usually the same component with updated props)
+   * @param options Context overrides to merge with existing values
+   */
+  rerenderWithContexts: (
+    component: ReactElement,
+    options?: RenderWithContextsOptions
+  ) => void
+}
+
+/**
  * Use react-testing-library to render a ReactElement. The element will be
- * wrapped in our LibContext.Provider and FormsContext.Provider.
+ * wrapped in Providers for ViewStateContext, LibConfigContext, SidebarConfigContext,
+ * ThemeContext, NavigationContext, FormsContext, and ScriptRunContext.
+ *
+ * Returns an extended RenderResult with a `rerenderWithContexts` method that
+ * allows updating context values during re-renders.
+ *
+ * @param component The React component to render
+ * @param options Context overrides (all optional)
+ * @returns Extended render result with rerenderWithContexts method
+ *
+ * @example
+ * renderWithContexts(<MyComponent />, {
+ *   navigationContext: { appPages: [...] },
+ *   themeContext: { activeTheme: customTheme },
+ *   viewStateContext: { isFullScreen: true }
+ * })
  */
 export const renderWithContexts = (
   component: ReactElement,
-  overrideLibContextProps: Partial<LibContextProps>,
-  overrideFormsContextProps?: Partial<FormsContextProps>
-): RenderResult => {
-  const defaultLibContextProps = {
-    isFullScreen: false,
-    setFullScreen: vi.fn(),
-    addScriptFinishedHandler: vi.fn(),
-    removeScriptFinishedHandler: vi.fn(),
-    activeTheme: baseTheme,
+  options: RenderWithContextsOptions = {}
+): RenderWithContextsResult => {
+  // Track current context values across rerenders.
+  // The Wrapper component below reads these on each render,
+  // so updating them in rerenderWithContexts will affect subsequent renders.
+
+  // Use let to allow reassignment in rerenderWithContexts
+  let currentLibConfigContextProps: LibConfigContextProps = {
+    locale: "en-US",
+    // Flattened libConfig properties:
+    mapboxToken: undefined,
+    enforceDownloadInNewTab: undefined,
+    resourceCrossOriginMode: undefined,
+    showErrorLinks: Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO,
+    disableDataExport: false,
+    ...options.libConfigContext,
+  }
+
+  let currentSidebarConfigContextProps: SidebarConfigContextProps = {
+    initialSidebarState: PageConfig.SidebarState.AUTO,
+    appLogo: null,
+    sidebarChevronDownshift: 0,
+    expandSidebarNav: false,
+    hideSidebarNav: false,
+    // Note: appRootRef is handled separately in the Wrapper component
+    ...(options.sidebarConfigContext
+      ? Object.fromEntries(
+          Object.entries(options.sidebarConfigContext).filter(
+            ([key]) => key !== "appRootRef"
+          )
+        )
+      : {}),
+    // Derive isSidebarLocked from initialSidebarState so tests can't provide
+    // an inconsistent context value.
+    isSidebarLocked:
+      (options.sidebarConfigContext?.initialSidebarState ??
+        PageConfig.SidebarState.AUTO) === PageConfig.SidebarState.LOCKED,
+  }
+
+  // Track whether we should create an app root wrapper
+  const shouldCreateAppRoot = options.sidebarConfigContext?.appRootRef === true
+
+  let currentThemeContextProps: ThemeContextProps = {
+    activeTheme: mockTheme,
     setTheme: vi.fn(),
     availableThemes: [],
-    addThemes: vi.fn(),
-    onPageChange: vi.fn(),
+    ...options.themeContext,
+  }
+
+  let currentNavigationContextProps: NavigationContextProps = {
+    pageLinkBaseUrl: "",
     currentPageScriptHash: "",
-    libConfig: {},
-    fragmentIdsThisRun: [],
-    locale: "en-US",
+    onPageChange: vi.fn(),
+    navSections: [],
+    appPages: [],
+    ...options.navigationContext,
+  }
+
+  let currentViewStateContextProps: ViewStateContextProps = {
+    isFullScreen: false,
+    setFullScreen: vi.fn(),
+    ...options.viewStateContext,
+  }
+
+  let currentScriptRunContextProps: ScriptRunContextProps = {
     scriptRunState: ScriptRunState.NOT_RUNNING,
     scriptRunId: "script run 123",
-    componentRegistry: new ComponentRegistry(mockEndpoints()),
+    fragmentIdsThisRun: [],
+    scriptRunFinishedSequence: 0,
+    scriptRunFinishedFragmentIds: [],
+    stopScript: vi.fn(),
+    ...options.scriptRunContext,
   }
 
-  const defaultFormsContextProps = {
+  let currentFormsContextProps: FormsContextProps = {
     formsData: createFormsData(),
+    ...options.formsContext,
   }
 
-  return reactTestingLibraryRender(component, {
-    wrapper: ({ children }) => (
-      <ThemeProvider theme={baseTheme.emotion}>
+  let currentBackendOperationContextProps: BackendOperationContextProps = {
+    backendOperationClient: undefined,
+    ...options.backendOperationContext,
+  }
+
+  // Shared single callout slot so the dedup behavior (first eligible
+  // ExceptionElement wins) matches production when several are rendered.
+  let skillsCalloutOwner: symbol | null = null
+  let currentSkillsInstallContextProps: SkillsInstallContextProps = {
+    enabled: false,
+    onInstall: () => Promise.resolve(undefined),
+    onShown: vi.fn(),
+    claimCallout: (token: symbol): boolean => {
+      if (skillsCalloutOwner === null || skillsCalloutOwner === token) {
+        skillsCalloutOwner = token
+        return true
+      }
+      return false
+    },
+    releaseCallout: (token: symbol): void => {
+      if (skillsCalloutOwner === token) {
+        skillsCalloutOwner = null
+      }
+    },
+    ...options.skillsInstallContext,
+  }
+
+  const Wrapper: FC<PropsWithChildren> = ({ children }) => {
+    // Create ref for app root if needed
+    const appRootRef = useRef<HTMLDivElement>(null)
+
+    // Build the actual sidebar config with the ref if needed
+    // Note: We intentionally don't use useMemo here because rerenderWithContexts
+    // needs to update the context value on each rerender when currentSidebarConfigContextProps changes.
+    // eslint-disable-next-line @eslint-react/no-unstable-context-value
+    const sidebarConfigValue: SidebarConfigContextProps = {
+      ...currentSidebarConfigContextProps,
+      ...(shouldCreateAppRoot && { appRootRef }),
+    }
+
+    const content = shouldCreateAppRoot ? (
+      <div data-testid="stApp" ref={appRootRef}>
+        {children}
+      </div>
+    ) : (
+      children
+    )
+
+    return (
+      <ThemeProvider theme={mockTheme.emotion}>
         <WindowDimensionsProvider>
-          <LibContext.Provider
-            value={{ ...defaultLibContextProps, ...overrideLibContextProps }}
-          >
-            <FormsContext.Provider
-              value={{
-                ...defaultFormsContextProps,
-                ...overrideFormsContextProps,
-              }}
-            >
-              {children}
-            </FormsContext.Provider>
-          </LibContext.Provider>
+          <FlexContext.Provider value={flexContextValue}>
+            <LibConfigContext.Provider value={currentLibConfigContextProps}>
+              <SidebarConfigContext.Provider value={sidebarConfigValue}>
+                <ThemeContext.Provider value={currentThemeContextProps}>
+                  <NavigationContext.Provider
+                    value={currentNavigationContextProps}
+                  >
+                    <ViewStateContext.Provider
+                      value={currentViewStateContextProps}
+                    >
+                      <ScriptRunContext.Provider
+                        value={currentScriptRunContextProps}
+                      >
+                        <BackendOperationContext.Provider
+                          value={currentBackendOperationContextProps}
+                        >
+                          <FormsContext.Provider
+                            value={currentFormsContextProps}
+                          >
+                            <SkillsInstallContext.Provider
+                              value={currentSkillsInstallContextProps}
+                            >
+                              {content}
+                            </SkillsInstallContext.Provider>
+                          </FormsContext.Provider>
+                        </BackendOperationContext.Provider>
+                      </ScriptRunContext.Provider>
+                    </ViewStateContext.Provider>
+                  </NavigationContext.Provider>
+                </ThemeContext.Provider>
+              </SidebarConfigContext.Provider>
+            </LibConfigContext.Provider>
+          </FlexContext.Provider>
         </WindowDimensionsProvider>
       </ThemeProvider>
-    ),
+    )
+  }
+
+  const result = reactTestingLibraryRender(component, {
+    wrapper: Wrapper,
   })
+
+  return {
+    ...result,
+    rerenderWithContexts: (
+      newComponent: ReactElement,
+      newOptions?: RenderWithContextsOptions
+    ): void => {
+      // Update context values if provided
+      if (newOptions?.viewStateContext) {
+        currentViewStateContextProps = {
+          ...currentViewStateContextProps,
+          ...newOptions.viewStateContext,
+        }
+      }
+      if (newOptions?.libConfigContext) {
+        currentLibConfigContextProps = {
+          ...currentLibConfigContextProps,
+          ...newOptions.libConfigContext,
+        }
+      }
+      if (newOptions?.sidebarConfigContext) {
+        // Filter out appRootRef since it's handled separately (boolean in options vs RefObject in context)
+        const filteredSidebarConfig = Object.fromEntries(
+          Object.entries(newOptions.sidebarConfigContext).filter(
+            ([key]) => key !== "appRootRef"
+          )
+        )
+        const newInitialSidebarState =
+          newOptions.sidebarConfigContext.initialSidebarState ??
+          currentSidebarConfigContextProps.initialSidebarState
+        currentSidebarConfigContextProps = {
+          ...currentSidebarConfigContextProps,
+          ...filteredSidebarConfig,
+          // Re-derive so it stays consistent with initialSidebarState.
+          isSidebarLocked:
+            newInitialSidebarState === PageConfig.SidebarState.LOCKED,
+        }
+      }
+      if (newOptions?.themeContext) {
+        currentThemeContextProps = {
+          ...currentThemeContextProps,
+          ...newOptions.themeContext,
+        }
+      }
+      if (newOptions?.navigationContext) {
+        currentNavigationContextProps = {
+          ...currentNavigationContextProps,
+          ...newOptions.navigationContext,
+        }
+      }
+      if (newOptions?.formsContext) {
+        currentFormsContextProps = {
+          ...currentFormsContextProps,
+          ...newOptions.formsContext,
+        }
+      }
+      if (newOptions?.backendOperationContext) {
+        currentBackendOperationContextProps = {
+          ...currentBackendOperationContextProps,
+          ...newOptions.backendOperationContext,
+        }
+      }
+      if (newOptions?.scriptRunContext) {
+        currentScriptRunContextProps = {
+          ...currentScriptRunContextProps,
+          ...newOptions.scriptRunContext,
+        }
+      }
+      if (newOptions?.skillsInstallContext) {
+        currentSkillsInstallContextProps = {
+          ...currentSkillsInstallContextProps,
+          ...newOptions.skillsInstallContext,
+        }
+      }
+      // Use the original rerender with the wrapper
+      result.rerender(newComponent)
+    },
+  }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function arrayFromVector(vector: any): any {
-  if (Array.isArray(vector)) {
-    return vector.map(arrayFromVector)
+/**
+ * Helper function to create a simple test File object.
+ */
+export function createTestFile(
+  fileName: string,
+  content: string | ArrayBuffer = "content",
+  mimeType?: string
+): File {
+  // Auto-detect mime type from extension if not provided
+  if (!mimeType) {
+    const ext = fileName.split(".").pop()?.toLowerCase()
+    const mimeTypes: Record<string, string> = {
+      txt: "text/plain",
+      pdf: "application/pdf",
+      exe: "application/exe",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      png: "image/png",
+      html: "text/html",
+      js: "application/javascript",
+      json: "application/json",
+    }
+    mimeType = mimeTypes[ext || ""] || "application/octet-stream"
   }
 
-  if (vector instanceof Vector) {
-    return Array.from(vector)
-  }
+  return new File([content], fileName, { type: mimeType })
+}
 
-  return vector
+/**
+ * Helper function to create a File object with webkitRelativePath for testing directory uploads.
+ * This simulates how browsers provide files when a directory is selected.
+ */
+export function createFileWithPath(
+  content: string | ArrayBuffer,
+  fileName: string,
+  relativePath: string,
+  mimeType: string = "text/plain"
+): File {
+  const file = new File([content], fileName, { type: mimeType })
+  Object.assign(file, { webkitRelativePath: relativePath })
+  return file
+}
+
+/**
+ * Helper function to create multiple files representing a directory structure.
+ * Each file will have the appropriate webkitRelativePath set.
+ */
+export function createDirectoryFiles(
+  files: Array<{
+    content: string | ArrayBuffer
+    path: string
+    mimeType?: string
+  }>
+): File[] {
+  return files.map(({ content, path, mimeType = "text/plain" }) => {
+    const fileName = path.split("/").pop() || "file"
+    return createFileWithPath(content, fileName, path, mimeType)
+  })
 }

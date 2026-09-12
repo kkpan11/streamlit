@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,15 +18,16 @@ from random import random
 import streamlit as st
 from streamlit import runtime
 
-# Construct test assets path relative to this script file to
+# Construct static path relative to this script file to
 # allow its execution with different working directories.
-TEST_ASSETS_DIR = Path(__file__).parent / "test_assets"
-CAT_IMAGE = TEST_ASSETS_DIR / "cat.jpg"
+STATIC_DIR = Path(__file__).parent / "static"
+CAT_IMAGE = STATIC_DIR / "test-cat.jpg"
 
 st.download_button(
     "Download button label",
     data="Hello world!",
     file_name="hello.txt",
+    key="default_download_button",
 )
 
 st.download_button(
@@ -52,43 +53,32 @@ with open(CAT_IMAGE, "rb") as f:
     )
 
 st.download_button(
-    "Download button with use_container_width=True",
-    data="Hello world!",
-    file_name="hello.txt",
-    use_container_width=True,
-)
-
-st.download_button(
-    "Download button with help text and use_container_width=True",
-    data="Hello world!",
-    file_name="hello.txt",
-    use_container_width=True,
-    help="Example help text",
-)
-
-st.download_button(
     "Primary download button",
     data="Hello world!",
     file_name="hello.txt",
     type="primary",
+    key="primary_download_button",
 )
 
 st.download_button(
     "Button with emoji icon",
     data="Hello world!",
     icon="⬇️",
+    key="emoji_download_button",
 )
 
 st.download_button(
     "Button with material icon",
     data="Hello world!",
     icon=":material/download:",
+    key="material_icon_download_button",
 )
 
 st.download_button(
     "Tertiary download button",
     data="Hello world!",
     type="tertiary",
+    key="tertiary_download_button",
 )
 
 st.download_button(
@@ -96,18 +86,30 @@ st.download_button(
     data="Hello world!",
     type="tertiary",
     disabled=True,
+    key="disabled_tertiary_download_button",
 )
 
 st.download_button(
     "Download button with help",
     data="Hello world!",
     help="help text",
+    key="help_download_button",
 )
+
+shortcut_download_clicked = st.download_button(
+    "Shortcut download button",
+    data="Shortcut payload",
+    file_name="shortcut.txt",
+    shortcut="Ctrl+Alt+D",
+    key="shortcut_download_button",
+)
+if shortcut_download_clicked:
+    st.write("Shortcut download triggered!")
 
 random_str = str(random())
 clicked = st.download_button(label="Download random text", data=random_str)
 
-st.write(f"value: {clicked}")
+st.write(f"Random download value: {clicked}")
 
 download_button_ignore_rerun = st.download_button(
     "Download Button ignore rerun",
@@ -137,15 +139,69 @@ if runtime.exists():
         args=(1,),
         kwargs={"y": 2},
     )
-    st.write("value:", i1)
-    st.write("value from state:", st.session_state["download_button"])
+    st.write("Download button with on_click value:", i1)
+    st.write(
+        "Download button with on_click value from state:",
+        st.session_state["download_button"],
+    )
 
     button_was_clicked = "click_count" in st.session_state
     st.write("Download Button was clicked:", button_was_clicked)
 
     if button_was_clicked:
         st.write("times clicked:", st.session_state.click_count)
-        st.write("arg value:", st.session_state.x)
-        st.write("kwarg value:", st.session_state.y)
+        st.write("callback arg value:", st.session_state.x)
+        st.write("callback kwarg value:", st.session_state.y)
 
 i2 = st.checkbox("reset button return value")
+
+with st.expander("Download Button Width Examples", expanded=True):
+    st.download_button("Content Width (Default)", "data", width="content")
+    st.download_button("Stretch Width", "data", width="stretch")
+    st.download_button("300px Width", "data", width=300)
+
+st.markdown("Dynamic download button props:")
+
+if st.toggle("Update button props"):
+    clicked = st.download_button(
+        "Updated dynamic button",
+        data="Updated data",
+        file_name="updated.txt",
+        type="secondary",
+        icon=":material/looks_two:",
+        width="stretch",
+        help="updated help",
+        key="dynamic_download_button_with_key",
+    )
+    st.write("Clicked updated button:", clicked)
+else:
+    clicked = st.download_button(
+        "Initial dynamic button",
+        data="Initial data",
+        file_name="initial.txt",
+        type="primary",
+        icon=":material/looks_one:",
+        width="content",
+        help="initial help",
+        key="dynamic_download_button_with_key",
+    )
+    st.write("Clicked initial button:", clicked)
+
+st.download_button(
+    "Emoji Right",
+    data="Hello world!",
+    icon="⬇️",
+    icon_position="right",
+    key="download_emoji_right",
+)
+
+# wrap=False keeps the button on one row and ellipsizes an overflowing label,
+# exposing the full label via a native title. A fixed width narrower than the
+# label forces the truncation.
+st.download_button(
+    "Regenerate the complete quarterly report now",
+    data="data",
+    width=200,
+    wrap=False,
+    key="wrap_false_download_button",
+)

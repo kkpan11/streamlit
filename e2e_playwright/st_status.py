@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,16 +26,16 @@ if ctx is None:
     sys.exit(0)
 
 
-running_status = st.status("Running status", expanded=True)
+running_status = st.status("Running status", expanded=False)
 running_status.write("Doing some work...")
 
-with st.status("Completed status", expanded=True, state="complete"):
+with st.status("Completed status", expanded=False, state="complete"):
     st.write("Hello world")
 
-with st.status("Error status", expanded=True, state="error"):
+with st.status("Error status", expanded=False, state="error"):
     st.error("Oh no, something went wrong!")
 
-with st.status("Collapsed", state="complete"):
+with st.status("Expanded", state="complete", expanded=True):
     st.write("Hello world")
 
 with st.status("About to change label...", state="complete") as status:
@@ -64,3 +64,14 @@ with st.status("Fixed width status", state="complete", width=200):
 
 with st.status("Stretch width status", state="complete", width="stretch"):
     st.write("Hello World")
+
+# Compact status
+# Use the non-context-manager pattern to capture the running state before update
+compact_running_status = st.status("Compact running", type="compact")
+compact_running_status.write("Processing...")
+
+with st.status("Compact complete", state="complete", type="compact"):
+    st.write("Done!")
+
+with st.status("Compact expanded", state="complete", expanded=True, type="compact"):
+    st.write("Compact content visible")

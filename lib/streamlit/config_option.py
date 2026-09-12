@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +19,39 @@ from __future__ import annotations
 import datetime
 import re
 import textwrap
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from streamlit.string_util import to_snake_case
 from streamlit.util import repr_
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# Dedent at definition time so interpolating a multi-line deprecation_text
+# (already flush-left from __init__) cannot make textwrap.dedent() a no-op.
+_UNSUPPORTED_OPTION_BANNER = textwrap.dedent(
+    """
+    ════════════════════════════════════════════════
+    {key} IS NO LONGER SUPPORTED.
+
+    {deprecation_text}
+
+    Please update {where_defined}.
+    ════════════════════════════════════════════════
+    """
+)
+_DEPRECATED_OPTION_BANNER = textwrap.dedent(
+    """
+    ════════════════════════════════════════════════
+    {key} IS DEPRECATED.
+    {deprecation_text}
+
+    This option will be removed on or after {expiration_date}.
+
+    Please update {where_defined}.
+    ════════════════════════════════════════════════
+    """
+)
 
 
 class ConfigOption:
@@ -108,6 +137,7 @@ class ConfigOption:
         replaced_by: str | None = None,
         type_: type = str,
         sensitive: bool = False,
+        multiple: bool = False,
     ) -> None:
         """Create a ConfigOption with the given name.
 
@@ -142,6 +172,8 @@ class ConfigOption:
             Useful to cast the config params sent by cmd option parameter.
         sensitive: bool
             Sensitive configuration options cannot be set by CLI parameter.
+        multiple: bool
+            Whether this config option can have multiple values.
         """
         # Parse out the section and name.
         self.key = key
@@ -183,8 +215,7 @@ class ConfigOption:
         self.where_defined = ConfigOption.DEFAULT_DEFINITION
         self.type = type_
         self.sensitive = sensitive
-        # infer multiple values if the default value is a list or tuple
-        self.multiple = isinstance(default_val, (list, tuple))
+        self.multiple = multiple
 
         if self.replaced_by:
             self.deprecated = True
@@ -221,17 +252,15 @@ class ConfigOption:
             Returns self, which makes testing easier. See config_test.py.
 
         """
-        if get_val_func.__doc__ is None:
-            raise RuntimeError(
-                "Complex config options require doc strings for their description."
-            )
-        self.description = get_val_func.__doc__
+        # Handle PYTHONOPTIMIZE=2 case where docstrings are stripped.
+        # Fall back to empty string instead of raising an error.
+        self.description = get_val_func.__doc__ or ""
         self._get_val_func = get_val_func
         return self
 
     @property
     def value(self) -> Any:
-        """Get the value of this config option."""
+        """The value of this config option."""
         if self._get_val_func is None:
             return None
         return self._get_val_func()
@@ -257,39 +286,25 @@ class ConfigOption:
         self.is_default = value == self.default_val
 
         if self.deprecated and self.where_defined != ConfigOption.DEFAULT_DEFINITION:
+            # Import here to avoid circular imports
+            from streamlit.logger import get_logger
+
+            logger = get_logger(__name__)
             if self.is_expired():
-                # Import here to avoid circular imports
-                from streamlit.logger import get_logger
-
-                get_logger(__name__).error(
-                    textwrap.dedent(
-                        f"""
-                    ════════════════════════════════════════════════
-                    {self.key} IS NO LONGER SUPPORTED.
-
-                    {self.deprecation_text}
-
-                    Please update {self.where_defined}.
-                    ════════════════════════════════════════════════
-                    """
+                logger.error(
+                    _UNSUPPORTED_OPTION_BANNER.format(
+                        key=self.key,
+                        deprecation_text=self.deprecation_text,
+                        where_defined=self.where_defined,
                     )
                 )
             else:
-                # Import here to avoid circular imports
-                from streamlit.logger import get_logger
-
-                get_logger(__name__).warning(
-                    textwrap.dedent(
-                        f"""s
-                    ════════════════════════════════════════════════
-                    {self.key} IS DEPRECATED.
-                    {self.deprecation_text}
-
-                    This option will be removed on or after {self.expiration_date}.
-
-                    Please update {self.where_defined}.
-                    ════════════════════════════════════════════════
-                    """
+                logger.warning(
+                    _DEPRECATED_OPTION_BANNER.format(
+                        key=self.key,
+                        deprecation_text=self.deprecation_text,
+                        expiration_date=self.expiration_date,
+                        where_defined=self.where_defined,
                     )
                 )
 
@@ -304,7 +319,7 @@ class ConfigOption:
 
     @property
     def env_var(self) -> str:
-        """Get the name of the environment variable that can be used to set the option."""
+        """The name of the environment variable that can be used to set the option."""
         name = self.key.replace(".", "_")
         return f"STREAMLIT_{to_snake_case(name).upper()}"
 

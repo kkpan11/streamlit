@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
 import streamlit as st
 from streamlit import runtime
@@ -66,11 +66,11 @@ w4 = st.slider("Label 4", 10000, 25000, 10000, disabled=True)
 st.write("Value 4:", w4)
 
 # Slider 8
-w5 = st.slider("Label 5", 0, 100, 25, 1, label_visibility="hidden")
+w5 = st.slider("Label 5", 0, 100, 25, 1, label_visibility="hidden", key="slider_5")
 st.write("Value 5:", w5)
 
 # Slider 9
-w6 = st.slider("Label 6", 0, 100, 36, label_visibility="collapsed")
+w6 = st.slider("Label 6", 0, 100, 36, label_visibility="collapsed", key="slider_6")
 st.write("Value 6:", w6)
 
 # Slider 10
@@ -160,7 +160,7 @@ st.slider(
     "Label 14 - Overlapping near the left",
     min_value=1e6 + 0,
     max_value=1e6 + 100,
-    value=(1e6 + 10, 1e6 + 14),
+    value=(1e6 + 6, 1e6 + 10),
 )
 
 # Slider 18
@@ -176,7 +176,7 @@ st.slider(
     "Label 16 - Overlapping near the right",
     min_value=1e6 + 0,
     max_value=1e6 + 100,
-    value=(1e6 + 86, 1e6 + 90),
+    value=(1e6 + 88, 1e6 + 92),
 )
 
 # Slider 20
@@ -194,3 +194,220 @@ st.slider(
 
 st.slider("Label 19 - Width 300px", min_value=0, max_value=100, width=300)
 st.slider("Label 20 - Width Stretch", min_value=0, max_value=100, width="stretch")
+
+# Slider with predefined number format
+st.slider(
+    "Slider with compact format",
+    min_value=0,
+    max_value=1000000,
+    value=500000,
+    format="compact",
+)
+
+# Slider with predefined datetime format
+st.slider(
+    "Slider with localized date format",
+    min_value=datetime(2020, 1, 1),
+    max_value=datetime(2025, 12, 31),
+    value=datetime(2023, 6, 15),
+    format="localized",
+)
+
+if st.toggle("Update slider props"):
+    dyn_value = st.slider(
+        "Updated dynamic slider",
+        value=42,
+        width=300,
+        help="updated help",
+        format="%d€",
+        key="dynamic_slider_with_key",
+        on_change=lambda a, param: print(
+            f"Updated slider - callback triggered: {a} {param}"
+        ),
+        args=("Updated slider arg",),
+        kwargs={"param": "updated kwarg param"},
+        # min_value, max_value, and step are not yet supported for dynamic changes
+        # keeping it at the same value:
+        min_value=0,
+        max_value=100,
+        step=1,
+    )
+    st.write("Updated slider value:", dyn_value)
+else:
+    dyn_value = st.slider(
+        "Initial dynamic slider",
+        value=25,
+        width="stretch",
+        help="initial help",
+        format="%0.2f",
+        key="dynamic_slider_with_key",
+        on_change=lambda a, param: print(
+            f"Initial slider - callback triggered: {a} {param}"
+        ),
+        args=("Initial slider arg",),
+        kwargs={"param": "initial kwarg param"},
+        min_value=0,
+        max_value=100,
+        step=1,
+    )
+    st.write("Initial slider value:", dyn_value)
+
+# --- Query Param Binding Sliders ---
+
+# Slider 27 - Integer slider with bind
+bound_int = st.slider(
+    "Bound int slider",
+    min_value=0,
+    max_value=100,
+    value=50,
+    key="bound_int",
+    bind="query-params",
+)
+st.write("Bound int value:", bound_int)
+
+# Slider 28 - Float slider with bind
+bound_float = st.slider(
+    "Bound float slider",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.1,
+    key="bound_float",
+    bind="query-params",
+)
+st.write("Bound float value:", bound_float)
+
+# Slider 29 - Range slider with bind
+bound_range = st.slider(
+    "Bound range slider",
+    min_value=0,
+    max_value=100,
+    value=(25, 75),
+    key="bound_range",
+    bind="query-params",
+)
+st.write("Bound range value:", bound_range)
+
+# Slider 30 - Date slider with bind
+bound_date = st.slider(
+    "Bound date slider",
+    min_value=date(2020, 1, 1),
+    max_value=date(2025, 12, 31),
+    value=date(2023, 6, 15),
+    key="bound_date",
+    bind="query-params",
+)
+st.write("Bound date value:", bound_date)
+
+# Slider 31 - Time slider with bind
+bound_time = st.slider(
+    "Bound time slider",
+    min_value=time(0, 0),
+    max_value=time(23, 59),
+    value=time(12, 0),
+    key="bound_time",
+    bind="query-params",
+)
+st.write("Bound time value:", bound_time)
+
+# Slider 32 - Datetime slider with bind
+bound_datetime = st.slider(
+    "Bound datetime slider",
+    min_value=datetime(2020, 1, 1, 0, 0),
+    max_value=datetime(2025, 12, 31, 23, 59),
+    value=datetime(2023, 6, 15, 14, 30),
+    key="bound_datetime",
+    bind="query-params",
+)
+st.write("Bound datetime value:", bound_datetime)
+
+# Slider 33 - Date range slider with bind
+bound_date_range = st.slider(
+    "Bound date range slider",
+    min_value=date(2020, 1, 1),
+    max_value=date(2025, 12, 31),
+    value=(date(2022, 1, 1), date(2024, 1, 1)),
+    key="bound_date_range",
+    bind="query-params",
+)
+st.write("Bound date range value:", bound_date_range)
+
+# Slider 34 - Time slider with second-resolution step and bind
+bound_time_secs = st.slider(
+    "Bound time seconds slider",
+    min_value=time(0, 0),
+    max_value=time(23, 59, 59),
+    value=time(12, 0, 0),
+    step=timedelta(seconds=30),
+    key="bound_time_secs",
+    bind="query-params",
+)
+st.write("Bound time secs value:", bound_time_secs)
+
+# Slider 35 - Datetime slider with second-resolution step and bind
+bound_datetime_secs = st.slider(
+    "Bound datetime seconds slider",
+    min_value=datetime(2024, 1, 1, 0, 0, 0),
+    max_value=datetime(2024, 12, 31, 23, 59, 59),
+    value=datetime(2024, 6, 15, 14, 30, 0),
+    step=timedelta(seconds=30),
+    key="bound_datetime_secs",
+    bind="query-params",
+)
+st.write("Bound datetime secs value:", bound_datetime_secs)
+
+# --- Session state + query param collision slider ---
+
+if "bound_ss" not in st.session_state:
+    st.session_state.bound_ss = 30
+
+bound_ss = st.slider(
+    "Bound session state slider",
+    min_value=0,
+    max_value=100,
+    key="bound_ss",
+    bind="query-params",
+)
+st.write("Bound ss value:", bound_ss)
+
+# --- setValue one-shot test (element hash memo regression) ---
+if "slider_setvalue_counter" not in st.session_state:
+    st.session_state.slider_setvalue_counter = 0
+
+st.session_state.slider_setvalue_counter += 1
+
+st.slider(
+    "Programmatic slider",
+    min_value=0,
+    max_value=100,
+    value=50,
+    key="setvalue_test_slider",
+)
+st.write(f"Slider counter: {st.session_state.slider_setvalue_counter}")
+
+st.button("Trigger slider rerun")
+
+# --- on_change="ignore" slider ---
+ignore_slider = st.slider(
+    "Ignore change slider",
+    min_value=0,
+    max_value=100,
+    value=25,
+    key="ignore_slider",
+    on_change="ignore",
+    bind="query-params",
+)
+st.write("Ignore slider value:", ignore_slider)
+
+if st.button("Apply ignore slider", key="apply_ignore"):
+    st.write("Applied ignore slider value:", ignore_slider)
+
+# Slider with reversed min/max (swapped to [1, 10]; value stays inside the range).
+reversed_bounds_value = st.slider(
+    "Reversed bounds slider",
+    min_value=10,
+    max_value=1,
+    value=5,
+    key="reversed_bounds_slider",
+)
+st.write("Reversed bounds slider value:", reversed_bounds_value)

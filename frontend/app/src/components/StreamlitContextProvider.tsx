@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,68 +14,117 @@
  * limitations under the License.
  */
 
-import React, { memo, PropsWithChildren, useMemo } from "react"
+import {
+  memo,
+  PropsWithChildren,
+  RefObject,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react"
 
 import {
-  ComponentRegistry,
+  BackendOperationClient,
+  BackendOperationContext,
+  BackendOperationContextProps,
   FormsContext,
   FormsContextProps,
   FormsData,
-  LibConfig,
-  LibContext,
-  LibContextProps,
+  LibConfigContext,
+  LibConfigContextProps,
+  NavigationContext,
+  NavigationContextProps,
+  ScriptRunContext,
+  ScriptRunContextProps,
   ScriptRunState,
+  SidebarConfigContext,
+  SidebarConfigContextProps,
+  SkillsInstallContext,
+  SkillsInstallContextProps,
   ThemeConfig,
-  useRequiredContext,
+  ThemeContext,
+  ThemeContextProps,
+  ViewStateContext,
+  ViewStateContextProps,
 } from "@streamlit/lib"
-import { IAppPage, IGitInfo, Logo, PageConfig } from "@streamlit/protobuf"
-import {
-  AppContext,
-  AppContextProps,
-} from "@streamlit/app/src/components/AppContext"
+import { type AppPage, Config, Logo, PageConfig } from "@streamlit/protobuf"
 
-// Type for AppContext props
-type AppContextValues = {
-  initialSidebarState: PageConfig.SidebarState
+type ViewStateContextValues = {
+  isFullScreen: boolean
+  setFullScreen: (value: boolean) => void
+}
+
+type LibConfigContextValues = {
+  locale: typeof window.navigator.language
+  // Selected libConfig properties
+  mapboxToken?: string
+  enforceDownloadInNewTab?: boolean
+  resourceCrossOriginMode?: undefined | "anonymous" | "use-credentials"
+  showErrorLinks?: Config.ShowErrorLinks
+  disableDataExport?: boolean
+}
+
+type NavigationContextValues = {
   pageLinkBaseUrl: string
   currentPageScriptHash: string
   onPageChange: (pageScriptHash: string) => void
   navSections: string[]
-  appPages: IAppPage[]
+  appPages: AppPage.$Properties[]
+}
+
+type SidebarConfigContextValues = {
+  initialSidebarState: PageConfig.SidebarState
+  initialSidebarWidth?: number
   appLogo: Logo | null
   sidebarChevronDownshift: number
   expandSidebarNav: boolean
+  sidebarNavVisibleItems?: number
   hideSidebarNav: boolean
-  widgetsDisabled: boolean
-  gitInfo: IGitInfo | null
+  appRootRef?: RefObject<HTMLDivElement> | null
 }
 
-// Type for LibContext props
-type LibContextValues = {
-  isFullScreen: boolean
-  setFullScreen: (value: boolean) => void
-  addScriptFinishedHandler: (func: () => void) => void
-  removeScriptFinishedHandler: (func: () => void) => void
+type ThemeContextValues = {
   activeTheme: ThemeConfig
   setTheme: (theme: ThemeConfig) => void
   availableThemes: ThemeConfig[]
-  addThemes: (themes: ThemeConfig[]) => void
-  onPageChange: (pageScriptHash: string) => void
-  currentPageScriptHash: string
-  libConfig: LibConfig
-  fragmentIdsThisRun: Array<string>
-  locale: typeof window.navigator.language
+}
+
+type ScriptRunContextValues = {
+  stopScript: () => void
   scriptRunState: ScriptRunState
   scriptRunId: string
-  componentRegistry: ComponentRegistry
+  fragmentIdsThisRun: Array<string>
+  scriptRunFinishedSequence: number
+  scriptRunFinishedFragmentIds: Array<string>
 }
 
 type FormsContextValues = {
   formsData: FormsData
 }
 
-export type StreamlitContextProviderProps = PropsWithChildren<
-  AppContextValues & LibContextValues & FormsContextValues
+type BackendOperationContextValues = {
+  backendOperationClient?: BackendOperationClient
+}
+
+type SkillsInstallContextValues = {
+  /** Whether the in-error "install skills" callout is allowed to show. */
+  skillsInstallEnabled?: boolean
+  /** One-click install handler (already tagged with the errorCallout surface). */
+  onInstallSkills?: () => Promise<string | undefined>
+  /** Impression callback fired once when the callout first appears. */
+  onSkillsCalloutShown?: () => void
+}
+
+type StreamlitContextProviderProps = PropsWithChildren<
+  ViewStateContextValues &
+    LibConfigContextValues &
+    NavigationContextValues &
+    SidebarConfigContextValues &
+    ThemeContextValues &
+    ScriptRunContextValues &
+    FormsContextValues &
+    BackendOperationContextValues &
+    SkillsInstallContextValues
 >
 
 /**
@@ -83,135 +132,243 @@ export type StreamlitContextProviderProps = PropsWithChildren<
  * This centralizes the context values in one place.
  */
 const StreamlitContextProvider: React.FC<StreamlitContextProviderProps> = ({
-  // AppContext
-  initialSidebarState,
+  // ViewStateContext
+  isFullScreen,
+  setFullScreen,
+  // LibConfigContext
+  locale,
+  mapboxToken,
+  enforceDownloadInNewTab,
+  resourceCrossOriginMode,
+  showErrorLinks,
+  disableDataExport,
+  // NavigationContext
   pageLinkBaseUrl,
+  currentPageScriptHash,
+  onPageChange,
   navSections,
   appPages,
+  // SidebarConfigContext
+  initialSidebarState,
+  initialSidebarWidth,
   appLogo,
   sidebarChevronDownshift,
   expandSidebarNav,
+  sidebarNavVisibleItems,
   hideSidebarNav,
-  widgetsDisabled,
-  gitInfo,
-  // LibContext
-  isFullScreen,
-  setFullScreen,
-  addScriptFinishedHandler,
-  removeScriptFinishedHandler,
+  appRootRef,
+  // ThemeContext
   activeTheme,
   setTheme,
   availableThemes,
-  addThemes,
-  libConfig,
-  fragmentIdsThisRun,
-  locale,
+  // ScriptRunContext
+  stopScript,
   scriptRunState,
   scriptRunId,
-  componentRegistry,
-  // Used in both contexts
-  currentPageScriptHash,
-  onPageChange,
+  fragmentIdsThisRun,
+  scriptRunFinishedSequence,
+  scriptRunFinishedFragmentIds,
   // FormsContext
   formsData,
+  // BackendOperationContext
+  backendOperationClient,
+  // SkillsInstallContext
+  skillsInstallEnabled,
+  onInstallSkills,
+  onSkillsCalloutShown,
   // Children passed through
   children,
 }: StreamlitContextProviderProps) => {
-  // Memoized object for AppContext values
-  const appContextProps = useMemo<AppContextProps>(
+  // Memoized object for LibConfigContext values
+  const libConfigContextProps = useMemo<LibConfigContextProps>(
+    () => ({
+      locale,
+      mapboxToken,
+      enforceDownloadInNewTab,
+      resourceCrossOriginMode,
+      showErrorLinks,
+      disableDataExport,
+    }),
+    [
+      locale,
+      mapboxToken,
+      enforceDownloadInNewTab,
+      resourceCrossOriginMode,
+      showErrorLinks,
+      disableDataExport,
+    ]
+  )
+
+  // Memoized object for SidebarConfigContext values
+  const sidebarConfigContextProps = useMemo<SidebarConfigContextProps>(
     () => ({
       initialSidebarState,
+      initialSidebarWidth,
+      appLogo,
+      sidebarChevronDownshift,
+      expandSidebarNav,
+      sidebarNavVisibleItems,
+      hideSidebarNav,
+      appRootRef,
+      isSidebarLocked: initialSidebarState === PageConfig.SidebarState.LOCKED,
+    }),
+    [
+      initialSidebarState,
+      initialSidebarWidth,
+      appLogo,
+      sidebarChevronDownshift,
+      expandSidebarNav,
+      sidebarNavVisibleItems,
+      hideSidebarNav,
+      appRootRef,
+    ]
+  )
+
+  // Memoized object for ThemeContext values
+  const themeContextProps = useMemo<ThemeContextProps>(
+    () => ({
+      activeTheme,
+      setTheme,
+      availableThemes,
+    }),
+    [activeTheme, setTheme, availableThemes]
+  )
+
+  // Memoized object for NavigationContext values
+  const navigationContextProps = useMemo<NavigationContextProps>(
+    () => ({
       pageLinkBaseUrl,
       currentPageScriptHash,
       onPageChange,
       navSections,
       appPages,
-      appLogo,
-      sidebarChevronDownshift,
-      expandSidebarNav,
-      hideSidebarNav,
-      widgetsDisabled,
-      gitInfo,
     }),
     [
-      initialSidebarState,
       pageLinkBaseUrl,
       currentPageScriptHash,
       onPageChange,
       navSections,
       appPages,
-      appLogo,
-      sidebarChevronDownshift,
-      expandSidebarNav,
-      hideSidebarNav,
-      widgetsDisabled,
-      gitInfo,
     ]
   )
 
-  // Memoized object for LibContext values
-  const libContextProps = useMemo<LibContextProps>(
+  // Memoized object for ViewStateContext values
+  const viewStateContextProps = useMemo<ViewStateContextProps>(
     () => ({
       isFullScreen,
       setFullScreen,
-      addScriptFinishedHandler,
-      removeScriptFinishedHandler,
-      activeTheme,
-      setTheme,
-      availableThemes,
-      addThemes,
-      onPageChange,
-      currentPageScriptHash,
-      libConfig,
-      fragmentIdsThisRun,
-      locale,
+    }),
+    [isFullScreen, setFullScreen]
+  )
+
+  // Memoized object for ScriptRunContext values
+  const scriptRunContextProps = useMemo<ScriptRunContextProps>(
+    () => ({
+      stopScript,
       scriptRunState,
       scriptRunId,
-      componentRegistry,
+      fragmentIdsThisRun,
+      scriptRunFinishedSequence,
+      scriptRunFinishedFragmentIds,
     }),
     [
-      isFullScreen,
-      setFullScreen,
-      addScriptFinishedHandler,
-      removeScriptFinishedHandler,
-      activeTheme,
-      setTheme,
-      availableThemes,
-      addThemes,
-      onPageChange,
-      currentPageScriptHash,
-      libConfig,
-      fragmentIdsThisRun,
-      locale,
+      stopScript,
       scriptRunState,
       scriptRunId,
-      componentRegistry,
+      fragmentIdsThisRun,
+      scriptRunFinishedSequence,
+      scriptRunFinishedFragmentIds,
     ]
   )
 
-  // formsData is not a stable reference, so memoization does not help
-  // eslint-disable-next-line @eslint-react/no-unstable-context-value
-  const formsContextProps: FormsContextProps = {
-    formsData,
-  }
+  const formsContextProps: FormsContextProps = useMemo(
+    () => ({
+      formsData,
+    }),
+    [formsData]
+  )
 
+  const backendOperationContextProps: BackendOperationContextProps =
+    useMemo<BackendOperationContextProps>(
+      () => ({
+        backendOperationClient,
+      }),
+      [backendOperationClient]
+    )
+
+  // A single shared slot so at most one in-error "install skills" callout shows
+  // app-wide even when several error boxes are on screen. The first eligible
+  // ExceptionElement to mount claims it; the ref lives here so the lib-level
+  // callout stays stateless. A ref (not state) avoids re-rendering the whole
+  // app subtree when the claim changes.
+  const skillsCalloutOwnerRef = useRef<symbol | null>(null)
+  const claimSkillsCallout = useCallback((token: symbol): boolean => {
+    if (
+      skillsCalloutOwnerRef.current === null ||
+      skillsCalloutOwnerRef.current === token
+    ) {
+      skillsCalloutOwnerRef.current = token
+      return true
+    }
+    return false
+  }, [])
+  const releaseSkillsCallout = useCallback((token: symbol): void => {
+    if (skillsCalloutOwnerRef.current === token) {
+      skillsCalloutOwnerRef.current = null
+    }
+  }, [])
+
+  const skillsInstallContextProps = useMemo<SkillsInstallContextProps>(
+    () => ({
+      enabled: skillsInstallEnabled ?? false,
+      onInstall: onInstallSkills ?? (() => Promise.resolve(undefined)),
+      onShown: onSkillsCalloutShown ?? ((): void => {}),
+      claimCallout: claimSkillsCallout,
+      releaseCallout: releaseSkillsCallout,
+    }),
+    [
+      skillsInstallEnabled,
+      onInstallSkills,
+      onSkillsCalloutShown,
+      claimSkillsCallout,
+      releaseSkillsCallout,
+    ]
+  )
+
+  /**
+   * Providers conceptually grouped by stability (most to least) as follows:
+   * Layer 1: App-level static configuration providers:
+   *   LibConfigContext & SidebarConfigContext
+   * Layer 2: User theme preference provider:
+   *   ThemeContext
+   * Layer 3: App interaction providers:
+   *   NavigationContext, ViewStateContext, ScriptRunContext, FormsContext
+   */
   return (
-    <AppContext.Provider value={appContextProps}>
-      <LibContext.Provider value={libContextProps}>
-        <FormsContext.Provider value={formsContextProps}>
-          {children}
-        </FormsContext.Provider>
-      </LibContext.Provider>
-    </AppContext.Provider>
+    <LibConfigContext.Provider value={libConfigContextProps}>
+      <SidebarConfigContext.Provider value={sidebarConfigContextProps}>
+        <ThemeContext.Provider value={themeContextProps}>
+          <NavigationContext.Provider value={navigationContextProps}>
+            <BackendOperationContext.Provider
+              value={backendOperationContextProps}
+            >
+              <ViewStateContext.Provider value={viewStateContextProps}>
+                <ScriptRunContext.Provider value={scriptRunContextProps}>
+                  <FormsContext.Provider value={formsContextProps}>
+                    <SkillsInstallContext.Provider
+                      value={skillsInstallContextProps}
+                    >
+                      {children}
+                    </SkillsInstallContext.Provider>
+                  </FormsContext.Provider>
+                </ScriptRunContext.Provider>
+              </ViewStateContext.Provider>
+            </BackendOperationContext.Provider>
+          </NavigationContext.Provider>
+        </ThemeContext.Provider>
+      </SidebarConfigContext.Provider>
+    </LibConfigContext.Provider>
   )
-}
-
-/**
- * Custom hook to access AppContext values in components.
- * Throws an error if used outside of an AppContext.Provider.
- */
-export const useAppContext = (): AppContextProps => {
-  return useRequiredContext(AppContext)
 }
 
 export default memo(StreamlitContextProvider)

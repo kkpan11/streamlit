@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,14 +16,11 @@ import time
 
 import streamlit as st
 
+# Regression test for gh-12067: Pills at the start of the app should not wrap
+# The bug only reproduces when pills are among the first elements rendered
+st.pills("Regression test 3", ["1", "2", "3"], key="regression_3")
+
 st.header("Pills - standard")
-
-if st.checkbox("Set default values", value=False):
-    st.session_state.default_pills = ["🧰 General widgets", "📊 Charts", "🧊 3D"]
-else:
-    st.session_state.default_pills = []
-
-default = st.session_state.default_pills
 
 pills_options = [
     "🧰 General widgets",
@@ -44,14 +41,13 @@ pills_options = [
     "🏗️ App builders",
     "🔌 Integrations with other tools",
     "📦 Collections of components",
-    "📦 Very very long text" * 20,  # pill with very long text
+    "📦 Very very long text" * 21,  # pill with very long text
 ]
 s1 = st.pills(
     "Select some options",
     pills_options,
     key="pills",
     selection_mode="multi",
-    default=default,
     help="This is for choosing options",
 )
 st.write(f"Multi selection: {s1}")
@@ -116,7 +112,7 @@ st.write(
 st.header("Pills in fragment")
 
 
-@st.experimental_fragment()
+@st.fragment
 def test_fragment():
     s5 = st.pills(
         "Elements", ["Water", "Fire", "Earth", "Air"], key="pills_in_fragment"
@@ -139,7 +135,334 @@ s6 = st.pills("Elements", ["Water", "Fire", "Earth", "Air"], key="pills_after_sl
 st.write("pills-after-sleep:", str(s6))
 
 
+st.header("Pills - width examples")
+st.pills(
+    "Pills with content width (default)",
+    ["Option 1", "Option 2", "Option 3"],
+    width="content",
+    key="pills_content_width",
+)
+
+st.pills(
+    "Pills with stretch width",
+    ["Option 1", "Option 2", "Option 3"],
+    width="stretch",
+    key="pills_stretch_width",
+)
+
+st.pills(
+    "Pills with 300px width",
+    ["Option 1", "Option 2", "Option 3", "Option 4", "Option 5"],
+    width=300,
+    key="pills_300px_width",
+)
+
+st.header("Pills - disabled and selected")
+s10 = st.pills(
+    "Elements",
+    ["Water", "Fire", "Earth", "Air"],
+    key="pills_disabled-selected",
+    default="Water",
+    disabled=True,
+)
+st.write("pills-disabled-selected:", str(s10))
+
+
 if "runs" not in st.session_state:
     st.session_state.runs = 0
 st.session_state.runs += 1
 st.write("Runs:", st.session_state.runs)
+
+if st.checkbox("Set default values", value=False):
+    st.session_state.default_pills = ["🧰 General widgets", "🎥 Video"]
+else:
+    st.session_state.default_pills = []
+
+default = st.session_state.default_pills
+
+# The test will only work if this doesn't use a user-specified key:
+val = st.pills(
+    "Pills with default options",
+    [
+        "🧰 General widgets",
+        "📊 Charts",
+        "🌇 Images",
+        "🎥 Video",
+        "📝 Text",
+    ],
+    selection_mode="multi",
+    default=st.session_state.default_pills,
+)
+st.write("Pills with default options:", str(val))
+
+st.markdown("Pills - dynamic props:")
+
+if st.toggle("Update pills props"):
+    dyn_val = st.pills(
+        "Updated dynamic pills",
+        key="dynamic_pills_with_key",
+        help="updated help",
+        width=300,
+        default="papaya",
+        on_change=lambda a, param: print(
+            f"Updated pills - callback triggered: {a} {param}"
+        ),
+        args=("Updated pills arg",),
+        kwargs={"param": "updated kwarg param"},
+        # "mango" exists in both lists at different indices for testing preservation
+        # mango is at index 0 here, default is index 1 (papaya)
+        options=["mango", "papaya", "grape", "apple"],
+        selection_mode="single",
+        # format_func can be changed dynamically. When the *same* raw options are
+        # kept and only the display labels change, the selection falls back to the
+        # default (not deselected entirely). When options change AND format_func
+        # produces a label that no longer matches the old selection, the same
+        # fallback-to-default behaviour applies.
+        format_func=lambda x: x.capitalize(),
+    )
+    st.write("Updated pills value:", dyn_val)
+else:
+    dyn_val = st.pills(
+        "Initial dynamic pills",
+        key="dynamic_pills_with_key",
+        help="initial help",
+        width="content",
+        default="apple",
+        on_change=lambda a, param: print(
+            f"Initial pills - callback triggered: {a} {param}"
+        ),
+        args=("Initial pills arg",),
+        kwargs={"param": "initial kwarg param"},
+        # "mango" exists in both lists at different indices for testing preservation
+        # mango is at index 2 here, default is index 0 (apple)
+        options=["apple", "banana", "mango", "orange"],
+        selection_mode="single",
+        format_func=lambda x: x.capitalize(),
+    )
+    st.write("Initial pills value:", dyn_val)
+
+# --- Bound pills widgets (query-params) ---
+
+st.header("Pills - bound to query params")
+
+bound_single = st.pills(
+    "Bound single pills",
+    ["cat", "dog", "bird"],
+    key="bound_pills",
+    bind="query-params",
+)
+st.text(f"bound_pills: {bound_single}")
+
+bound_single_default = st.pills(
+    "Bound single pills with default",
+    ["Red", "Green", "Blue"],
+    default="Red",
+    key="bound_pills_default",
+    bind="query-params",
+)
+st.text(f"bound_pills_default: {bound_single_default}")
+
+bound_single_fmt = st.pills(
+    "Bound single pills with format_func",
+    ["cat", "dog", "bird"],
+    format_func=str.upper,
+    key="bound_pills_fmt",
+    bind="query-params",
+)
+st.text(f"bound_pills_fmt: {bound_single_fmt}")
+
+bound_multi = st.pills(
+    "Bound multi pills",
+    ["Red", "Green", "Blue", "Yellow"],
+    selection_mode="multi",
+    key="bound_pills_multi",
+    bind="query-params",
+)
+st.text(f"bound_pills_multi: {bound_multi}")
+
+bound_multi_default = st.pills(
+    "Bound multi pills with default",
+    ["Red", "Green", "Blue", "Yellow"],
+    selection_mode="multi",
+    default=["Red", "Green"],
+    key="bound_pills_multi_default",
+    bind="query-params",
+)
+st.text(f"bound_pills_multi_default: {bound_multi_default}")
+
+
+# --- Required parameter tests ---
+
+st.header("Pills - required parameter")
+
+required_with_default = st.pills(
+    "Required pills with default",
+    ["Option A", "Option B", "Option C"],
+    default="Option A",
+    required=True,
+    key="pills_required_with_default",
+)
+st.text(f"required_with_default: {required_with_default}")
+
+required_without_default = st.pills(
+    "Required pills without default",
+    ["Option X", "Option Y", "Option Z"],
+    required=True,
+    key="pills_required_without_default",
+)
+st.text(f"required_without_default: {required_without_default}")
+
+not_required = st.pills(
+    "Not required pills",
+    ["Choice 1", "Choice 2", "Choice 3"],
+    default="Choice 1",
+    required=False,
+    key="pills_not_required",
+)
+st.text(f"not_required: {not_required}")
+
+# --- Dynamic format_func (gh-15493 regression) ---
+# Regression test: changing format_func (e.g. a language switch) with the same
+# raw options must NOT trigger the on_change callback and must keep the pill
+# visually selected at the correct (translated) label.
+
+st.header("Pills - dynamic format_func")
+
+_fmt_map = {
+    "en": {"A": "apple", "B": "orange"},
+    "es": {"A": "manzana", "B": "naranja"},
+}
+_lang = st.session_state.get("dynamic_fmt_lang", "en")
+_fmt = _fmt_map[_lang]
+
+if "dynamic_fmt_callback_count" not in st.session_state:
+    st.session_state["dynamic_fmt_callback_count"] = 0
+
+
+def _on_dynamic_fmt_change() -> None:
+    st.session_state["dynamic_fmt_callback_count"] += 1
+    st.session_state["dynamic_fmt_last_value"] = st.session_state["dynamic_fmt_pills"]
+
+
+dynamic_fmt_val = st.pills(
+    "Dynamic format_func pills",
+    options=["A", "B"],
+    format_func=lambda x: _fmt[x],
+    default="A",
+    key="dynamic_fmt_pills",
+    on_change=_on_dynamic_fmt_change,
+)
+st.text(f"dynamic_fmt_pills value: {dynamic_fmt_val}")
+st.text(f"dynamic_fmt_callback_count: {st.session_state['dynamic_fmt_callback_count']}")
+st.text(
+    f"dynamic_fmt_last_value: {st.session_state.get('dynamic_fmt_last_value', 'none')}"
+)
+
+if st.button("Switch to ES", key="switch_to_es_btn"):
+    st.session_state["dynamic_fmt_lang"] = "es"
+    st.rerun()
+
+# --- Interdependent pills with dynamic format_func (gh-16269) ---
+# Regression test: when a parent pill's selection is cleared, the child pill's
+# format_func output (a record count embedded in the label) changes for the
+# still-selected option. The child must stay visually selected at its new label
+# instead of silently deselecting, and its return value must be preserved.
+
+st.header("Pills - interdependent format_func")
+
+# Both the child option set and the per-option counts depend on whether the
+# parent filter is active, mirroring the original repro where a dataframe is
+# filtered by the parent selection: with the parent active fewer rows remain,
+# so the option list shrinks and the counts drop. This exercises the case where
+# a still-selected option ("D") keeps its value across both a label change and a
+# change to the surrounding options list.
+if st.session_state.get("idf_parent"):
+    _idf_counts = {"D": 1, "E": 1}
+else:
+    _idf_counts = {"D": 3, "E": 2, "F": 4}
+
+st.pills("idf parent", options=["A", "B"], key="idf_parent")
+idf_child_val = st.pills(
+    "idf child",
+    options=list(_idf_counts),
+    format_func=lambda x: f"{x} ({_idf_counts[x]})",
+    key="idf_child",
+)
+st.text(f"idf_child value: {idf_child_val}")
+
+# --- Wrap parameter ---
+
+st.header("Pills - wrap")
+
+_WRAP_OPTIONS = [
+    "Today",
+    "7 days",
+    "30 days",
+    "Quarter",
+    "Year",
+    "All time",
+    "Custom range",
+    "Last 90 days",
+    "Last 180 days",
+    "Year to date",
+    "Previous year",
+    "Lifetime",
+]
+
+st.pills(
+    "Wrap false scroll",
+    _WRAP_OPTIONS,
+    wrap=False,
+    width=280,
+    key="pills_wrap_false",
+)
+
+st.pills(
+    "Wrap true multi-row",
+    _WRAP_OPTIONS,
+    wrap=True,
+    width=280,
+    key="pills_wrap_true",
+)
+
+st.pills(
+    "Wrap auto vertical",
+    _WRAP_OPTIONS,
+    width=280,
+    key="pills_wrap_auto_vertical",
+)
+
+with st.container(horizontal=True, width=320, key="pills_wrap_auto_horizontal"):
+    st.pills(
+        "Wrap auto horizontal",
+        _WRAP_OPTIONS,
+        key="pills_wrap_auto_h",
+    )
+
+st.pills(
+    "Wrap false selected into view",
+    _WRAP_OPTIONS,
+    default="Lifetime",
+    wrap=False,
+    width=280,
+    key="pills_wrap_selected_into_view",
+)
+
+with st.container(width=280, key="pills_wrap_stretch_container"):
+    st.pills(
+        "Wrap false stretch",
+        _WRAP_OPTIONS,
+        wrap=False,
+        width="stretch",
+        key="pills_wrap_false_stretch",
+    )
+
+_wrap_toggle = st.toggle("Enable wrap", value=False, key="pills_wrap_toggle")
+_wrap_val = st.pills(
+    "Wrap toggle preserves selection",
+    ["Alpha", "Beta", "Gamma"],
+    default="Beta",
+    wrap=_wrap_toggle,
+    key="pills_wrap_preserve",
+)
+st.text(f"pills_wrap_preserve: {_wrap_val}")

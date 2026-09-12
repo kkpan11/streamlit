@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,51 +14,104 @@
  * limitations under the License.
  */
 
-import React, { PureComponent, ReactNode } from "react"
+import { createRef, type JSX, PureComponent, ReactNode } from "react"
 
-import moment from "moment"
-import Hotkeys from "react-hot-keys"
-import { enableAllPlugins as enableImmerPlugins } from "immer"
-import classNames from "classnames"
-import without from "lodash/without"
+import { enableMapSet, enablePatches } from "immer"
 import { getLogger } from "loglevel"
 import { flushSync } from "react-dom"
 
+import AppView from "@streamlit/app/src/components/AppView/AppView"
+import DeployButton from "@streamlit/app/src/components/DeployButton/DeployButton"
+import { GlobalHotkeys } from "@streamlit/app/src/components/GlobalHotkeys/GlobalHotkeys"
+import MainMenu from "@streamlit/app/src/components/MainMenu/MainMenu"
+import {
+  isSkillsNudgeDismissed,
+  isSkillsNudgeDroppedConnection,
+  isSkillsNudgeSnoozed,
+  setSkillsNudgeDismissed,
+  setSkillsNudgeSnoozed,
+  SKILLS_NUDGE_DROPPED_MESSAGE,
+  skillsNudgeInstallFailureLabel,
+  skillsNudgeInstallSuccessLabel,
+  skillsNudgeSuppressedLabel,
+} from "@streamlit/app/src/components/SkillsNudgeToast/skillsNudge"
+import SkillsNudgeToast from "@streamlit/app/src/components/SkillsNudgeToast/SkillsNudgeToast"
+import StatusWidget from "@streamlit/app/src/components/StatusWidget/StatusWidget"
+import StreamlitContextProvider from "@streamlit/app/src/components/StreamlitContextProvider"
+import { DialogType } from "@streamlit/app/src/components/StreamlitDialog/constants"
+import DialogErrorMessage from "@streamlit/app/src/components/StreamlitDialog/DialogErrorMessage"
+import {
+  ConnectionErrorProps,
+  DialogProps,
+  ScriptCompileErrorProps,
+  StreamlitDialog,
+  WarningProps,
+} from "@streamlit/app/src/components/StreamlitDialog/StreamlitDialog"
+import { UserSettings } from "@streamlit/app/src/components/StreamlitDialog/UserSettings"
+import ToolbarActions from "@streamlit/app/src/components/ToolbarActions/ToolbarActions"
+import withScreencast, {
+  ScreenCastHOC,
+} from "@streamlit/app/src/hocs/withScreencast/withScreencast"
+import { useViewportSize } from "@streamlit/app/src/hooks/useViewportSize"
+import { MetricsManager } from "@streamlit/app/src/MetricsManager"
+import { SessionEventDispatcher } from "@streamlit/app/src/SessionEventDispatcher"
+import { StyledApp } from "@streamlit/app/src/styled-components"
+import getBrowserInfo from "@streamlit/app/src/util/getBrowserInfo"
+import {
+  AppConfig,
+  ConnectionManager,
+  ConnectionState,
+  DefaultStreamlitEndpoints,
+  ErrorDetails,
+  IHostConfigProperties,
+  isHostConfigBypassEnabled,
+  LibConfig,
+  parseUriIntoBaseParts,
+  StreamlitEndpoints,
+} from "@streamlit/connection"
 import {
   AppRoot,
+  BackendOperationClient,
   CircularBuffer,
   ComponentRegistry,
+  createAutoTheme,
+  createCustomThemes,
   createFormsData,
   createPresetThemes,
-  createTheme,
-  CUSTOM_THEME_NAME,
+  CUSTOM_THEME_AUTO_NAME,
+  darkTheme,
   DeployedAppMetadata,
   ensureError,
+  ensureHotkeysFilterConfigured,
   extractPageNameFromPathName,
   FileUploadClient,
   FormsData,
   generateUID,
-  getCachedTheme,
   getElementId,
   getEmbeddingIdClassName,
-  getHostSpecifiedTheme,
   getIFrameEnclosingApp,
   getLocaleLanguage,
+  getPreferredTheme,
+  getQueryString,
+  getScreencastTimestamp,
   getTimezone,
   getTimezoneOffset,
   getUrl,
   handleFavicon,
   hashString,
+  hasLightBackgroundColor,
   HostCommunicationManager,
   IMenuItem,
-  isColoredLineDisplayed,
+  INITIAL_SCRIPT_RUN_ID,
   isEmbed,
   isInChildFrame,
+  isKeyboardEventFromEditableTarget,
   isPaddingDisplayed,
   isPresetTheme,
   isScrollingHidden,
   isToolbarDisplayed,
   IToolbarItem,
+  lightTheme,
   mark,
   measure,
   notUndefined,
@@ -66,15 +119,16 @@ import {
   PresetThemeName,
   ScriptRunState,
   SessionInfo,
-  StreamlitMarkdown,
+  sortThemeInputKeys,
   ThemeConfig,
   toExportedTheme,
-  toThemeInput,
   WidgetStateManager,
 } from "@streamlit/lib"
 import {
+  type AppPage,
   AuthRedirect,
   AutoRerun,
+  BackendOperationResponse,
   BackMsg,
   Config,
   CustomThemeConfig,
@@ -83,9 +137,6 @@ import {
   ForwardMsg,
   ForwardMsgMetadata,
   GitInfo,
-  IAppPage,
-  ICustomThemeConfig,
-  IGitInfo,
   Initialize,
   Logo,
   Navigation,
@@ -94,55 +145,29 @@ import {
   PageInfo,
   PageNotFound,
   PageProfile,
-  PagesChanged,
   ParentMessage,
   SessionEvent,
   SessionStatus,
+  StopAutoRerun,
   WidgetStates,
 } from "@streamlit/protobuf"
 import {
   isLocalhost,
   isNullOrUndefined,
+  localStorageAvailable,
   notNullOrUndefined,
+  StreamlitConfig,
 } from "@streamlit/utils"
-import getBrowserInfo from "@streamlit/app/src/util/getBrowserInfo"
-import AppView from "@streamlit/app/src/components/AppView"
-import StatusWidget from "@streamlit/app/src/components/StatusWidget"
-import MainMenu from "@streamlit/app/src/components/MainMenu"
-import ToolbarActions from "@streamlit/app/src/components/ToolbarActions"
-import DeployButton from "@streamlit/app/src/components/DeployButton"
-import Header from "@streamlit/app/src/components/Header"
-import {
-  ConnectionErrorProps,
-  DialogProps,
-  ScriptCompileErrorProps,
-  StreamlitDialog,
-  WarningProps,
-} from "@streamlit/app/src/components/StreamlitDialog"
-import { DialogType } from "@streamlit/app/src/components/StreamlitDialog/constants"
-import {
-  AppConfig,
-  ConnectionManager,
-  ConnectionState,
-  DefaultStreamlitEndpoints,
-  IHostConfigResponse,
-  LibConfig,
-  StreamlitEndpoints,
-} from "@streamlit/connection"
-import { SessionEventDispatcher } from "@streamlit/app/src/SessionEventDispatcher"
-import StreamlitContextProvider from "@streamlit/app/src/components/StreamlitContextProvider"
-import { UserSettings } from "@streamlit/app/src/components/StreamlitDialog/UserSettings"
-import { MetricsManager } from "@streamlit/app/src/MetricsManager"
-import { StyledApp } from "@streamlit/app/src/styled-components"
-import withScreencast, {
-  ScreenCastHOC,
-} from "@streamlit/app/src/hocs/withScreencast/withScreencast"
 
 import { showDevelopmentOptions } from "./showDevelopmentOptions"
-// Used to import fonts + responsive reboot items
-import "@streamlit/app/src/assets/css/theme.scss"
-import { ThemeManager } from "./util/useThemeManager"
+// Import @font-face rules for app and icon fonts
+import "@streamlit/app/src/assets/css/fonts.css"
 import { AppNavigation, MaybeStateUpdate } from "./util/AppNavigation"
+import {
+  includeIfDefined,
+  reconcileHostConfigValues,
+} from "./util/hostConfigHelpers"
+import { ThemeManager } from "./util/useThemeManager"
 
 // vite config builds global variable PACKAGE_METADATA
 declare const PACKAGE_METADATA: {
@@ -153,6 +178,7 @@ export interface Props {
   screenCast: ScreenCastHOC
   theme: ThemeManager
   streamlitExecutionStartedAt: number
+  isMobileViewport: boolean
 }
 
 interface State {
@@ -165,20 +191,25 @@ interface State {
   scriptRunState: ScriptRunState
   userSettings: UserSettings
   dialog?: DialogProps | null
+  connectionErrorDismissed: boolean
   layout: PageConfig.Layout
   initialSidebarState: PageConfig.SidebarState
-  menuItems?: PageConfig.IMenuItems | null
+  initialSidebarWidth?: number
+  menuItems?: PageConfig.MenuItems.$Properties | null
   allowRunOnSave: boolean
   scriptFinishedHandlers: (() => void)[]
   toolbarMode: Config.ToolbarMode
+  showErrorLinks: Config.ShowErrorLinks
+  disableDataExport: boolean
   themeHash: string
-  gitInfo: IGitInfo | null
+  gitInfo: GitInfo.$Properties | null
   formsData: FormsData
   hideTopBar: boolean
-  hideColoredLine: boolean
   hideSidebarNav: boolean
   expandSidebarNav: boolean
-  appPages: IAppPage[]
+  sidebarNavVisibleItems?: number
+  navigationPosition: Navigation.Position
+  appPages: AppPage.$Properties[]
   navSections: string[]
   // The hash of the current page executing
   currentPageScriptHash: string
@@ -189,6 +220,12 @@ interface State {
   mainScriptHash: string
   latestRunTime: number
   fragmentIdsThisRun: Array<string>
+  // Monotonic counter bumped on every scriptFinished message; lets widgets
+  // detect that a run completed. Consumed by ChatInput.
+  scriptRunFinishedSequence: number
+  // Fragments that ran in the run that just finished; empty for full-script
+  // runs, and may contain more than one. Consumed by ChatInput.
+  scriptRunFinishedFragmentIds: Array<string>
   // host communication info
   isOwner: boolean
   hostMenuItems: IMenuItem[]
@@ -200,20 +237,50 @@ interface State {
   deployedAppMetadata: DeployedAppMetadata
   libConfig: LibConfig
   appConfig: AppConfig
-  autoReruns: NodeJS.Timeout[]
   inputsDisabled: boolean
-}
+  scriptChangedOnDisk: boolean
+  // Whether the framework "install skills" nudge is currently shown. Set once
+  // per page load in handleInitialization when the server recommends it (and
+  // the localhost / dismissal / snooze gates pass), and cleared when the
+  // developer installs, snoozes (✕), or picks "Don't show again".
+  showSkillsNudge: boolean
 
-const INITIAL_SCRIPT_RUN_ID = "<null>"
+  /**
+   * Whether the server recommended installing the bundled agent skills this
+   * session (agent present, skills not installed, not headless, no permanent
+   * dismissal marker). Drives the in-error "install skills" callout, which
+   * gates on it every render — independent of the one-shot toast logic above.
+   */
+  recommendSkillsInstall: boolean
+
+  /**
+   * Set once skills are installed this session (from any surface). The server
+   * only re-detects an install on a new session, so this hides the in-error
+   * callout (and any further nudge) for the rest of the current session.
+   */
+  skillsInstalledThisSession: boolean
+
+  /**
+   * Set once an install has genuinely failed this session (not merely dropped
+   * its connection). The cause is environmental — a blocked target, a read-only
+   * directory — so it will fail again, and without this every later error would
+   * offer the same doomed install.
+   */
+  skillsInstallFailedThisSession: boolean
+}
 
 export const LOG = getLogger("App")
 
 declare global {
   interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    streamlitDebug: any
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    iFrameResizer: any
+    streamlitDebug: {
+      clearForwardMsgCache: () => void
+      disconnectWebsocket: () => void
+      shutdownRuntime: () => void
+    }
+    iFrameResizer: {
+      heightCalculationMethod: () => number
+    }
     __streamlit_profiles__?: Record<
       string,
       CircularBuffer<{
@@ -248,6 +315,15 @@ export class App extends PureComponent<Props, State> {
 
   private readonly embeddingId: string = generateUID()
 
+  /**
+   * Ref to the root app container element.
+   * Used by components like Sidebar to detect clicks inside/outside the app.
+   */
+  private readonly appRootRef = createRef<HTMLDivElement>()
+
+  /** Client for backend operation requests (lazy loading, validation, etc.) */
+  private readonly backendOperationClient: BackendOperationClient
+
   private readonly appNavigation: AppNavigation
 
   private isInitializingConnectionManager: boolean = true
@@ -258,21 +334,71 @@ export class App extends PureComponent<Props, State> {
   // This will allow us to ignore finished messages from previous script runs.
   private hasReceivedNewSession: boolean = false
 
+  // Active `run_every` auto-rerun timers, keyed by fragment id. These are
+  // imperative resources (setInterval handles), so they live outside of React
+  // state. Keying by fragment id lets us keep a single timer per fragment: we
+  // reuse the running timer when a fragment re-registers with the same interval
+  // (so frequent ancestor reruns don't reset its countdown), and only restart
+  // it when the interval changes. The stored `interval` (in seconds) is what we
+  // compare against on re-registration.
+  private readonly autoRerunIntervals: Map<
+    string,
+    { timer: ReturnType<typeof setInterval>; interval: number }
+  > = new Map()
+
+  // Whether the skills-install nudge has been shown this page load.
+  // `handleInitialization` re-runs on websocket reconnect, so this guards
+  // against enqueuing a duplicate nudge and against logging multiple
+  // `skillsNudgeShown` events (which would inflate the adoption funnel). Reset
+  // only by a full page reload (a new App instance).
+  private skillsNudgeShown: boolean = false
+
+  // Whether a suppression reason has been reported this page load. Tracked
+  // separately from `skillsNudgeShown` so recording a suppression does NOT
+  // prevent the nudge from appearing later in the same page load: eligibility is
+  // recomputed on every rerun, and `check_failed` in particular is transient (a
+  // thrown eligibility check), so a single bad rerun must not withhold the nudge
+  // until the user reloads. Deduping the two events independently still keeps a
+  // reconnect from inflating either count.
+  private skillsNudgeSuppressionReported: boolean = false
+
+  // Same once-per-page-load guard for the in-error callout's impression: the
+  // callout remounts whenever its error box remounts (across reruns), but the
+  // adoption funnel should count one "shown" per session per surface — matching
+  // the toast above — so a recurring error can't inflate the errorCallout count.
+  private errorCalloutShown: boolean = false
+
+  // Session-constant part of the in-error callout's gate. `isLocalhost()`,
+  // `isEmbed()`, and `localStorageAvailable()` don't change within a session,
+  // and `localStorageAvailable()` does a synchronous write probe — so compute
+  // them once (lazily) instead of on every render. The callout gate reaches
+  // this only after `recommendSkillsInstall` short-circuits, so apps without
+  // the agent recommendation never pay for it. (The dismissal check stays
+  // per-render, since a "don't show again" can flip it mid-session.)
+  private cachedSkillsCalloutEnvEligible?: boolean
+
+  // The install currently in flight, if any, so both surfaces share one
+  // operation instead of racing two against the same target tree. Cleared when
+  // it settles. See handleSkillsNudgeInstall.
+  private inFlightSkillsInstall: Promise<string | undefined> | null = null
+
+  private get skillsCalloutEnvEligible(): boolean {
+    if (this.cachedSkillsCalloutEnvEligible === undefined) {
+      this.cachedSkillsCalloutEnvEligible =
+        isLocalhost() && !isEmbed() && localStorageAvailable()
+    }
+    return this.cachedSkillsCalloutEnvEligible
+  }
+
   public constructor(props: Props) {
     super(props)
 
-    // Initialize immerjs
-    enableImmerPlugins()
+    // Register hotkey filter:
+    ensureHotkeysFilterConfigured()
 
-    // Theme hashes are only created for custom theme, and the custom theme
-    // may come from localStorage. We need to create the hash here to ensure
-    // that the theme is correctly represented.
-    let themeHash = this.createThemeHash()
-    if (!isPresetTheme(props.theme.activeTheme)) {
-      themeHash = this.createThemeHash(
-        toThemeInput(props.theme.activeTheme.emotion) as CustomThemeConfig
-      )
-    }
+    // Initialize immerjs
+    enablePatches()
+    enableMapSet()
 
     this.state = {
       connectionState: ConnectionState.INITIAL,
@@ -286,12 +412,20 @@ export class App extends PureComponent<Props, State> {
         wideMode: false,
         runOnSave: false,
       },
+      connectionErrorDismissed: false,
       layout: PageConfig.Layout.CENTERED,
       initialSidebarState: PageConfig.SidebarState.AUTO,
+      initialSidebarWidth: undefined,
       menuItems: undefined,
       allowRunOnSave: true,
       scriptFinishedHandlers: [],
-      themeHash,
+      showErrorLinks: Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO,
+      disableDataExport: false,
+      // Initialize themeHash to empty string to ensure the first processThemeInput
+      // call always processes the theme (whether null or custom theme from server).
+      // This prevents the bug where a cached custom theme isn't cleared when the
+      // server sends null, because null and undefined both hash to the same value.
+      themeHash: "",
       gitInfo: null,
       formsData: createFormsData(),
       appPages: [],
@@ -306,11 +440,12 @@ export class App extends PureComponent<Props, State> {
       // true as well for consistency.
       hideTopBar: true,
       hideSidebarNav: true,
-      hideColoredLine: false,
       expandSidebarNav: false,
       toolbarMode: Config.ToolbarMode.MINIMAL,
       latestRunTime: performance.now(),
       fragmentIdsThisRun: [],
+      scriptRunFinishedSequence: 0,
+      scriptRunFinishedFragmentIds: [],
       // Information sent from the host
       isOwner: false,
       hostMenuItems: [],
@@ -318,12 +453,19 @@ export class App extends PureComponent<Props, State> {
       hostHideSidebarNav: false,
       sidebarChevronDownshift: 0,
       pageLinkBaseUrl: "",
-      queryParams: "",
+      // Initialize from URL so bound widget params from shared links are
+      // preserved on first page navigation (before handlePageInfoChanged fires).
+      queryParams: window.location?.search?.replace(/^\?/, "") ?? "",
       deployedAppMetadata: {},
       libConfig: {},
       appConfig: {},
-      autoReruns: [],
       inputsDisabled: false,
+      navigationPosition: Navigation.Position.SIDEBAR,
+      scriptChangedOnDisk: false,
+      showSkillsNudge: false,
+      recommendSkillsInstall: false,
+      skillsInstalledThisSession: false,
+      skillsInstallFailedThisSession: false,
     }
 
     this.connectionManager = null
@@ -332,6 +474,11 @@ export class App extends PureComponent<Props, State> {
       sendRerunBackMsg: this.sendRerunBackMsg,
       formsDataChanged: formsData => this.setState({ formsData }),
     })
+
+    // Sync widget URL changes to App state for page navigation preservation.
+    this.widgetMgr.setQueryParamsChangeHandler(
+      this.handleQueryParamsFromWidget
+    )
 
     this.hostCommunicationMgr = new HostCommunicationManager({
       streamlitExecutionStartedAt: props.streamlitExecutionStartedAt,
@@ -345,7 +492,7 @@ export class App extends PureComponent<Props, State> {
         this.setState({ inputsDisabled })
       },
       themeChanged: this.handleThemeMessage,
-      pageChanged: this.onPageChange,
+      pageChanged: pageScriptHash => this.onPageChange(pageScriptHash),
       isOwnerChanged: isOwner => this.setState({ isOwner }),
       fileUploadClientConfigChanged: config => {
         if (this.endpoints.setFileUploadClientConfig !== undefined) {
@@ -385,6 +532,7 @@ export class App extends PureComponent<Props, State> {
         this.connectionManager?.disconnect()
         this.connectionManager = null
       },
+      printApp: this.printCallback,
     })
 
     this.endpoints = new DefaultStreamlitEndpoints({
@@ -429,6 +577,21 @@ export class App extends PureComponent<Props, State> {
       this.onPageIconChanged
     )
 
+    this.backendOperationClient = new BackendOperationClient({
+      sendRequest: request => {
+        // Check connection before sending to fail fast instead of timing out
+        if (!this.isServerConnected() || !this.sessionInfo.isSet) {
+          throw new Error(
+            "Cannot send backend operation request: not connected to server"
+          )
+        }
+        const backMsg = new BackMsg({ backendOperationRequest: request })
+        backMsg.type = "backendOperationRequest"
+        this.sendBackMsg(backMsg)
+      },
+      getSessionId: () => this.sessionInfo.current.sessionId,
+    })
+
     window.streamlitDebug = {
       clearForwardMsgCache: this.debugClearForwardMsgCache,
       disconnectWebsocket: this.debugDisconnectWebsocket,
@@ -436,8 +599,73 @@ export class App extends PureComponent<Props, State> {
     }
   }
 
+  private applyInitialHostConfig(): void {
+    // Apply window host configuration early when bypass mode is enabled.
+    //
+    // When bypass is enabled: WebSocket connects immediately (before host-config endpoint),
+    // so we need to apply window config early to enable host communication & apply app/lib configs
+    // for the first render.
+    //
+    // When bypass is disabled: WebSocket waits for host-config endpoint anyway,
+    // so window config will be applied during reconciliation in onHostConfigResp.
+    //
+    // This ensures we only set state when necessary and keeps the logic clear:
+    // - Bypass path: Apply ONLY provided window config early, reconcile when endpoint responds
+    // - Default path: Wait for endpoint, apply reconciled config once
+    //
+    // Note: We only set values that are explicitly provided. Components
+    // are designed to handle undefined config values gracefully.
+    // The endpoint response will fill in any missing values during reconciliation.
+    if (!isHostConfigBypassEnabled()) {
+      return
+    }
+
+    // isHostConfigBypassEnabled() guarantees HOST_CONFIG exists and has valid
+    // allowedOrigins (non-empty array) and useExternalAuthToken (boolean)
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const hostConfig = StreamlitConfig.HOST_CONFIG!
+
+    // Build AppConfig with only provided fields - don't set defaults
+    // Required fields are guaranteed by isHostConfigBypassEnabled()
+    const appConfig: AppConfig = includeIfDefined<AppConfig>({
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      allowedOrigins: hostConfig.allowedOrigins!,
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      useExternalAuthToken: hostConfig.useExternalAuthToken!,
+      enableCustomParentMessages: hostConfig.enableCustomParentMessages,
+      blockErrorDialogs: hostConfig.blockErrorDialogs,
+    })
+
+    // This can be called again later from onHostConfigResp during reconciliation.
+    // HostCommunicationManager.openHostCommunication is intentionally idempotent,
+    // so repeated setAllowedOrigins calls only update config values.
+    this.hostCommunicationMgr.setAllowedOrigins(appConfig)
+    this.setAppConfig(appConfig)
+
+    // Build LibConfig with only provided fields
+    // Note: Window config does not support deprecated setAnonymousCrossOriginPropertyOnMediaElements.
+    // Use resourceCrossOriginMode instead. The deprecated field is only supported via endpoint.
+    const libConfig: LibConfig = includeIfDefined<LibConfig>({
+      mapboxToken: hostConfig.mapboxToken,
+      disableFullscreenMode: hostConfig.disableFullscreenMode,
+      enforceDownloadInNewTab: hostConfig.enforceDownloadInNewTab,
+      resourceCrossOriginMode: hostConfig.resourceCrossOriginMode,
+    })
+
+    if (Object.keys(libConfig).length > 0) {
+      this.setLibConfig(libConfig)
+    }
+
+    // Apply metrics config if provided
+    if (hostConfig.metricsUrl !== undefined) {
+      this.metricsMgr.setMetricsConfig(hostConfig.metricsUrl)
+    }
+  }
+
   initializeConnectionManager(): void {
     this.isInitializingConnectionManager = true
+
+    this.applyInitialHostConfig()
 
     this.connectionManager = new ConnectionManager({
       getLastSessionId: () => this.sessionInfo.last?.sessionId,
@@ -460,7 +688,17 @@ export class App extends PureComponent<Props, State> {
           source,
         })
       },
-      onHostConfigResp: (response: IHostConfigResponse) => {
+      onHostConfigResp: (response: IHostConfigProperties) => {
+        // Reconcile window config values with endpoint response.
+        // All provided window config values take precedence over endpoint values:
+        // AppConfig: allowedOrigins, useExternalAuthToken, enableCustomParentMessages, blockErrorDialogs
+        // LibConfig: mapboxToken, disableFullscreenMode, enforceDownloadInNewTab, resourceCrossOriginMode
+        // MetricsConfig: metricsUrl
+        const reconciledConfig = reconcileHostConfigValues(
+          StreamlitConfig.HOST_CONFIG,
+          response
+        )
+
         const {
           allowedOrigins,
           useExternalAuthToken,
@@ -470,7 +708,9 @@ export class App extends PureComponent<Props, State> {
           enforceDownloadInNewTab,
           metricsUrl,
           blockErrorDialogs,
-        } = response
+          setAnonymousCrossOriginPropertyOnMediaElements,
+          resourceCrossOriginMode,
+        } = reconciledConfig
 
         const appConfig: AppConfig = {
           allowedOrigins,
@@ -478,19 +718,30 @@ export class App extends PureComponent<Props, State> {
           enableCustomParentMessages,
           blockErrorDialogs,
         }
+
         const libConfig: LibConfig = {
           mapboxToken,
           disableFullscreenMode,
           enforceDownloadInNewTab,
+          // Use resourceCrossOriginMode if provided, otherwise fall back to
+          // deprecated setAnonymousCrossOriginPropertyOnMediaElements (if true, use "anonymous")
+          resourceCrossOriginMode:
+            resourceCrossOriginMode ??
+            (setAnonymousCrossOriginPropertyOnMediaElements
+              ? "anonymous"
+              : undefined),
         }
 
         // Set the metrics configuration:
         this.metricsMgr.setMetricsConfig(metricsUrl)
-        // Set the allowed origins configuration for the host communication:
+        // Set the allowed origins configuration for the host communication.
+        // This is called even in bypass mode where applyInitialHostConfig may have
+        // already called setAllowedOrigins. HostCommunicationManager handles this
+        // safely by making openHostCommunication idempotent.
         this.hostCommunicationMgr.setAllowedOrigins(appConfig)
         // Set the streamlit-app specific config settings in AppContext:
         this.setAppConfig(appConfig)
-        // Set the streamlit-lib specific config settings in LibContext:
+        // Set the streamlit-lib specific config settings in LibConfigContext:
         this.setLibConfig(libConfig)
       },
     })
@@ -522,6 +773,7 @@ export class App extends PureComponent<Props, State> {
           const taggedEls = document.querySelectorAll("[data-iframe-height]")
           // Use ceil to avoid fractional pixels creating scrollbars.
           const lowestBounds = Array.from(taggedEls).map(el =>
+            // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
             Math.ceil(el.getBoundingClientRect().bottom)
           )
 
@@ -564,8 +816,7 @@ export class App extends PureComponent<Props, State> {
             ScriptRunState.RUNNING,
             ScriptRunState.NOT_RUNNING
           )
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        } catch (err) {
+        } catch {
           // It's okay if this fails, the `measure` call is for debugging/profiling
         }
       }
@@ -627,19 +878,25 @@ export class App extends PureComponent<Props, State> {
 
   showError(
     title: string,
-    errorMarkdown: string,
+    errorDetails: ErrorDetails,
     dialogType:
       | DialogType.WARNING
       | DialogType.CONNECTION_ERROR = DialogType.WARNING
   ): void {
-    LOG.error(errorMarkdown)
+    LOG.error(errorDetails.message)
+
     const newDialog: WarningProps | ConnectionErrorProps = {
       type: dialogType,
       title,
-      msg: <StreamlitMarkdown source={errorMarkdown} allowHTML={false} />,
+      msg: (
+        <DialogErrorMessage
+          message={errorDetails.message}
+          codeBlock={errorDetails.codeBlock}
+        />
+      ),
       onClose: () => {},
     }
-    this.maybeShowErrorDialog(newDialog, errorMarkdown)
+    this.maybeShowErrorDialog(newDialog, errorDetails.message)
   }
 
   showDeployError = (
@@ -665,8 +922,8 @@ export class App extends PureComponent<Props, State> {
     let currentStreamlitVersion: string | undefined = undefined
 
     if (
-      window.__streamlit
-        ?.ENABLE_RELOAD_BASED_ON_HARDCODED_STREAMLIT_VERSION === true
+      StreamlitConfig.ENABLE_RELOAD_BASED_ON_HARDCODED_STREAMLIT_VERSION ===
+      true
     ) {
       currentStreamlitVersion = PACKAGE_METADATA.version
     } else if (this.sessionInfo.isSet) {
@@ -680,19 +937,23 @@ export class App extends PureComponent<Props, State> {
         notNullOrUndefined(environmentInfo) &&
         notNullOrUndefined(environmentInfo.streamlitVersion)
       ) {
-        return currentStreamlitVersion != environmentInfo.streamlitVersion
+        return currentStreamlitVersion !== environmentInfo.streamlitVersion
       }
     }
 
     return false
   }
 
+  /**
+   * Handles theme changes from host communication.
+   */
   handleThemeMessage = (
     themeName?: PresetThemeName,
-    theme?: ICustomThemeConfig
+    theme?: CustomThemeConfig.$Properties
   ): void => {
     const [, lightTheme, darkTheme] = createPresetThemes()
     const isUsingPresetTheme = isPresetTheme(this.props.theme.activeTheme)
+
     if (themeName === lightTheme.name && isUsingPresetTheme) {
       this.props.theme.setTheme(lightTheme)
     } else if (themeName === darkTheme.name && isUsingPresetTheme) {
@@ -701,7 +962,6 @@ export class App extends PureComponent<Props, State> {
       this.props.theme.setImportedTheme(theme)
     }
   }
-
   /**
    * Called by ConnectionManager when our connection state changes
    */
@@ -712,12 +972,20 @@ export class App extends PureComponent<Props, State> {
 
     if (newState === ConnectionState.CONNECTED) {
       LOG.info("Reconnected to server.")
+      // Reset the connection error dismissed state when we reconnect
+      if (this.state.connectionErrorDismissed) {
+        this.setState({ connectionErrorDismissed: false })
+      }
+
       // We request a script rerun if:
       //   1. this is the first time we establish a websocket connection to the
       //      server, or
       //   2. our last script run attempt was interrupted by the websocket
       //      connection dropping, or
       //   3. the host explicitly requested a reconnect (we trigger scriptRunState to be RERUN_REQUESTED)
+      //   4. there is an indication that the script is using fragments (fragments in last run or auto-rerun),
+      //      which might need a rerun to be reinitialized if a new app session got created.
+
       const lastRunWasInterrupted =
         this.state.scriptRunState === ScriptRunState.RUNNING
       const wasRerunRequested =
@@ -726,7 +994,11 @@ export class App extends PureComponent<Props, State> {
       if (
         !this.sessionInfo.last ||
         lastRunWasInterrupted ||
-        wasRerunRequested
+        wasRerunRequested ||
+        // Script is using fragments (fragments in last run or
+        // fragment auto-reruns configured):
+        this.state.fragmentIdsThisRun.length > 0 ||
+        this.autoRerunIntervals.size > 0
       ) {
         LOG.info("Requesting a script run.")
         this.widgetMgr.sendUpdateWidgetsMessage(undefined)
@@ -753,6 +1025,9 @@ export class App extends PureComponent<Props, State> {
       if (this.sessionInfo.isSet) {
         this.sessionInfo.disconnect()
       }
+
+      // Clean up pending backend operation requests on disconnect
+      this.backendOperationClient.cleanup()
     }
 
     if (this.isInitializingConnectionManager) {
@@ -761,7 +1036,7 @@ export class App extends PureComponent<Props, State> {
       // The setState will be applied in the expected render cycle in this case.
       this.setState({ connectionState: newState })
     } else {
-      /* eslint-disable-next-line @eslint-react/dom/no-flush-sync --
+      /* eslint-disable-next-line @eslint-react/dom-no-flush-sync --
        * We are using `flushSync` here because there is code that expects every
        * state to be observed. With React batched updates, it is possible that
        * multiple `connectionState` changes are applied in 1 render cycle, leading
@@ -774,7 +1049,7 @@ export class App extends PureComponent<Props, State> {
     }
   }
 
-  handleGitInfoChanged = (gitInfo: IGitInfo): void => {
+  handleGitInfoChanged = (gitInfo: GitInfo.$Properties): void => {
     this.setState({
       gitInfo,
     })
@@ -799,11 +1074,20 @@ export class App extends PureComponent<Props, State> {
   handleMessage = (msgProto: ForwardMsg): void => {
     // We don't have an immutableProto here, so we can't use
     // the dispatchOneOf helper
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    const dispatchProto = (obj: any, name: string, funcs: any): any => {
-      const whichOne = obj[name]
+
+    const dispatchProto = (
+      obj: ForwardMsg,
+      name: string,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
+      funcs: Record<string, (value: any) => void>
+    ): void => {
+      const whichOne = (obj as unknown as Record<string, unknown>)[
+        name
+      ] as string
       if (whichOne in funcs) {
-        return funcs[whichOne](obj[whichOne])
+        return funcs[whichOne](
+          (obj as unknown as Record<string, unknown>)[whichOne]
+        )
       }
       throw new Error(`Cannot handle ${name} "${whichOne}".`)
     }
@@ -818,14 +1102,13 @@ export class App extends PureComponent<Props, State> {
         delta: (deltaMsg: Delta) =>
           this.handleDeltaMsg(
             deltaMsg,
-            msgProto.metadata as ForwardMsgMetadata
+            msgProto.metadata as ForwardMsgMetadata,
+            msgProto.hash
           ),
         pageConfigChanged: (pageConfig: PageConfig) =>
           this.handlePageConfigChanged(pageConfig),
         pageInfoChanged: (pageInfo: PageInfo) =>
           this.handlePageInfoChanged(pageInfo),
-        // Deprecated protobuf option as navigation will always inform us of pages
-        pagesChanged: (_pagesChangedMsg: PagesChanged) => {},
         pageNotFound: (pageNotFound: PageNotFound) =>
           this.handlePageNotFound(pageNotFound),
         gitInfoChanged: (gitInfo: GitInfo) =>
@@ -835,6 +1118,8 @@ export class App extends PureComponent<Props, State> {
         pageProfile: (pageProfile: PageProfile) =>
           this.handlePageProfileMsg(pageProfile),
         autoRerun: (autoRerun: AutoRerun) => this.handleAutoRerun(autoRerun),
+        stopAutoRerun: (stopAutoRerun: StopAutoRerun) =>
+          this.handleStopAutoRerun(stopAutoRerun),
         fileUrlsResponse: (fileURLsResponse: FileURLsResponse) =>
           this.uploadClient.onFileURLsResponse(fileURLsResponse),
         parentMessage: (parentMessage: ParentMessage) =>
@@ -853,11 +1138,14 @@ export class App extends PureComponent<Props, State> {
             window.location.href = authRedirect.url
           }
         },
+        heartbeatAck: () => this.handleHeartbeatAck(),
+        backendOperationResponse: (response: BackendOperationResponse) =>
+          this.backendOperationClient.onResponse(response),
       })
     } catch (e) {
       const err = ensureError(e)
       LOG.error(err)
-      this.showError("Bad message format", err.message)
+      this.showError("Bad message format", { message: err.message })
     }
   }
 
@@ -874,8 +1162,14 @@ export class App extends PureComponent<Props, State> {
   }
 
   handlePageConfigChanged = (pageConfig: PageConfig): void => {
-    const { title, favicon, layout, initialSidebarState, menuItems } =
-      pageConfig
+    const {
+      title,
+      favicon,
+      layout,
+      initialSidebarState,
+      initialSidebarWidth,
+      menuItems,
+    } = pageConfig
 
     this.appNavigation.handlePageConfigChanged(pageConfig)
 
@@ -893,8 +1187,11 @@ export class App extends PureComponent<Props, State> {
     }
 
     // Only change layout/sidebar when the page config has changed.
-    // This preserves the user's previous choice, and prevents extra re-renders.
-    if (layout !== this.state.layout) {
+    // This preserves the user's previous choice/default, and prevents extra re-renders.
+    if (
+      layout !== this.state.layout &&
+      layout !== PageConfig.Layout.LAYOUT_UNSET
+    ) {
       this.setState((prevState: State) => ({
         layout,
         userSettings: {
@@ -903,9 +1200,28 @@ export class App extends PureComponent<Props, State> {
         },
       }))
     }
-    if (initialSidebarState !== this.state.initialSidebarState) {
+
+    if (
+      initialSidebarState !== this.state.initialSidebarState &&
+      initialSidebarState !== PageConfig.SidebarState.SIDEBAR_UNSET
+    ) {
       this.setState(() => ({
         initialSidebarState,
+      }))
+    }
+
+    // Extract pixelWidth from SidebarWidthConfig message
+    const sidebarWidthPixels =
+      initialSidebarWidth?.pixelWidth !== undefined
+        ? initialSidebarWidth.pixelWidth
+        : undefined
+
+    if (
+      notNullOrUndefined(sidebarWidthPixels) &&
+      sidebarWidthPixels !== this.state.initialSidebarWidth
+    ) {
+      this.setState(() => ({
+        initialSidebarWidth: sidebarWidthPixels,
       }))
     }
 
@@ -924,11 +1240,31 @@ export class App extends PureComponent<Props, State> {
     }
   }
 
+  /** Callback for WidgetStateManager when bound widgets update URL params. */
+  handleQueryParamsFromWidget = (queryString: string): void => {
+    this.setState({ queryParams: queryString })
+
+    this.hostCommunicationMgr.sendMessageToHost({
+      type: "SET_QUERY_PARAM",
+      queryParams: queryString ? `?${queryString}` : "",
+    })
+  }
+
   handlePageInfoChanged = (pageInfo: PageInfo): void => {
     const { queryString } = pageInfo
     const targetUrl =
       document.location.pathname + (queryString ? `?${queryString}` : "")
-    window.history.pushState({}, "", targetUrl)
+    const currentSearch = document.location.search.replace(/^\?/, "")
+
+    // `pushState` always adds a history entry, even when the resulting URL is
+    // identical, so reruns that re-assign the same query params would otherwise
+    // fill the back stack with no-op entries. React state and the host message
+    // below are still updated so embeds stay in sync.
+    if (queryString !== currentSearch) {
+      window.history.pushState({}, "", targetUrl)
+    }
+
+    this.setState({ queryParams: queryString })
 
     this.hostCommunicationMgr.sendMessageToHost({
       type: "SET_QUERY_PARAM",
@@ -940,7 +1276,9 @@ export class App extends PureComponent<Props, State> {
     const errMsg = pageName
       ? `You have requested page /${pageName}, but no corresponding file was found in the app's pages/ directory`
       : "The page that you have requested does not seem to exist"
-    this.showError("Page not found", `${errMsg}. Running the app's main page.`)
+    this.showError("Page not found", {
+      message: `${errMsg}. Running the app's main page.`,
+    })
   }
 
   handlePageNotFound = (pageNotFound: PageNotFound): void => {
@@ -956,8 +1294,9 @@ export class App extends PureComponent<Props, State> {
     )
   }
 
-  handleNavigation = (navigationMsg: Navigation): void => {
-    this.maybeSetState(this.appNavigation.handleNavigation(navigationMsg))
+  handleNavigation = (navigation: Navigation): void => {
+    this.setState({ navigationPosition: navigation.position })
+    this.maybeSetState(this.appNavigation.handleNavigation(navigation))
   }
 
   handlePageProfileMsg = (pageProfile: PageProfile): void => {
@@ -978,14 +1317,47 @@ export class App extends PureComponent<Props, State> {
   }
 
   handleAutoRerun = (autoRerun: AutoRerun): void => {
-    const intervalId = setInterval(() => {
-      this.widgetMgr.sendUpdateWidgetsMessage(autoRerun.fragmentId, true)
-    }, autoRerun.interval * 1000)
+    const { fragmentId } = autoRerun
 
-    this.setState((prevState: State) => {
-      return {
-        autoReruns: [...prevState.autoReruns, intervalId],
-      }
+    // Auto-reruns are always scoped to a fragment, so we expect a non-empty
+    // fragment id. Guard against an empty id (which protobuf produces when the
+    // field is unset): using it as a map key would collide, so a second empty-id
+    // registration would silently cancel the first. Skip it instead.
+    if (!fragmentId) {
+      LOG.warn("Ignoring auto-rerun message without a fragment id.")
+      return
+    }
+
+    const { interval } = autoRerun
+
+    // A `run_every` fragment re-registers its auto-rerun every time an ancestor
+    // re-renders it (a fragment-only rerun doesn't reset timers). If a timer for
+    // this fragment is already running with the same interval, leave it alone:
+    // restarting it would reset the countdown, so ancestor reruns firing more
+    // often than `run_every` could delay or starve the fragment's auto-rerun.
+    // We only (re)start the timer when there isn't one yet or the interval
+    // changed, which also avoids stacking duplicate intervals.
+    if (this.autoRerunIntervals.get(fragmentId)?.interval === interval) {
+      return
+    }
+
+    this.clearAutoRerunInterval(fragmentId)
+
+    const timer = setInterval(() => {
+      this.widgetMgr.sendUpdateWidgetsMessage(fragmentId, true)
+    }, interval * 1000)
+
+    this.autoRerunIntervals.set(fragmentId, { timer, interval })
+  }
+
+  /**
+   * Handler for ForwardMsg.stopAutoRerun messages. The server sends this when
+   * it evicts fragments (e.g. a nested ``run_every`` fragment whose ancestor
+   * stopped rendering it), so we cancel their pending auto-rerun timers.
+   */
+  handleStopAutoRerun = (stopAutoRerun: StopAutoRerun): void => {
+    stopAutoRerun.fragmentIds.forEach(fragmentId => {
+      this.clearAutoRerunInterval(fragmentId)
     })
   }
 
@@ -1033,6 +1405,10 @@ export class App extends PureComponent<Props, State> {
         },
         dialog,
         scriptRunState,
+        // Reset scriptChangedOnDisk when script starts running
+        scriptChangedOnDisk: statusChangeProto.scriptIsRunning
+          ? false
+          : prevState.scriptChangedOnDisk,
       }
     })
   }
@@ -1054,6 +1430,8 @@ export class App extends PureComponent<Props, State> {
         newDialog,
         sessionEvent.scriptCompilationException?.message ?? "No message"
       )
+    } else if (sessionEvent.type === "scriptChangedOnDisk") {
+      this.setState({ scriptChangedOnDisk: true })
     }
   }
 
@@ -1070,13 +1448,15 @@ export class App extends PureComponent<Props, State> {
   ): void => {
     const baseUriParts = this.getBaseUriParts()
 
-    // TODO(vdonato): Support the situation where window.__streamlit.BACKEND_BASE_URL
-    // is set, so the Streamlit backend URL is set to be different from where
-    // we loaded index.html. Until this is done, the browser's back/forward
-    // buttons may not work correctly with multipage apps when
-    // window.__streamlit.BACKEND_BASE_URL is set.
-    if (baseUriParts && !window.__streamlit?.BACKEND_BASE_URL) {
-      const { pathname } = baseUriParts
+    if (baseUriParts) {
+      let pathname
+      if (StreamlitConfig.MAIN_PAGE_BASE_URL) {
+        pathname = parseUriIntoBaseParts(
+          StreamlitConfig.MAIN_PAGE_BASE_URL
+        ).pathname
+      } else {
+        pathname = baseUriParts.pathname
+      }
 
       const prevPageNameInPath = extractPageNameFromPathName(
         document.location.pathname,
@@ -1090,7 +1470,8 @@ export class App extends PureComponent<Props, State> {
       // See https://github.com/streamlit/streamlit/pull/6271#issuecomment-1465090690 for the discussion.
       if (prevPageName !== newPageName) {
         const pagePath = isViewingMainPage ? "" : newPageName
-        const queryString = preserveEmbedQueryParams()
+        const queryString =
+          this.state.queryParams || preserveEmbedQueryParams()
         const qs = queryString ? `?${queryString}` : ""
 
         const basePathPrefix = pathname === "/" ? "" : pathname
@@ -1157,6 +1538,8 @@ export class App extends PureComponent<Props, State> {
         allowRunOnSave: config.allowRunOnSave,
         hideTopBar: config.hideTopBar,
         toolbarMode: config.toolbarMode,
+        showErrorLinks: config.showErrorLinks,
+        disableDataExport: config.disableDataExport,
         latestRunTime: performance.now(),
         mainScriptHash,
         // If we're here, the fragmentIdsThisRun variable is always the
@@ -1165,8 +1548,14 @@ export class App extends PureComponent<Props, State> {
       })
       this.maybeSetState(this.appNavigation.handleNewSession(newSessionProto))
 
-      // Set the favicon to its default values
-      this.onPageIconChanged(`${import.meta.env.BASE_URL}favicon.png`)
+      // Only set default favicon once per page load, and only if no custom icon has been set
+      if (
+        !this.appNavigation.hasSetDefaultFavicon &&
+        !this.appNavigation.isPageIconSet
+      ) {
+        this.appNavigation.hasSetDefaultFavicon = true
+        this.onPageIconChanged(`${import.meta.env.BASE_URL}favicon.png`)
+      }
     } else {
       this.setState({
         fragmentIdsThisRun,
@@ -1187,9 +1576,11 @@ export class App extends PureComponent<Props, State> {
       appHash === newSessionHash &&
       prevPageScriptHash === newPageScriptHash
     ) {
-      this.setState({
+      this.setState(prevState => ({
+        // Clear the transient nodes before executing everything else.
+        elements: prevState.elements.clearTransientNodes(fragmentIdsThisRun),
         scriptRunId,
-      })
+      }))
     } else {
       this.clearAppState(
         newSessionHash,
@@ -1221,16 +1612,232 @@ export class App extends PureComponent<Props, State> {
     // Protobuf typing cannot handle complex types, so we need to cast to what
     // we know it should be
     this.handleSessionStatusChanged(initialize.sessionStatus as SessionStatus)
+
+    // Show the framework "install skills" nudge when the server recommends it
+    // (agent present, skills not installed, not headless, no server-side marker)
+    // and we're on localhost, not embedded, not permanently dismissed, and not
+    // snoozed. Require localStorage: it's where a snooze / "don't show again" is
+    // remembered browser-side, so if it's unavailable we fail closed and skip
+    // the nudge rather than show one the user can't make stick. Skip embedded
+    // (?embed=true) apps: they're meant to be chromeless, so a CTA card pinned
+    // over the host page's content is inappropriate (and the developer can't
+    // act on it inside someone else's page anyway).
+    // Store the server's recommendation so the in-error "install skills"
+    // callout (a separate, non-dismissable surface) can gate on it every
+    // render, independent of the one-shot toast-impression logic below.
+    this.setState({
+      recommendSkillsInstall: Boolean(initialize.recommendSkillsInstall),
+    })
+
+    if (
+      initialize.recommendSkillsInstall &&
+      isLocalhost() &&
+      !isEmbed() &&
+      localStorageAvailable() &&
+      !isSkillsNudgeDismissed() &&
+      !isSkillsNudgeSnoozed() &&
+      // Don't re-raise the toast for an install this session already settled.
+      // `skillsNudgeShown` below only stops a SECOND showing — a toast skipped
+      // on first connect (snoozed) leaves it false, so a reconnect once the
+      // snooze lapses would raise the toast even though the callout has since
+      // installed, or tried and failed. Failure matters most: the errored
+      // callout is exempt from the eligibility hide (an error report isn't a
+      // transaction that finishes), so without this the toast would appear
+      // beside it — offering the install that just failed, and breaking the
+      // mutual exclusion the two surfaces otherwise keep.
+      !this.state.skillsInstalledThisSession &&
+      !this.state.skillsInstallFailedThisSession &&
+      // `handleInitialization` re-runs on reconnect; show + log the impression
+      // only once per page load so a reconnect can't enqueue a duplicate nudge
+      // or inflate the funnel's numerator.
+      !this.skillsNudgeShown
+    ) {
+      this.skillsNudgeShown = true
+      this.setState({ showSkillsNudge: true })
+      this.trackSkillsNudge("skillsNudgeShown", "toast")
+    } else if (
+      initialize.skillsNudgeSuppressedReason &&
+      !this.skillsNudgeSuppressionReported &&
+      !this.skillsNudgeShown
+    ) {
+      // The nudge was eligible server-side but the server withheld it — because
+      // the browser isn't on a direct-loopback connection (Docker/VM/tunnel),
+      // because a one-click install would only conflict, or because the
+      // eligibility check itself failed. Record the reason once per page load so
+      // suppression is measurable instead of silent, and so a reconnect can't
+      // double-count it. Also skipped once the nudge HAS been shown, since the
+      // funnel treats shown and suppressed as mutually exclusive per session.
+      this.skillsNudgeSuppressionReported = true
+      this.trackSkillsNudge(
+        skillsNudgeSuppressedLabel(initialize.skillsNudgeSuppressedReason),
+        "toast"
+      )
+    }
+  }
+
+  /**
+   * Record a skills-nudge interaction for telemetry. Routed through the
+   * existing ``menuClick`` event (like the deploy button), so it is only sent
+   * when usage stats are enabled. ``surface`` attributes the event to the UI
+   * that emitted it (the nudge ``toast`` vs the in-error ``errorCallout``) so
+   * the shown → installed funnel can be sliced per surface.
+   */
+  private readonly trackSkillsNudge = (
+    label: string,
+    surface: "toast" | "errorCallout"
+  ): void => {
+    this.metricsMgr.enqueue("menuClick", { label, surface })
+  }
+
+  /** Install the bundled skills via a backend operation (no script rerun). */
+  private readonly handleSkillsNudgeInstall = (
+    surface: "toast" | "errorCallout"
+  ): Promise<string | undefined> => {
+    // Both surfaces can be on screen at once (the sticky callout slot lets them
+    // transiently coexist), and each owns its own button. Hand a second clicker
+    // the install already in flight rather than starting another: two concurrent
+    // installs race on the same target tree, and the loser doesn't fail
+    // cleanly — on the symlink path it falls back to a GLOBAL install into the
+    // user's home dir that nobody asked for, and on the copy path it reports
+    // "could not write" for skills that are in fact installed. No second
+    // `skillsNudgeInstall` event either: it's one install, not two attempts.
+    //
+    // This covers one browser client. Two tabs still race, because the guard
+    // that would have to stop that lives in the server's InstallSkillsHandler.
+    //
+    // `surface` is whoever STARTED the install, not whoever joined it, so a
+    // joiner's click lands on the initiator's telemetry and confirmation. In the
+    // one case that reaches this — callout starts, user then clicks the toast —
+    // the toast is dismissed by the success below and the confirmation appears on
+    // the callout. A slightly odd frame in an already-rare race; not worth
+    // threading a second surface through for.
+    if (this.inFlightSkillsInstall) {
+      return this.inFlightSkillsInstall
+    }
+    this.trackSkillsNudge("skillsNudgeInstall", surface)
+    const install = this.backendOperationClient
+      .requestInstallSkills()
+      .then(result => {
+        // The server has re-detected the now-installed skills (it clears its
+        // detection cache), so a later session won't recommend the nudge again
+        // — no need to also write the permanent "don't show again" flag here,
+        // which would conflate "installed" with a permanent opt-out. The card
+        // shows its own success confirmation and auto-dismisses.
+        this.trackSkillsNudge(
+          skillsNudgeInstallSuccessLabel(result.fallbackReason),
+          surface
+        )
+        // Within this session the server won't re-run detection, so suppress
+        // any further install offer (notably the in-error callout, which can
+        // recur on every error) now that skills are installed.
+        this.setState(prevState => ({
+          skillsInstalledThisSession: true,
+          // An install from the in-error callout also clears the proactive
+          // toast if it happens to be up — the two can transiently coexist via
+          // the sticky callout slot — so it can't keep advertising an install
+          // that just completed. A toast-surface install leaves showSkillsNudge
+          // alone so the toast shows its own success confirmation before
+          // self-dismissing via onClose.
+          showSkillsNudge:
+            surface === "errorCallout" ? false : prevState.showSkillsNudge,
+        }))
+        return result.detail ?? undefined
+      })
+      .catch((error: unknown) => {
+        // A dropped or timed-out connection during a long install rejects the
+        // request even though the server install may have completed. Count it
+        // separately — not as a failure, which would over-count the funnel —
+        // and surface a reassuring, retry-friendly message; re-install is
+        // idempotent.
+        if (isSkillsNudgeDroppedConnection(error)) {
+          this.trackSkillsNudge("skillsNudgeInstallDropped", surface)
+          throw new Error(SKILLS_NUDGE_DROPPED_MESSAGE)
+        }
+        // Append the server's machine-readable reason as a label suffix, and
+        // count a safety-gate refusal under its own event rather than as a
+        // failure. See skillsNudgeInstallFailureLabel.
+        this.trackSkillsNudge(skillsNudgeInstallFailureLabel(error), surface)
+        // Stop offering the install on NEW callouts for the rest of the session.
+        // A failure here is a property of the machine (a blocked target, a
+        // read-only dir), not of this error, so every later error would offer the
+        // same doomed install — a fresh red box each time, none of them
+        // dismissable. The callout already showing keeps its Retry, since a
+        // non-idle callout ignores this gate. Deliberately NOT set for a dropped
+        // connection above: that one really is worth retrying.
+        this.setState({ skillsInstallFailedThisSession: true })
+        // Re-throw so the card / callout renders its error state.
+        throw error
+      })
+      // Clear the slot whatever the outcome, so a later Retry (or a genuinely
+      // new install after a dropped connection) isn't handed a settled promise.
+      .finally(() => {
+        this.inFlightSkillsInstall = null
+      })
+    this.inFlightSkillsInstall = install
+    return install
+  }
+
+  /** Toast's Install button — installs and tags telemetry with the toast surface. */
+  private readonly handleToastInstall = (): Promise<string | undefined> => {
+    return this.handleSkillsNudgeInstall("toast")
+  }
+
+  /**
+   * In-error callout's Install button — installs and tags telemetry with the
+   * errorCallout surface. Stable reference so the SkillsInstallContext value
+   * doesn't change every render.
+   */
+  private readonly handleErrorCalloutInstall = (): Promise<
+    string | undefined
+  > => {
+    return this.handleSkillsNudgeInstall("errorCallout")
+  }
+
+  /** Record the in-error callout's impression (tagged with the errorCallout surface). */
+  private readonly handleErrorCalloutShown = (): void => {
+    // Once per page load (see `errorCalloutShown`) so reruns that remount the
+    // error box don't re-log the impression.
+    if (this.errorCalloutShown) {
+      return
+    }
+    this.errorCalloutShown = true
+    this.trackSkillsNudge("skillsNudgeShown", "errorCallout")
+  }
+
+  /** Close (✕): snooze the nudge for ~24h. The card removes itself via onClose. */
+  private readonly handleSkillsNudgeSnooze = (): void => {
+    setSkillsNudgeSnoozed()
+    this.trackSkillsNudge("skillsNudgeSnoozed", "toast")
+  }
+
+  /**
+   * "Don't show again": dismiss permanently by writing both the browser
+   * localStorage flag and the server-side marker, so it won't show again from
+   * either signal. The card removes itself via onClose.
+   */
+  private readonly handleSkillsNudgeDontShowAgain = (): void => {
+    setSkillsNudgeDismissed()
+    // Best-effort durable suppression: the localStorage flag already suppresses
+    // the nudge in this browser, so a failed marker write only means a fresh
+    // browser could see it again — log it rather than failing the dismissal.
+    this.backendOperationClient.requestDismissSkillsNudge().catch(error => {
+      LOG.warn("Failed to persist skills nudge dismissal", error)
+    })
+    this.trackSkillsNudge("skillsNudgeDontShowAgain", "toast")
+  }
+
+  /**
+   * Remove the nudge from view. Called by the nudge card after a snooze /
+   * "Don't show again" and by its post-install auto-dismiss. Only toggles
+   * visibility; the persistence (localStorage / server marker) is handled by
+   * the snooze / don't-show-again / install handlers.
+   */
+  private readonly handleSkillsNudgeClose = (): void => {
+    this.setState({ showSkillsNudge: false })
   }
 
   /**
    * Handler called when the history state changes, e.g. `popstate` event.
-   *
-   * TODO(vdonato): Support the situation where window.__streamlit.BACKEND_BASE_URL
-   * is set, so the Streamlit backend URL is set to be different from where
-   * we loaded index.html. Until this is done, the browser's back/forward
-   * buttons may not work correctly with multipage apps when
-   * window.__streamlit.BACKEND_BASE_URL is set.
    */
   onHistoryChange = (): void => {
     const { currentPageScriptHash } = this.state
@@ -1245,7 +1852,11 @@ export class App extends PureComponent<Props, State> {
     if (isNullOrUndefined(targetAppPage) || (hasAnchor && isSamePage)) {
       return
     }
-    this.onPageChange(targetAppPage.pageScriptHash as string)
+    // Pass preserveQueryParams=true to preserve query params from the URL when
+    // navigating via browser history (back/forward buttons). This ensures that
+    // query params present in the URL after history navigation are sent to the
+    // server on the first script run.
+    this.onPageChange(targetAppPage.pageScriptHash as string, undefined, true)
   }
 
   /**
@@ -1253,8 +1864,6 @@ export class App extends PureComponent<Props, State> {
    */
   setAndSendTheme = (themeConfig: ThemeConfig): void => {
     this.props.theme.setTheme(themeConfig)
-    // Hide the colored line if a custom theme is selected:
-    this.setState({ hideColoredLine: !isPresetTheme(themeConfig) })
     this.hostCommunicationMgr.sendMessageToHost({
       type: "SET_THEME_CONFIG",
       themeInfo: toExportedTheme(themeConfig.emotion),
@@ -1269,10 +1878,17 @@ export class App extends PureComponent<Props, State> {
       return "hash_for_undefined_custom_theme"
     }
 
-    // Hash the sorted representation of the theme input:
-    return hashString(
-      JSON.stringify(themeInput, Object.keys(themeInput).sort())
-    )
+    // Convert to JSON and back to get a plain JS object without protobuf methods/metadata.
+    // JSON.stringify automatically filters out functions and non-enumerable properties.
+    // This ensures we hash only the actual theme data, not the protobuf object structure.
+    const plainObject = JSON.parse(JSON.stringify(themeInput))
+
+    // Recursively sort all keys (including nested objects like sidebar, light, dark)
+    // to ensure consistent hashing regardless of key order
+    const sorted = sortThemeInputKeys(plainObject)
+
+    // Hash the sorted representation
+    return hashString(JSON.stringify(sorted))
   }
 
   processThemeInput(themeInput: CustomThemeConfig): void {
@@ -1284,33 +1900,61 @@ export class App extends PureComponent<Props, State> {
 
     const usingCustomTheme = !isPresetTheme(this.props.theme.activeTheme)
     if (themeInput) {
-      const customTheme = createTheme(CUSTOM_THEME_NAME, themeInput)
-      // For now, users can only add one custom theme.
-      this.props.theme.addThemes([customTheme])
+      // createCustomThemes can return either 1 theme ("Custom Theme")
+      // or 3 themes ("Custom Theme Light", "Custom Theme Dark", and "Custom Theme Auto")
+      const customThemes = createCustomThemes(themeInput)
 
-      const userPreference = getCachedTheme()
-      if (userPreference === null || usingCustomTheme) {
-        // Update the theme to be customTheme either if the user hasn't set a
-        // preference (developer-provided custom themes should be the default
-        // for an app) or if a custom theme is currently active (to ensure that
-        // we pick up any new changes to it).
-        this.setAndSendTheme(customTheme)
+      // Add the new custom themes to the theme manager and remove the preset themes
+      this.props.theme.addThemes(customThemes, { keepPresetThemes: false })
+
+      const mappedTheme = getPreferredTheme(customThemes)
+      if (mappedTheme) {
+        // User has a mappable preference - apply the full server config
+        // while preserving their light/dark selection
+        this.setAndSendTheme(mappedTheme)
+      } else {
+        // No mappable preference - set to default custom theme
+        // This handles cases where:
+        // - No user preference exists (userPreference === null)
+        // - User has a preset theme cached but custom themes are now available
+        // - User has an old custom theme that no longer matches
+        if (customThemes.length > 1) {
+          // When Custom Theme Light & Custom Theme Dark present, we create an auto theme based
+          // on the system preference and set this as the active theme
+          const autoThemeIndex = customThemes.findIndex(
+            theme => theme.name === CUSTOM_THEME_AUTO_NAME
+          )
+          this.setAndSendTheme(customThemes[autoThemeIndex])
+        } else {
+          // Set to singular Custom Theme
+          this.setAndSendTheme(customThemes[0])
+        }
       }
     } else {
       // Remove the custom theme menu option.
       this.props.theme.addThemes([])
 
       if (usingCustomTheme) {
-        // Reset to the auto theme taking into account any host preferences
-        // aka embed query params.
-        this.setAndSendTheme(getHostSpecifiedTheme())
+        const presetThemes = [lightTheme, darkTheme]
+        const mappedTheme = getPreferredTheme(presetThemes)
+
+        if (mappedTheme) {
+          // User had a custom theme preference that maps to a preset - preserve their choice
+          this.setAndSendTheme(mappedTheme)
+        } else {
+          // Reset to the auto theme
+          this.setAndSendTheme(createAutoTheme())
+        }
       }
     }
 
-    if (themeInput?.fontFaces && themeInput.fontFaces.length > 0) {
-      // If font faces are provided, we need to set the imported theme with the theme
-      // manager to make the font faces available.
-      this.props.theme.setImportedTheme(themeInput)
+    if (
+      (themeInput?.fontFaces && themeInput.fontFaces.length > 0) ||
+      (themeInput?.fontSources && themeInput.fontSources.length > 0)
+    ) {
+      // If font faces or font sources are provided, we need to set the imported
+      // theme with the theme manager to make the fonts available.
+      this.props.theme.setFonts(themeInput)
     }
   }
 
@@ -1319,6 +1963,17 @@ export class App extends PureComponent<Props, State> {
    * @param status the ScriptFinishedStatus that the script finished with
    */
   handleScriptFinished(status: ForwardMsg.ScriptFinishedStatus): void {
+    // Bump a monotonic counter and snapshot the fragment IDs of the run that
+    // just finished, so widgets (e.g. ChatInput) can react to the completion of
+    // the specific full-script or fragment run they triggered. This runs before
+    // the status-conditional handling below on purpose: the counter must bump
+    // for every finish status (including FINISHED_WITH_COMPILE_ERROR) so widgets
+    // re-enable even when a run ends with a compilation error.
+    this.setState(prevState => ({
+      scriptRunFinishedSequence: prevState.scriptRunFinishedSequence + 1,
+      scriptRunFinishedFragmentIds: prevState.fragmentIdsThisRun,
+    }))
+
     if (
       status === ForwardMsg.ScriptFinishedStatus.FINISHED_SUCCESSFULLY ||
       status === ForwardMsg.ScriptFinishedStatus.FINISHED_EARLY_FOR_RERUN ||
@@ -1355,16 +2010,7 @@ export class App extends PureComponent<Props, State> {
             }
           },
           () => {
-            // Tell the WidgetManager which widgets still exist. It will remove
-            // widget state for widgets that have been removed.
-            const activeWidgetIds = new Set(
-              // TODO: Update to match React best practices
-              // eslint-disable-next-line @eslint-react/no-access-state-in-setstate
-              Array.from(this.state.elements.getElements())
-                .map(element => getElementId(element))
-                .filter(notUndefined)
-            )
-            this.widgetMgr.removeInactive(activeWidgetIds)
+            this.removeInactiveWidgetState()
           }
         )
       }
@@ -1418,16 +2064,27 @@ export class App extends PureComponent<Props, State> {
         }
       },
       () => {
-        const activeWidgetIds = new Set(
-          // TODO: Update to match React best practices
-          // eslint-disable-next-line @eslint-react/no-access-state-in-setstate
-          Array.from(this.state.elements.getElements())
-            .map(element => getElementId(element))
-            .filter(notUndefined)
-        )
-        this.widgetMgr.removeInactive(activeWidgetIds)
+        this.removeInactiveWidgetState()
       }
     )
+  }
+
+  /**
+   * Remove widget and element state for items no longer present in the
+   * current render tree. Called from setState callbacks where this.state
+   * access is a false positive (the callback runs after the update is
+   * committed). Converting App to a functional component would let us
+   * use useEffect and remove this suppress entirely.
+   */
+  private removeInactiveWidgetState(): void {
+    const { elements, blockIds } = this.state.elements.getActiveIds()
+    const activeIds = new Set([
+      ...Array.from(elements)
+        .map(element => getElementId(element))
+        .filter(notUndefined),
+      ...blockIds,
+    ])
+    this.widgetMgr.removeInactive(activeIds)
   }
 
   /**
@@ -1441,7 +2098,15 @@ export class App extends PureComponent<Props, State> {
    * Closes the upload dialog if it's open.
    */
   closeDialog = (): void => {
-    this.setState({ dialog: undefined })
+    // If we're closing a connection error dialog, mark it as dismissed
+    if (this.state.dialog?.type === DialogType.CONNECTION_ERROR) {
+      this.setState({
+        dialog: undefined,
+        connectionErrorDismissed: true,
+      })
+    } else {
+      this.setState({ dialog: undefined })
+    }
   }
 
   /**
@@ -1460,6 +2125,13 @@ export class App extends PureComponent<Props, State> {
     }
   }
 
+  handleRunOnSaveChange = (newRunOnSave: boolean): void => {
+    this.saveSettings({
+      ...this.state.userSettings,
+      runOnSave: newRunOnSave,
+    })
+  }
+
   /**
    * Update pendingElementsBuffer with the given Delta and set up a timer to
    * update state.elements. This buffer allows us to process Deltas quickly
@@ -1467,14 +2139,16 @@ export class App extends PureComponent<Props, State> {
    */
   handleDeltaMsg = (
     deltaMsg: Delta,
-    metadataMsg: ForwardMsgMetadata
+    metadataMsg: ForwardMsgMetadata,
+    elementHash?: string
   ): void => {
     // Use functional state update to ensure we have latest elements
     this.setState(prevState => ({
       elements: prevState.elements.applyDelta(
         prevState.scriptRunId,
         deltaMsg,
-        metadataMsg
+        metadataMsg,
+        elementHash
       ),
     }))
   }
@@ -1522,10 +2196,21 @@ export class App extends PureComponent<Props, State> {
    * lead to issues, e.g. when a new full app-rerun session is started or the active page changed.
    */
   cleanupAutoReruns = (): void => {
-    this.state.autoReruns.forEach((value: NodeJS.Timeout) => {
-      clearInterval(value)
+    this.autoRerunIntervals.forEach(({ timer }) => {
+      clearInterval(timer)
     })
-    this.setState({ autoReruns: [] })
+    this.autoRerunIntervals.clear()
+  }
+
+  /**
+   * Clear the auto-rerun interval for a single fragment, if one exists.
+   */
+  private clearAutoRerunInterval(fragmentId: string): void {
+    const existing = this.autoRerunIntervals.get(fragmentId)
+    if (existing !== undefined) {
+      clearInterval(existing.timer)
+      this.autoRerunIntervals.delete(fragmentId)
+    }
   }
 
   /**
@@ -1579,7 +2264,11 @@ export class App extends PureComponent<Props, State> {
     )
   }
 
-  onPageChange = (pageScriptHash: string): void => {
+  onPageChange = (
+    pageScriptHash: string,
+    queryString?: string,
+    preserveQueryParams?: boolean
+  ): void => {
     const { elements, mainScriptHash } = this.state
 
     // We are about to change the page, so clear all auto reruns
@@ -1603,7 +2292,10 @@ export class App extends PureComponent<Props, State> {
     this.sendRerunBackMsg(
       this.widgetMgr.getActiveWidgetStates(activeWidgetIds),
       undefined,
-      pageScriptHash
+      pageScriptHash,
+      undefined,
+      queryString,
+      preserveQueryParams
     )
   }
 
@@ -1620,7 +2312,9 @@ export class App extends PureComponent<Props, State> {
     widgetStates?: WidgetStates,
     fragmentId?: string,
     pageScriptHash?: string,
-    isAutoRerun?: boolean
+    isAutoRerun?: boolean,
+    queryStringOverride?: string,
+    preserveQueryParams?: boolean
   ): void => {
     const baseUriParts = this.getBaseUriParts()
     if (!baseUriParts) {
@@ -1633,8 +2327,7 @@ export class App extends PureComponent<Props, State> {
     }
 
     const { currentPageScriptHash } = this.state
-    const { pathname } = baseUriParts
-    let queryString = this.getQueryString()
+    let queryString = queryStringOverride ?? this.getQueryString()
     let pageName = ""
 
     const contextInfo = {
@@ -1643,17 +2336,23 @@ export class App extends PureComponent<Props, State> {
       locale: getLocaleLanguage(),
       url: getUrl(),
       isEmbedded: isEmbed(),
+      colorScheme: this.getThemeColorScheme(),
     }
 
     if (pageScriptHash) {
       // The user specified exactly which page to run. We can simply use this
       // value in the BackMsg we send to the server.
-      if (pageScriptHash != currentPageScriptHash) {
-        // clear non-embed query parameters within a page change
-        queryString = preserveEmbedQueryParams()
+      if (pageScriptHash !== currentPageScriptHash && !preserveQueryParams) {
+        // When switching pages, preserve only embed params and widget-bound params.
+        // All other params (like ?foo=bar) should be cleared.
+        const filteredParams = this.widgetMgr.filterParamsForPageChange(
+          preserveEmbedQueryParams()
+        )
+        queryString = getQueryString(queryStringOverride, filteredParams)
+        this.setState({ queryParams: queryString })
         this.hostCommunicationMgr.sendMessageToHost({
           type: "SET_QUERY_PARAM",
-          queryParams: queryString,
+          queryParams: queryString ? `?${queryString}` : "",
         })
       }
     } else if (currentPageScriptHash) {
@@ -1661,17 +2360,16 @@ export class App extends PureComponent<Props, State> {
       // click the "Rerun" button in the main menu. In this case, we
       // rerun the current page.
       pageScriptHash = currentPageScriptHash
-    } else if (window.__streamlit?.BACKEND_BASE_URL) {
-      // We currently don't support navigating directly to a subpage of a
-      // multipage app when setting the backend URL of an app to be a different
-      // location from where we load index.html. In this case, we set both
-      // pageName and pageScriptHash to the empty string, which will result in
-      // the app's main page being run.
-      // TODO(vdonato): Support this case or decide we can do without it when
-      // setting a different backend URL.
-      pageName = ""
-      pageScriptHash = ""
     } else {
+      let pathname
+      if (StreamlitConfig.MAIN_PAGE_BASE_URL) {
+        pathname = parseUriIntoBaseParts(
+          StreamlitConfig.MAIN_PAGE_BASE_URL
+        ).pathname
+      } else {
+        pathname = baseUriParts.pathname
+      }
+
       // We must be in the case where the user is navigating directly to a
       // non-main page of this app. Since we haven't received the list of the
       // app's pages from the server at this point, we fall back to requesting
@@ -1735,10 +2433,8 @@ export class App extends PureComponent<Props, State> {
       const newDialog: DialogProps = {
         type: DialogType.CLEAR_CACHE,
         confirmCallback: this.clearCache,
-        defaultAction: this.clearCache,
         onClose: () => {},
       }
-      // This will be called if enter is pressed.
       this.openDialog(newDialog)
     } else {
       LOG.error("Cannot clear cache: disconnected from server")
@@ -1756,25 +2452,13 @@ export class App extends PureComponent<Props, State> {
       isDeployErrorModalOpen:
         this.state.dialog?.type === DialogType.DEPLOY_ERROR,
       metricsMgr: this.metricsMgr,
+      gitInfo: this.state.gitInfo,
     }
     this.openDialog(deployDialogProps)
   }
 
-  openThemeCreatorDialog = (): void => {
-    this.metricsMgr.enqueue("menuClick", {
-      label: "editTheme",
-    })
-    const newDialog: DialogProps = {
-      type: DialogType.THEME_CREATOR,
-      backToSettings: this.settingsCallback,
-      onClose: this.closeDialog,
-      metricsMgr: this.metricsMgr,
-    }
-    this.openDialog(newDialog)
-  }
-
   /**
-   * Asks the server to clear the st_cache and st_cache_data and st_cache_resource
+   * Asks the server to clear st.cache_data and st.cache_resource caches.
    */
   clearCache = (): void => {
     this.closeDialog()
@@ -1788,42 +2472,58 @@ export class App extends PureComponent<Props, State> {
   }
 
   /**
-   * Sends an app heartbeat message through the websocket
+   * Sends an app heartbeat message through the websocket.
+   * @param ackTimeoutMilliseconds - If non-zero, starts a timeout expecting a
+   *   heartbeat_ack from the server within the specified milliseconds. If the
+   *   ack is not received in time, the frontend will attempt to reconnect.
+   *   This allows hosts to opt-in to connection health monitoring and configure
+   *   the timeout.
    */
-  sendAppHeartbeat = (): void => {
+  sendAppHeartbeat = (ackTimeoutMilliseconds: number): void => {
     if (this.isServerConnected()) {
       const backMsg = new BackMsg({ appHeartbeat: true })
       backMsg.type = "appHeartbeat"
       this.sendBackMsg(backMsg)
+      this.connectionManager?.onHeartbeatSent(ackTimeoutMilliseconds)
     } else {
       LOG.error("Cannot send app heartbeat: disconnected from server")
     }
   }
 
   /**
+   * Handles heartbeat acknowledgment from the server.
+   * This confirms the connection is healthy.
+   */
+  handleHeartbeatAck = (): void => {
+    this.connectionManager?.onHeartbeatAckReceived()
+  }
+
+  /**
    * Sends a message back to the server.
    */
-  private sendBackMsg = (msg: BackMsg): void => {
+  private readonly sendBackMsg = (msg: BackMsg): void => {
     if (this.connectionManager) {
       LOG.info(msg)
       this.connectionManager.sendMessage(msg)
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-base-to-string, @typescript-eslint/restrict-template-expressions -- TODO: Fix this
-      LOG.error(`Not connected. Cannot send back message: ${msg}`)
+      LOG.error(
+        `Not connected. Cannot send back message: ${msg.type ?? "unknown"}`
+      )
     }
   }
 
   /**
    * Updates the app body when there's a connection error.
    */
-  handleConnectionError = (errMarkdown: string): void => {
+  handleConnectionError = (errDetails: ErrorDetails): void => {
+    // Don't show the error dialog if it has been dismissed for this session
+    if (this.state.connectionErrorDismissed) {
+      return
+    }
+
     // This is just a regular error dialog, but with type CONNECTION_ERROR
     // instead of WARNING, so we can rescind the dialog later when reconnected.
-    this.showError(
-      "Connection error",
-      errMarkdown,
-      DialogType.CONNECTION_ERROR
-    )
+    this.showError("Connection error", errDetails, DialogType.CONNECTION_ERROR)
   }
 
   /**
@@ -1835,30 +2535,10 @@ export class App extends PureComponent<Props, State> {
       : false
   }
 
-  settingsCallback = (animateModal = true): void => {
-    const newDialog: DialogProps = {
-      type: DialogType.SETTINGS,
-      isServerConnected: this.isServerConnected(),
-      settings: this.state.userSettings,
-      allowRunOnSave: this.state.allowRunOnSave,
-      onSave: this.saveSettings,
-      onClose: () => {},
-      developerMode: showDevelopmentOptions(
-        this.state.isOwner,
-        this.state.toolbarMode
-      ),
-      openThemeCreator: this.openThemeCreatorDialog,
-      animateModal,
-      metricsMgr: this.metricsMgr,
-    }
-    this.openDialog(newDialog)
-  }
-
   aboutCallback = (): void => {
     const { menuItems } = this.state
     const newDialog: DialogProps = {
       type: DialogType.ABOUT,
-      sessionInfo: this.sessionInfo,
       onClose: this.closeDialog,
       aboutSectionMd: menuItems?.aboutSectionMd,
     }
@@ -1874,19 +2554,19 @@ export class App extends PureComponent<Props, State> {
   printCallback = (): void => {
     const { scriptRunState } = this.state
     if (scriptRunState !== ScriptRunState.NOT_RUNNING) {
+      // eslint-disable-next-line no-restricted-globals -- Class component callback polling cannot use React hooks.
       setTimeout(this.printCallback, 500)
       return
     }
     let windowToPrint
     try {
       const htmlIFrameElement = getIFrameEnclosingApp(this.embeddingId)
-      if (htmlIFrameElement && htmlIFrameElement.contentWindow) {
+      if (htmlIFrameElement?.contentWindow) {
         windowToPrint = htmlIFrameElement.contentWindow.window
       } else {
         windowToPrint = window
       }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    } catch (err) {
+    } catch {
       windowToPrint = window
     } finally {
       if (!windowToPrint) windowToPrint = window
@@ -1897,7 +2577,7 @@ export class App extends PureComponent<Props, State> {
   screencastCallback = (): void => {
     const { scriptName } = this.state
     const { startRecording } = this.props.screenCast
-    const date = moment().format("YYYY-MM-DD-HH-MM-SS")
+    const date = getScreencastTimestamp()
 
     startRecording(`streamlit-${scriptName}-${date}`)
   }
@@ -1931,9 +2611,8 @@ export class App extends PureComponent<Props, State> {
   removeScriptFinishedHandler = (func: () => void): void => {
     this.setState((prevState, _) => {
       return {
-        scriptFinishedHandlers: without(
-          prevState.scriptFinishedHandlers,
-          func
+        scriptFinishedHandlers: prevState.scriptFinishedHandlers.filter(
+          h => h !== func
         ),
       }
     })
@@ -1952,18 +2631,22 @@ export class App extends PureComponent<Props, State> {
         ? queryParams
         : document.location.search
 
-    return queryString.startsWith("?") ? queryString.substring(1) : queryString
+    return queryString.startsWith("?") ? queryString.slice(1) : queryString
   }
 
-  isInCloudEnvironment = (): boolean => {
-    const { hostMenuItems } = this.state
-    return hostMenuItems && hostMenuItems?.length > 0
+  getThemeColorScheme = (): string => {
+    const { activeTheme } = this.props.theme
+
+    if (hasLightBackgroundColor(activeTheme.emotion)) {
+      return "light"
+    }
+    return "dark"
   }
 
   showDeployButton = (): boolean => {
     return (
+      isLocalhost() &&
       showDevelopmentOptions(this.state.isOwner, this.state.toolbarMode) &&
-      !this.isInCloudEnvironment() &&
       this.sessionInfo.isSet &&
       !this.sessionInfo.isHello
     )
@@ -1991,13 +2674,34 @@ export class App extends PureComponent<Props, State> {
       backMsg.type = "fileUrlsRequest"
       this.sendBackMsg(backMsg)
     } else {
+      // Reject the request immediately with an error. This can happen on mobile
+      // browsers when the file picker is open for an extended period causing
+      // the WebSocket connection to time out.
+      //
+      // We can't queue and retry because reconnection triggers a script rerun,
+      // which remounts the FileUploader component and invalidates the promise
+      // callback. The user needs to re-select the file after reconnection.
       LOG.warn(
         `Cannot request file URLs (isServerConnected: ${isConnected}, isSessionInfoSet: ${isSessionInfoSet})`
       )
+      this.uploadClient.onFileURLsResponse({
+        responseId: requestId,
+        errorMsg:
+          "Connection lost. Please wait for the app to reconnect, then try again.",
+      })
     }
   }
 
-  handleKeyDown = (keyName: string): void => {
+  handleKeyDown = (keyName: string, keyboardEvent?: KeyboardEvent): void => {
+    // See `isKeyboardEventFromEditableTarget` for editable/shadow DOM behavior.
+    // We never fire global single-letter shortcuts while the user is typing.
+    if (
+      (keyName === "c" || keyName === "r") &&
+      isKeyboardEventFromEditableTarget(keyboardEvent)
+    ) {
+      return
+    }
+
     switch (keyName) {
       case "c":
         // CLEAR CACHE
@@ -2020,6 +2724,45 @@ export class App extends PureComponent<Props, State> {
     }
   }
 
+  /**
+   * Checks if there are any app-defined menu items configured via st.set_page_config
+   */
+  private readonly hasAppDefinedMenuItems = (): boolean => {
+    const { menuItems } = this.state
+    return Boolean(
+      menuItems?.aboutSectionMd ||
+      (menuItems?.getHelpUrl && !menuItems?.hideGetHelp) ||
+      (menuItems?.reportABugUrl && !menuItems?.hideReportABug)
+    )
+  }
+
+  /**
+   * Determines whether the toolbar should be visible based on embed mode,
+   * toolbar mode settings, and availability of host menu/toolbar items.
+   */
+  private readonly shouldShowToolbar = (
+    hostMenuItems: IMenuItem[],
+    hostToolbarItems: IToolbarItem[]
+  ): boolean => {
+    // Show toolbar if not embedded or if specifically configured to display in embed mode
+    const isToolbarAllowedInEmbed = !isEmbed() || isToolbarDisplayed()
+
+    // Determine if toolbar has content to show based on toolbar mode
+    let hasContentToShow: boolean
+    if (this.state.toolbarMode === Config.ToolbarMode.MINIMAL) {
+      // In minimal mode, only show toolbar if there are menu items to display
+      hasContentToShow =
+        hostMenuItems.length > 0 ||
+        hostToolbarItems.length > 0 ||
+        this.hasAppDefinedMenuItems()
+    } else {
+      // In non-minimal modes, always show the toolbar
+      hasContentToShow = true
+    }
+
+    return isToolbarAllowedInEmbed && hasContentToShow
+  }
+
   override render(): JSX.Element {
     const {
       allowRunOnSave,
@@ -2034,8 +2777,8 @@ export class App extends PureComponent<Props, State> {
       userSettings,
       hideTopBar,
       hideSidebarNav,
-      hideColoredLine,
       expandSidebarNav,
+      sidebarNavVisibleItems,
       currentPageScriptHash,
       hostHideSidebarNav,
       pageLinkBaseUrl,
@@ -2046,20 +2789,28 @@ export class App extends PureComponent<Props, State> {
       inputsDisabled,
       appPages,
       navSections,
+      navigationPosition,
+      scriptChangedOnDisk,
     } = this.state
+
+    // Always use sidebar navigation on mobile, regardless of the server setting
+    const effectiveNavigationPosition = this.props.isMobileViewport
+      ? Navigation.Position.SIDEBAR
+      : navigationPosition
+
     const developmentMode = showDevelopmentOptions(
       this.state.isOwner,
       this.state.toolbarMode
     )
 
-    const outerDivClass = classNames(
+    const outerDivClass = [
       "stApp",
       getEmbeddingIdClassName(this.embeddingId),
-      {
-        "streamlit-embedded": isEmbed(),
-        "streamlit-wide": userSettings.wideMode,
-      }
-    )
+      isEmbed() && "streamlit-embedded",
+      userSettings.wideMode && "streamlit-wide",
+    ]
+      .filter(Boolean)
+      .join(" ")
 
     const renderedDialog: React.ReactNode = dialog
       ? StreamlitDialog({
@@ -2068,16 +2819,16 @@ export class App extends PureComponent<Props, State> {
         })
       : null
 
-    const showToolbar = !isEmbed() || isToolbarDisplayed()
-    const showColoredLine =
-      (!hideColoredLine && !isEmbed()) || isColoredLineDisplayed()
-    const showHeader = isEmbed() ? showToolbar || showColoredLine : true
+    // Determine toolbar visibility using helper method
+    const showToolbar = this.shouldShowToolbar(hostMenuItems, hostToolbarItems)
     const showPadding = !isEmbed() || isPaddingDisplayed()
     const disableScrolling = isScrollingHidden()
 
     return (
       <StreamlitContextProvider
         initialSidebarState={initialSidebarState}
+        initialSidebarWidth={this.state.initialSidebarWidth}
+        appRootRef={this.appRootRef}
         pageLinkBaseUrl={pageLinkBaseUrl}
         currentPageScriptHash={currentPageScriptHash}
         onPageChange={this.onPageChange}
@@ -2086,55 +2837,114 @@ export class App extends PureComponent<Props, State> {
         appLogo={elements.logo}
         sidebarChevronDownshift={sidebarChevronDownshift}
         expandSidebarNav={expandSidebarNav}
-        hideSidebarNav={hideSidebarNav || hostHideSidebarNav}
-        widgetsDisabled={
-          inputsDisabled || connectionState !== ConnectionState.CONNECTED
+        sidebarNavVisibleItems={sidebarNavVisibleItems}
+        hideSidebarNav={
+          hideSidebarNav ||
+          hostHideSidebarNav ||
+          effectiveNavigationPosition === Navigation.Position.TOP
         }
-        gitInfo={this.state.gitInfo}
         isFullScreen={isFullScreen}
         setFullScreen={this.handleFullScreen}
-        addScriptFinishedHandler={this.addScriptFinishedHandler}
-        removeScriptFinishedHandler={this.removeScriptFinishedHandler}
         activeTheme={this.props.theme.activeTheme}
         setTheme={this.setAndSendTheme}
         availableThemes={this.props.theme.availableThemes}
-        addThemes={this.props.theme.addThemes}
-        libConfig={libConfig}
         fragmentIdsThisRun={this.state.fragmentIdsThisRun}
+        scriptRunFinishedSequence={this.state.scriptRunFinishedSequence}
+        scriptRunFinishedFragmentIds={this.state.scriptRunFinishedFragmentIds}
         locale={window.navigator.language}
         formsData={this.state.formsData}
         scriptRunState={scriptRunState}
         scriptRunId={scriptRunId}
-        componentRegistry={this.componentRegistry}
+        stopScript={this.stopScript}
+        // LibConfig properties
+        mapboxToken={libConfig.mapboxToken}
+        enforceDownloadInNewTab={libConfig.enforceDownloadInNewTab}
+        resourceCrossOriginMode={libConfig.resourceCrossOriginMode}
+        showErrorLinks={this.state.showErrorLinks}
+        disableDataExport={this.state.disableDataExport}
+        backendOperationClient={this.backendOperationClient}
+        // In-error "install skills" callout. Gated on the server's
+        // recommendation plus localhost/embed (consistent with the exception
+        // box's own AI-links gate), not-yet-installed-this-session, and not
+        // permanently dismissed. `localStorageAvailable()` matches the toast's
+        // fail-closed behavior: without storage we can't remember a dismissal,
+        // so don't offer something the user can't make stick.
+        //
+        // Mutually exclusive with the proactive nudge toast (`!showSkillsNudge`):
+        // the two never show at once. The 24h snooze is intentionally NOT checked
+        // here — once the toast is snoozed/closed (`showSkillsNudge` flips false),
+        // an error is a higher-intent moment than a snoozed proactive nudge, so
+        // the callout may then appear. A permanent "don't show again" (or an
+        // install) from either surface suppresses both.
+        skillsInstallEnabled={
+          this.state.recommendSkillsInstall &&
+          this.skillsCalloutEnvEligible &&
+          !this.state.skillsInstalledThisSession &&
+          !this.state.skillsInstallFailedThisSession &&
+          !isSkillsNudgeDismissed() &&
+          !this.state.showSkillsNudge
+        }
+        onInstallSkills={this.handleErrorCalloutInstall}
+        onSkillsCalloutShown={this.handleErrorCalloutShown}
       >
-        <Hotkeys
+        <GlobalHotkeys
           keyName="r,c,esc"
           onKeyDown={this.handleKeyDown}
           onKeyUp={this.handleKeyUp}
         >
           <StyledApp
+            ref={this.appRootRef}
             className={outerDivClass}
             data-testid="stApp"
             data-test-script-state={
-              scriptRunId == INITIAL_SCRIPT_RUN_ID ? "initial" : scriptRunState
+              scriptRunId === INITIAL_SCRIPT_RUN_ID
+                ? "initial"
+                : scriptRunState
             }
             data-test-connection-state={connectionState}
           >
-            {showHeader && (
-              <Header
-                showToolbar={showToolbar}
-                showColoredLine={showColoredLine}
-              >
-                {!hideTopBar && (
-                  <>
+            <AppView
+              endpoints={this.endpoints}
+              sendMessageToHost={this.hostCommunicationMgr.sendMessageToHost}
+              elements={elements}
+              widgetMgr={this.widgetMgr}
+              uploadClient={this.uploadClient}
+              navigationPosition={effectiveNavigationPosition}
+              wideMode={userSettings.wideMode}
+              embedded={isEmbed()}
+              showPadding={showPadding}
+              disableScrolling={disableScrolling}
+              addScriptFinishedHandler={this.addScriptFinishedHandler}
+              removeScriptFinishedHandler={this.removeScriptFinishedHandler}
+              widgetsDisabled={
+                inputsDisabled || connectionState !== ConnectionState.CONNECTED
+              }
+              showToolbar={showToolbar}
+              disableFullscreenMode={libConfig.disableFullscreenMode}
+              componentRegistry={this.componentRegistry}
+              skillsNudge={
+                this.state.showSkillsNudge ? (
+                  <SkillsNudgeToast
+                    onInstall={this.handleToastInstall}
+                    onSnooze={this.handleSkillsNudgeSnooze}
+                    onDontShowAgain={this.handleSkillsNudgeDontShowAgain}
+                    onClose={this.handleSkillsNudgeClose}
+                  />
+                ) : undefined
+              }
+              topRightContent={
+                <>
+                  {!hideTopBar && (
                     <StatusWidget
                       connectionState={connectionState}
-                      sessionEventDispatcher={this.sessionEventDispatcher}
                       scriptRunState={scriptRunState}
                       rerunScript={this.rerunScript}
                       stopScript={this.stopScript}
                       allowRunOnSave={allowRunOnSave}
+                      showScriptChangedActions={scriptChangedOnDisk}
                     />
+                  )}
+                  {!hideTopBar && (
                     <ToolbarActions
                       hostToolbarItems={hostToolbarItems}
                       sendMessageToHost={
@@ -2142,56 +2952,56 @@ export class App extends PureComponent<Props, State> {
                       }
                       metricsMgr={this.metricsMgr}
                     />
-                  </>
-                )}
-                {this.showDeployButton() && (
-                  <DeployButton
-                    onClick={this.deployButtonClicked.bind(this)}
-                  />
-                )}
-                <MainMenu
-                  isServerConnected={this.isServerConnected()}
-                  quickRerunCallback={this.rerunScript}
-                  clearCacheCallback={this.openClearCacheDialog}
-                  settingsCallback={this.settingsCallback}
-                  aboutCallback={this.aboutCallback}
-                  printCallback={this.printCallback}
-                  screencastCallback={this.screencastCallback}
-                  screenCastState={this.props.screenCast.currentState}
-                  hostMenuItems={hostMenuItems}
-                  developmentMode={developmentMode}
-                  sendMessageToHost={
-                    this.hostCommunicationMgr.sendMessageToHost
-                  }
-                  menuItems={menuItems}
-                  metricsMgr={this.metricsMgr}
-                  toolbarMode={this.state.toolbarMode}
-                />
-              </Header>
-            )}
-
-            <AppView
-              endpoints={this.endpoints}
-              sendMessageToHost={this.hostCommunicationMgr.sendMessageToHost}
-              elements={elements}
-              widgetMgr={this.widgetMgr}
-              uploadClient={this.uploadClient}
-              appLogo={elements.logo}
-              multiplePages={appPages.length > 1}
-              wideMode={userSettings.wideMode}
-              embedded={isEmbed()}
-              addPaddingForHeader={showToolbar || showColoredLine}
-              showPadding={showPadding}
-              disableScrolling={disableScrolling}
-              hideSidebarNav={hideSidebarNav || hostHideSidebarNav}
+                  )}
+                  {this.showDeployButton() && !scriptChangedOnDisk && (
+                    <DeployButton onClick={this.deployButtonClicked} />
+                  )}
+                  {!hideTopBar && (
+                    <MainMenu
+                      isServerConnected={this.isServerConnected()}
+                      quickRerunCallback={this.rerunScript}
+                      clearCacheCallback={this.openClearCacheDialog}
+                      aboutCallback={this.aboutCallback}
+                      printCallback={this.printCallback}
+                      screencastCallback={this.screencastCallback}
+                      screenCastState={this.props.screenCast.currentState}
+                      hostMenuItems={hostMenuItems}
+                      developmentMode={developmentMode}
+                      sendMessageToHost={
+                        this.hostCommunicationMgr.sendMessageToHost
+                      }
+                      menuItems={menuItems}
+                      metricsMgr={this.metricsMgr}
+                      toolbarMode={this.state.toolbarMode}
+                      runOnSave={this.state.userSettings.runOnSave}
+                      onRunOnSaveChange={this.handleRunOnSaveChange}
+                      allowRunOnSave={allowRunOnSave && developmentMode}
+                      streamlitVersion={
+                        this.sessionInfo.isSet
+                          ? this.sessionInfo.current.streamlitVersion
+                          : undefined
+                      }
+                    />
+                  )}
+                </>
+              }
             />
             {renderedDialog}
           </StyledApp>
-        </Hotkeys>
+        </GlobalHotkeys>
       </StreamlitContextProvider>
     )
   }
 }
 
 const AppWithScreenCast = withScreencast(App)
-export default AppWithScreenCast
+
+// Wrapper component to handle viewport size
+const AppWrapper: React.FC<
+  Omit<Props, "isMobileViewport" | "screenCast">
+> = props => {
+  const { isMobile } = useViewportSize()
+  return <AppWithScreenCast {...props} isMobileViewport={isMobile} />
+}
+
+export default AppWrapper

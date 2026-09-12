@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import { CancelToken } from "axios"
-import isEqual from "lodash/isEqual"
+import type { AxiosProgressEvent } from "axios"
+import { isEqual } from "lodash-es"
 import { getLogger } from "loglevel"
-import { v4 as uuidv4 } from "uuid"
 
-import { IFileURLs, IFileURLsResponse } from "@streamlit/protobuf"
+import { type FileURLs, type FileURLsResponse } from "@streamlit/protobuf"
+import { generateUuid } from "@streamlit/utils"
 
 import { SessionInfo } from "./SessionInfo"
 import { StreamlitEndpoints } from "./StreamlitEndpoints"
@@ -72,12 +72,12 @@ export class FileUploadClient {
   private readonly requestFileURLs?: (requestId: string, files: File[]) => void
 
   /**
-   * A map from request ID (a uuidv4) to the Resolver that should resolve once
+   * A map from request ID to the Resolver that should resolve once
    * the requested file URLs are received.
    */
   private readonly pendingFileURLsRequests = new Map<
     string,
-    PromiseWithResolvers<IFileURLs[]>
+    PromiseWithResolvers<FileURLs.$Properties[]>
   >()
 
   public constructor(props: Props) {
@@ -95,7 +95,7 @@ export class FileUploadClient {
    * @param fileUploadUrl: the URL to upload the file to.
    * @param file: the files to upload.
    * @param onUploadProgress: an optional function that will be called repeatedly with progress events during the upload.
-   * @param cancelToken: an optional axios CancelToken that can be used to cancel the in-progress upload.
+   * @param signal: an optional AbortSignal that can be used to cancel the in-progress upload.
    *
    * @return a Promise<void> that resolves with a void promise when the upload is complete.
    */
@@ -103,9 +103,8 @@ export class FileUploadClient {
     widget: WidgetInfo,
     fileUploadUrl: string,
     file: File,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    onUploadProgress?: (progressEvent: any) => void,
-    cancelToken?: CancelToken
+    onUploadProgress?: (progressEvent: AxiosProgressEvent) => void,
+    signal?: AbortSignal
   ): Promise<void> {
     this.offsetPendingRequestCount(widget.formId, 1)
     return this.endpoints
@@ -114,7 +113,7 @@ export class FileUploadClient {
         file,
         this.sessionInfo.current.sessionId,
         onUploadProgress,
-        cancelToken
+        signal
       )
       .finally(() => this.offsetPendingRequestCount(widget.formId, -1))
   }
@@ -139,17 +138,16 @@ export class FileUploadClient {
    *
    * @param files: An array of files.
    *
-   * @return a Promise<FileURLsResponse.IFileURLs[]> resolving to a list of
-   * URLs for uploading and deleting the given files.
+   * @return a Promise<FileURLs.$Properties[]> of upload and delete URLs for the given files.
    */
-  public fetchFileURLs(files: File[]): Promise<IFileURLs[]> {
+  public fetchFileURLs(files: File[]): Promise<FileURLs.$Properties[]> {
     if (!this.requestFileURLs) {
       return Promise.resolve([])
     }
 
-    const resolver = Promise.withResolvers<IFileURLs[]>()
+    const resolver = Promise.withResolvers<FileURLs.$Properties[]>()
 
-    const requestId = uuidv4()
+    const requestId = generateUuid()
     this.pendingFileURLsRequests.set(requestId, resolver)
     this.requestFileURLs(requestId, files)
 
@@ -163,7 +161,7 @@ export class FileUploadClient {
    * @param resp: the FileURLsResponse corresponding to a call to
    * this.requestFileURLs.
    */
-  public onFileURLsResponse(resp: IFileURLsResponse): void {
+  public onFileURLsResponse(resp: FileURLsResponse.$Properties): void {
     const id = resp.responseId as string
     const resolver = this.pendingFileURLsRequests.get(id)
     if (resolver) {

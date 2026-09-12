@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { IAppPage } from "@streamlit/protobuf"
+import { type AppPage } from "@streamlit/protobuf"
 
 import { StreamlitEndpoints } from "./types"
 
@@ -27,12 +27,18 @@ export function mockEndpoints(
     sendClientErrorToHost: vi.fn(),
     checkSourceUrlResponse: vi.fn(),
     buildComponentURL: vi.fn(),
+    buildBidiComponentURL: vi.fn(),
     buildMediaURL: vi.fn(),
+    buildDownloadUrl: vi.fn(),
     buildFileUploadURL: vi.fn(),
     buildAppPageURL: vi
       .fn()
       .mockImplementation(
-        (_pageLinkBaseURL: string, page: IAppPage, pageIndex: number) => {
+        (
+          _pageLinkBaseURL: string,
+          page: AppPage.$Properties,
+          pageIndex: number
+        ) => {
           return `http://mock/app/page/${page.pageName}.${pageIndex}`
         }
       ),

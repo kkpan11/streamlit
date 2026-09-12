@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ export const StyledAppViewContainer = styled.div({
   },
 })
 
-export interface StyledAppViewMainProps {
+interface StyledAppViewMainProps {
   isEmbedded: boolean
   disableScrolling: boolean
 }
@@ -49,6 +49,7 @@ export const StyledAppViewMain = styled.section<StyledAppViewMainProps>(
     width: theme.sizes.full,
     overflow: disableScrolling ? "hidden" : "auto",
     alignItems: "center",
+    height: `100dvh`,
 
     "&:focus": {
       outline: "none",
@@ -63,6 +64,7 @@ export const StyledAppViewMain = styled.section<StyledAppViewMainProps>(
         left: 0,
         right: 0,
         bottom: 0,
+        height: `100dvh`,
       },
     },
 
@@ -116,37 +118,47 @@ const applyWideModePadding = (theme: EmotionTheme): CSSObject => {
   }
 }
 
-export interface StyledAppViewBlockContainerProps {
-  hasSidebar: boolean
-  isEmbedded: boolean
+interface StyledAppViewBlockContainerProps {
   isWideMode: boolean
-  showPadding: boolean
-  addPaddingForHeader: boolean
   hasBottom: boolean
+  showPadding: boolean
+  hasHeader: boolean
+  showToolbar: boolean
+  hasTopNav: boolean
+  hasSidebar: boolean
+  embedded: boolean
 }
 
 export const StyledAppViewBlockContainer =
   styled.div<StyledAppViewBlockContainerProps>(
     ({
-      hasSidebar,
       hasBottom,
-      isEmbedded,
       isWideMode,
       showPadding,
-      addPaddingForHeader,
+      hasHeader,
+      showToolbar,
+      hasTopNav,
+      hasSidebar,
+      embedded,
       theme,
     }) => {
       const littlePadding = "2.25rem"
-      let topEmbedPadding: string = showPadding ? "6rem" : littlePadding
-      if (
-        (addPaddingForHeader && !showPadding) ||
-        (isEmbedded && hasSidebar)
-      ) {
-        // Use parseFloat vs. calc to allow for JS unit test
-        topEmbedPadding = `${
-          parseFloat(theme.sizes.headerHeight) + parseFloat(theme.spacing.md)
-        }rem`
+
+      // Top padding logic per specification:
+      let topPadding = littlePadding // Default: 2.25rem
+
+      if (!embedded) {
+        // Non-embedded apps always get 6rem or 8rem
+        topPadding = hasTopNav ? "8rem" : "6rem"
+      } else if (showPadding || showToolbar) {
+        // 6rem if embedded with show_padding or show_toolbar
+        topPadding = "6rem"
+      } else if (hasHeader || hasSidebar) {
+        // 4.5rem if embedded with header but no padding/toolbar
+        topPadding = "4.5rem"
       }
+      // Otherwise use default: 2.25rem if embedded with no header and no padding/toolbar
+
       const bottomEmbedPadding =
         showPadding && !hasBottom ? "10rem" : theme.spacing.lg
 
@@ -154,7 +166,7 @@ export const StyledAppViewBlockContainer =
         width: theme.sizes.full,
         paddingLeft: theme.spacing.lg,
         paddingRight: theme.spacing.lg,
-        paddingTop: topEmbedPadding,
+        paddingTop: topPadding,
         paddingBottom: bottomEmbedPadding,
         maxWidth: theme.sizes.contentMaxWidth,
         ...(isWideMode && applyWideModePadding(theme)),
@@ -175,7 +187,7 @@ export const StyledEventBlockContainer = styled.div({
   display: "none",
 })
 
-export interface StyledBottomBlockContainerProps {
+interface StyledBottomBlockContainerProps {
   isWideMode: boolean
   showPadding: boolean
 }
@@ -210,4 +222,38 @@ export const StyledAppViewBlockSpacer = styled.div(({ theme }) => {
 export const StyledIFrameResizerAnchor = styled.div(({ theme }) => ({
   position: "relative",
   bottom: theme.spacing.none,
+}))
+
+export const StyledMainContent = styled.div(({ theme }) => ({
+  width: theme.sizes.full,
+  minWidth: 0,
+  height: `100dvh`,
+
+  // Apply relative positioning only on desktop to fix header positioning when sidebar opens.
+  // On mobile, relative positioning is omitted to allow the sidebar to properly overlay
+  // the app content for st.navigation(position='top') functionality (#11349).
+  // Without this conditional positioning, the sidebar would overlap the top navigation
+  // when opened on desktop devices.
+  [`@media (min-width: ${theme.breakpoints.md})`]: {
+    position: "relative",
+  },
+}))
+
+/**
+ * Fixed top-right anchor for the framework "install skills" nudge, pinned just
+ * below the header at the same right edge as the toast region. The toast region
+ * (which portals to the document body and is positioned independently) is
+ * pushed down by this nudge's measured height in ``AppView`` so app toasts
+ * stack beneath the persistent nudge rather than overlapping it.
+ */
+export const StyledSkillsNudgeAnchor = styled.div(({ theme }) => ({
+  position: "fixed",
+  top: theme.sizes.headerHeight,
+  right: 0,
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-end",
+  zIndex: theme.zIndices.toast,
+  marginLeft: theme.spacing.lg,
+  marginRight: theme.spacing.lg,
 }))

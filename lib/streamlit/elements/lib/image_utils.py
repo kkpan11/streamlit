@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,12 +20,13 @@ import re
 from collections.abc import Sequence
 from enum import IntEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Union, cast
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Final, Literal, TypeAlias, Union, cast
 
 from streamlit import runtime, url_util
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitValueError,
+)
 from streamlit.runtime import caching
 
 if TYPE_CHECKING:
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
     from PIL import GifImagePlugin, Image, ImageFile
 
+    from streamlit.elements.lib.layout_utils import LayoutConfig
     from streamlit.proto.Image_pb2 import ImageList as ImageListProto
     from streamlit.type_util import NumpyShape
 
@@ -47,7 +49,7 @@ AtomicImage: TypeAlias = Union[
 Channels: TypeAlias = Literal["RGB", "BGR"]
 ImageFormat: TypeAlias = Literal["JPEG", "PNG", "GIF"]
 ImageFormatOrAuto: TypeAlias = Literal[ImageFormat, "auto"]
-ImageOrImageList: TypeAlias = Union[AtomicImage, Sequence[AtomicImage]]
+ImageOrImageList: TypeAlias = AtomicImage | Sequence[AtomicImage]
 
 # This constant is related to the frontend maximum content width specified
 # in App.jsx main container
@@ -81,7 +83,7 @@ its column width"""
 
 
 def _image_may_have_alpha_channel(image: PILImage) -> bool:
-    return image.mode in ("RGBA", "LA", "P")
+    return image.mode in {"RGBA", "LA", "P"}
 
 
 def _image_is_gif(image: PILImage) -> bool:
@@ -156,11 +158,15 @@ def _np_array_to_bytes(array: npt.NDArray[Any], output_format: str = "JPEG") -> 
 
 def _verify_np_shape(array: npt.NDArray[Any]) -> npt.NDArray[Any]:
     shape: NumpyShape = array.shape
-    if len(shape) not in (2, 3):
-        raise StreamlitAPIException("Numpy shape has to be of length 2 or 3.")
-    if len(shape) == 3 and shape[-1] not in (1, 3, 4):
+    if len(shape) not in {2, 3}:
+        raise StreamlitValueError(
+            "image",
+            ["a 2D or 3D NumPy array"],
+        )
+    if len(shape) == 3 and shape[-1] not in {1, 3, 4}:
         raise StreamlitAPIException(
-            f"Channel can only be 1, 3, or 4 got {shape[-1]}. Shape is {shape}"
+            f"Channel can only be 1, 3, or 4 got {shape[-1]}. Shape is {shape}",
+            error_id="image-invalid-channel-count",
         )
 
     # If there's only one channel, convert is to x, y
@@ -176,7 +182,7 @@ def _get_image_format_mimetype(image_format: ImageFormat) -> str:
 
 
 def _ensure_image_size_and_format(
-    image_data: bytes, width: int, image_format: ImageFormat
+    image_data: bytes, layout_config: LayoutConfig, image_format: ImageFormat
 ) -> bytes:
     """Resize an image if it exceeds the given width, or if exceeds
     MAXIMUM_CONTENT_WIDTH. Ensure the image's format corresponds to the given
@@ -187,17 +193,25 @@ def _ensure_image_size_and_format(
     pil_image: PILImage = Image.open(io.BytesIO(image_data))
     actual_width, actual_height = pil_image.size
 
-    if width < 0 and actual_width > MAXIMUM_CONTENT_WIDTH:
-        width = MAXIMUM_CONTENT_WIDTH
+    target_width = (
+        layout_config.width
+        if isinstance(layout_config.width, int)
+        else MAXIMUM_CONTENT_WIDTH
+    )
 
-    if width > 0 and actual_width > width:
+    # Resizing the image down if the embedded width is greater than
+    # the target width.
+    if target_width > 0 and actual_width > target_width:
         # We need to resize the image.
-        new_height = int(1.0 * actual_height * width / actual_width)
+        new_height = int(1.0 * actual_height * target_width / actual_width)
         # pillow reexports Image.Resampling.BILINEAR as Image.BILINEAR for backwards
         # compatibility reasons, so we use the reexport to support older pillow
         # versions. The types don't seem to reflect this, though, hence the type: ignore
         # below.
-        pil_image = pil_image.resize((width, new_height), resample=Image.BILINEAR)  # type: ignore[attr-defined]
+        pil_image = pil_image.resize(
+            (target_width, new_height),
+            resample=Image.BILINEAR,  # type: ignore[attr-defined] # ty: ignore[unresolved-attribute]
+        )
         return _pil_to_bytes(pil_image, format=image_format, quality=90)
 
     if pil_image.format != image_format:
@@ -216,18 +230,28 @@ def _clip_image(image: npt.NDArray[Any], clamp: bool) -> npt.NDArray[Any]:
         if clamp:
             data = np.clip(image, 0, 1.0)
         elif np.amin(image) < 0.0 or np.amax(image) > 1.0:
-            raise RuntimeError("Data is outside [0.0, 1.0] and clamp is not set.")
-        data = data * 255
+            raise StreamlitAPIException(
+                "Data is outside [0.0, 1.0] and clamp is not set.",
+                error_id="image-out-of-range",
+            )
+        data = data * 255  # noqa: PLR6104
     elif clamp:
         data = np.clip(image, 0, 255)
     elif np.amin(image) < 0 or np.amax(image) > 255:
-        raise RuntimeError("Data is outside [0, 255] and clamp is not set.")
+        raise StreamlitAPIException(
+            "Data is outside [0, 255] and clamp is not set.",
+            error_id="image-out-of-range",
+        )
     return data
+
+
+def _as_ndarray(image: object) -> npt.NDArray[Any]:
+    return cast("npt.NDArray[Any]", image)
 
 
 def image_to_url(
     image: AtomicImage,
-    width: int,
+    layout_config: LayoutConfig,
     clamp: bool,
     channels: Channels,
     output_format: ImageFormatOrAuto,
@@ -250,15 +274,16 @@ def image_to_url(
 
     # Strings
     if isinstance(image, str):
-        if not os.path.isfile(image) and url_util.is_url(
-            image, allowed_schemas=("http", "https", "data")
+        # If it's an absolute URL or relative static URL, return it directly.
+        if not os.path.isfile(image) and (
+            url_util.is_url(image, allowed_schemas=("http", "https", "data"))
+            or url_util.is_relative_static_url(image)
         ):
-            # If it's a url, return it directly.
             return image
 
         if image.endswith(".svg") and os.path.isfile(image):
             # Unpack local SVG image file to an SVG string
-            with open(image) as textfile:
+            with open(image, encoding="utf-8") as textfile:
                 image = textfile.read()
 
         # Following regex allows svg image files to start either via a "<?xml...>" tag
@@ -308,15 +333,16 @@ def image_to_url(
 
     # Numpy Arrays (ie opencv)
     elif isinstance(image, np.ndarray):
-        image = _clip_image(_verify_np_shape(image), clamp)
+        image = _clip_image(_verify_np_shape(_as_ndarray(image)), clamp)
 
         if channels == "BGR":
-            if len(cast("NumpyShape", image.shape)) == 3:
+            if len(image.shape) == 3:
                 image = image[:, :, [2, 1, 0]]
             else:
                 raise StreamlitAPIException(
                     'When using `channels="BGR"`, the input image should '
-                    "have exactly 3 color channels"
+                    "have exactly 3 color channels",
+                    error_id="image-bgr-requires-three-channels",
                 )
 
         image_data = _np_array_to_bytes(array=image, output_format=output_format)
@@ -327,7 +353,7 @@ def image_to_url(
 
     # Determine the image's format, resize it, and get its mimetype
     image_format = _validate_image_format_string(image_data, output_format)
-    image_data = _ensure_image_size_and_format(image_data, width, image_format)
+    image_data = _ensure_image_size_and_format(image_data, layout_config, image_format)
     mimetype = _get_image_format_mimetype(image_format)
 
     if runtime.exists():
@@ -346,7 +372,7 @@ def marshall_images(
     coordinates: str,
     image: ImageOrImageList,
     caption: str | npt.NDArray[Any] | list[str] | None,
-    width: int | WidthBehavior,
+    layout_config: LayoutConfig,
     proto_imgs: ImageListProto,
     clamp: bool,
     channels: Channels = "RGB",
@@ -364,11 +390,8 @@ def marshall_images(
     caption
         Image caption. If displaying multiple images, caption should be a
         list of captions (one for each image).
-    width
-        The desired width of the image or images. This parameter will be
-        passed to the frontend.
-        Positive values set the image width explicitly.
-        Negative values has some special. For details, see: `WidthBehaviour`
+    layout_config
+        The layout configuration for the image, including width settings.
     proto_imgs
         The ImageListProto to fill in.
     clamp
@@ -396,39 +419,32 @@ def marshall_images(
     # Turn single image and caption into one element list.
     images: Sequence[AtomicImage]
     if isinstance(image, (list, set, tuple)):
-        images = list(image)
-    elif isinstance(image, np.ndarray) and len(cast("NumpyShape", image.shape)) == 4:
-        images = _4d_to_list_3d(image)
+        images = list(image)  # ty: ignore[invalid-assignment]
+    elif isinstance(image, np.ndarray) and len(image.shape) == 4:
+        images = _4d_to_list_3d(_as_ndarray(image))
     else:
         images = cast("Sequence[AtomicImage]", [image])
 
     if isinstance(caption, list):
-        captions: Sequence[str | None] = caption
+        captions: Sequence[str | None] = caption  # ty: ignore[invalid-assignment]
     elif isinstance(caption, str):
         captions = [caption]
-    elif (
-        isinstance(caption, np.ndarray) and len(cast("NumpyShape", caption.shape)) == 1
-    ):
+    elif isinstance(caption, np.ndarray) and len(caption.shape) == 1:
         captions = caption.tolist()
     elif caption is None:
         captions = [None] * len(images)
     else:
         captions = [str(caption)]
 
-    if not isinstance(captions, list):
-        raise StreamlitAPIException(
-            "If image is a list then caption should be a list as well."
-        )
-
     if len(captions) != len(images):
         raise StreamlitAPIException(
-            f"Cannot pair {len(captions)} captions with {len(images)} images."
+            f"Cannot pair {len(captions)} captions with {len(images)} images.",
+            error_id="image-caption-count-mismatch",
         )
 
-    proto_imgs.width = int(width)
     # Each image in an image list needs to be kept track of at its own coordinates.
     for coord_suffix, (single_image, single_caption) in enumerate(
-        zip(images, captions)
+        zip(images, captions, strict=False)
     ):
         proto_img = proto_imgs.imgs.add()
         if single_caption is not None:
@@ -439,5 +455,5 @@ def marshall_images(
         image_id = f"{coordinates}-{coord_suffix}"
 
         proto_img.url = image_to_url(
-            single_image, width, clamp, channels, output_format, image_id
+            single_image, layout_config, clamp, channels, output_format, image_id
         )

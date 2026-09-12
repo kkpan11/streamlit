@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +17,10 @@ import json
 import os
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Page
 
 from e2e_playwright.conftest import ImageCompareFunction
-from e2e_playwright.shared.app_utils import expect_font
+from e2e_playwright.shared.app_utils import expect_font, expect_no_skeletons
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +31,7 @@ def configure_snowflake_dark_theme():
     os.environ["STREAMLIT_THEME_PRIMARY_COLOR"] = "#004cbe"
     os.environ["STREAMLIT_THEME_BACKGROUND_COLOR"] = "#191e24"
     os.environ["STREAMLIT_THEME_SECONDARY_BACKGROUND_COLOR"] = "#0f161e"
-    os.environ["STREAMLIT_THEME_TEXT_COLOR"] = "#bdc4d5"
+    os.environ["STREAMLIT_THEME_TEXT_COLOR"] = "oklab(79.31% -0.019 -0.063)"
     os.environ["STREAMLIT_THEME_BORDER_COLOR"] = "#293246"
     os.environ["STREAMLIT_THEME_SHOW_WIDGET_BORDER"] = "True"
     os.environ["STREAMLIT_THEME_FONT_FACES"] = json.dumps(
@@ -58,17 +58,17 @@ def configure_snowflake_dark_theme():
             },
             {
                 "family": "Monaspace Argon",
-                "url": "https://raw.githubusercontent.com/githubnext/monaspace/refs/heads/main/fonts/webfonts/MonaspaceArgon-Regular.woff2",
+                "url": "https://raw.githubusercontent.com/githubnext/monaspace/052b3c4eb409e7f026edf5f0609de4ff54db7e23/fonts/Web%20Fonts/Static%20Web%20Fonts/Monaspace%20Argon/MonaspaceArgon-Regular.woff2",
                 "weight": 400,
             },
             {
                 "family": "Monaspace Argon",
-                "url": "https://raw.githubusercontent.com/githubnext/monaspace/refs/heads/main/fonts/webfonts/MonaspaceArgon-Medium.woff2",
+                "url": "https://raw.githubusercontent.com/githubnext/monaspace/052b3c4eb409e7f026edf5f0609de4ff54db7e23/fonts/Web%20Fonts/Static%20Web%20Fonts/Monaspace%20Argon/MonaspaceArgon-Medium.woff2",
                 "weight": 500,
             },
             {
                 "family": "Monaspace Argon",
-                "url": "https://raw.githubusercontent.com/githubnext/monaspace/refs/heads/main/fonts/webfonts/MonaspaceArgon-Bold.woff2",
+                "url": "https://raw.githubusercontent.com/githubnext/monaspace/052b3c4eb409e7f026edf5f0609de4ff54db7e23/fonts/Web%20Fonts/Static%20Web%20Fonts/Monaspace%20Argon/MonaspaceArgon-Bold.woff2",
                 "weight": 700,
             },
         ]
@@ -105,7 +105,7 @@ def configure_snowflake_dark_theme():
 @pytest.mark.usefixtures("configure_snowflake_dark_theme")
 def test_snowflake_dark_theme(app: Page, assert_snapshot: ImageCompareFunction):
     # Make sure that all elements are rendered and no skeletons are shown:
-    expect(app.get_by_test_id("stSkeleton")).to_have_count(0, timeout=25000)
+    expect_no_skeletons(app, timeout=25000)
     # Add some additional timeout to ensure that fonts can load without
     # creating flakiness:
     app.wait_for_timeout(5000)

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,28 +38,30 @@ import {
   isMissingValueCell,
 } from "~lib/components/widgets/DataFrame/columns"
 
-// Token used for missing values (null, NaN, etc.)
-const NULL_VALUE_TOKEN = "None"
+// Default token used for missing values (null, NaN, etc.)
+const DEFAULT_MISSING_PLACEHOLDER = "None"
 
 /**
  * Draw a red indicator in the top right corner of the cell
  * to indicate an issue with the cell (e.g. required or error).
  */
-export function drawAttentionIndicator(
+function drawAttentionIndicator(
   ctx: CanvasRenderingContext2D,
   rect: Rectangle,
   theme: GlideTheme
 ): void {
   ctx.save()
   ctx.beginPath()
-  // We are first moving the drawing position under the top right corner
-  // 8 pixels from left side (this is the size triangle)
+  // We first move the drawing position under the top right corner
+  // by the number of pixels equal to theme.cellHorizontalPadding
+  // from left side (this is the size triangle)
   // and 1 pixel from top side (to be under the cell border).
-  ctx.moveTo(rect.x + rect.width - 8, rect.y + 1)
+  ctx.moveTo(rect.x + rect.width - theme.cellHorizontalPadding, rect.y + 1)
   // We draw the first line to the top right corner.
   ctx.lineTo(rect.x + rect.width, rect.y + 1)
-  // We draw the second line 8 pixel down on the right cell border
-  ctx.lineTo(rect.x + rect.width, rect.y + 1 + 8)
+  // We draw the second line with the number of pixels equal to theme.cellHorizontalPadding
+  // down the right cell border
+  ctx.lineTo(rect.x + rect.width, rect.y + 1 + theme.cellHorizontalPadding)
   // And now its enough to just fill it with a color to get a triangle.
   ctx.fillStyle = theme.accentColor
   ctx.fill()
@@ -69,7 +71,10 @@ export function drawAttentionIndicator(
 /**
  * If a cell is marked as missing, we draw a placeholder symbol with a faded text color.
  */
-export const drawMissingPlaceholder = (args: BaseDrawArgs): void => {
+const drawMissingPlaceholder = (
+  args: BaseDrawArgs,
+  placeholder: string
+): void => {
   const { cell, theme, ctx } = args
   drawTextCell(
     {
@@ -86,7 +91,7 @@ export const drawMissingPlaceholder = (args: BaseDrawArgs): void => {
       spriteManager: {},
       hyperWrapping: false,
     },
-    NULL_VALUE_TOKEN,
+    placeholder,
     cell.contentAlign
   )
   // Reset fill style to the original one
@@ -115,7 +120,10 @@ type CustomRendererReturn = Pick<
  * - `customRenderers`: A map of custom cell renderers used by custom cells
  *    that can be passed to the `DataEditor` component.
  */
-function useCustomRenderer(columns: BaseColumn[]): CustomRendererReturn {
+function useCustomRenderer(
+  columns: BaseColumn[],
+  missingPlaceholder?: string
+): CustomRendererReturn {
   const drawCell: DrawCellCallback = useCallback(
     (args, draw) => {
       const { cell, theme, ctx, rect } = args
@@ -125,6 +133,8 @@ function useCustomRenderer(columns: BaseColumn[]): CustomRendererReturn {
         drawAttentionIndicator(ctx, rect, theme)
       } else if (isMissingValueCell(cell) && colPos < columns.length) {
         const column = columns[colPos]
+        const placeholderToken =
+          missingPlaceholder ?? DEFAULT_MISSING_PLACEHOLDER
 
         // We explicitly ignore some cell types here (e.g. checkbox, progress...) since
         // they are taking care of rendering their missing value state themselves (usually as empty cell).
@@ -136,7 +146,7 @@ function useCustomRenderer(columns: BaseColumn[]): CustomRendererReturn {
         ) {
           draw()
         } else {
-          drawMissingPlaceholder(args as BaseDrawArgs)
+          drawMissingPlaceholder(args as BaseDrawArgs, placeholderToken)
         }
 
         if (column.isRequired && column.isEditable) {
@@ -148,7 +158,7 @@ function useCustomRenderer(columns: BaseColumn[]): CustomRendererReturn {
       }
       draw()
     },
-    [columns]
+    [columns, missingPlaceholder]
   )
 
   // Load extra cell renderers from the glide-data-grid-cells package:

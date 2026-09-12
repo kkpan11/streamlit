@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@ def assert_fullscreen_toolbar_button_interactions(
     filename_prefix: str = "",
     nth: int = 0,
     pixel_threshold: float = 0.05,
+    fullscreen_wrapper_nth: int | None = None,
 ) -> None:
     """
     Shared test function to assert that clicking on fullscreen toolbar button
@@ -41,7 +42,12 @@ def assert_fullscreen_toolbar_button_interactions(
 
     widget_element = app.get_by_test_id(widget_test_id).nth(nth)
     widget_toolbar = widget_element.get_by_test_id("stElementToolbar")
-    fullscreen_wrapper = app.get_by_test_id("stFullScreenFrame").nth(nth)
+    if fullscreen_wrapper_nth is not None:
+        fullscreen_wrapper = app.get_by_test_id("stFullScreenFrame").nth(
+            fullscreen_wrapper_nth
+        )
+    else:
+        fullscreen_wrapper = app.get_by_test_id("stFullScreenFrame").nth(nth)
 
     fullscreen_toolbar_button = widget_toolbar.get_by_test_id(
         "stElementToolbarButton"

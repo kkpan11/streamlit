@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,25 +14,29 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
-from typing_extensions import Self, TypeAlias
+from typing_extensions import Self
 
 from streamlit.delta_generator import DeltaGenerator
-from streamlit.errors import StreamlitAPIException
+from streamlit.elements.lib.utils import compute_and_register_element_id
+from streamlit.errors import StreamlitInvalidLayoutContextError
 from streamlit.proto.Block_pb2 import Block as BlockProto
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
 from streamlit.runtime.scriptrunner_utils.script_run_context import (
     enqueue_message,
     get_script_run_ctx,
 )
+from streamlit.runtime.state import register_widget, validate_on_change_mode
+from streamlit.string_util import validate_icon_or_emoji
 
 if TYPE_CHECKING:
     from types import TracebackType
 
     from streamlit.cursor import Cursor
+    from streamlit.runtime.state import WidgetCallback
 
-DialogWidth: TypeAlias = Literal["small", "large"]
+DialogWidth: TypeAlias = Literal["small", "large", "medium"]
 
 
 def _process_dialog_width_input(
@@ -44,6 +48,8 @@ def _process_dialog_width_input(
     """
     if width == "large":
         return BlockProto.Dialog.DialogWidth.LARGE
+    if width == "medium":
+        return BlockProto.Dialog.DialogWidth.MEDIUM
 
     return BlockProto.Dialog.DialogWidth.SMALL
 
@@ -57,7 +63,7 @@ def _assert_first_dialog_to_be_opened(should_open: bool) -> None:
 
     Raises
     ------
-    StreamlitAPIException
+    StreamlitInvalidLayoutContextError
         Raised when a dialog has already been opened in the current script run.
     """
     script_run_ctx = get_script_run_ctx()
@@ -66,7 +72,7 @@ def _assert_first_dialog_to_be_opened(should_open: bool) -> None:
     # this might need to change.
     if should_open and script_run_ctx:
         if script_run_ctx.has_dialog_opened:
-            raise StreamlitAPIException(
+            raise StreamlitInvalidLayoutContextError(
                 "Only one dialog is allowed to be opened at the same time. "
                 "Please make sure to not call a dialog-decorated function more than once in a script run."
             )
@@ -81,22 +87,76 @@ class Dialog(DeltaGenerator):
         *,
         dismissible: bool = True,
         width: DialogWidth = "small",
+        icon: str | None = None,
+        on_dismiss: Literal["ignore", "rerun"] | WidgetCallback = "ignore",
     ) -> Dialog:
+        on_dismiss_callback = validate_on_change_mode(
+            on_dismiss,
+            supported_modes=("rerun", "ignore"),
+            none_supported=False,
+            param_name="on_dismiss",
+        )
+
         block_proto = BlockProto()
         block_proto.dialog.title = title
         block_proto.dialog.dismissible = dismissible
         block_proto.dialog.width = _process_dialog_width_input(width)
+        block_proto.dialog.icon = validate_icon_or_emoji(icon)
 
-        # We store the delta path here, because in _update we enqueue a new proto
-        # message to update the open status. Without this, the dialog content is gone
-        # when the _update message is sent
-        delta_path: list[int] = (
-            parent._active_dg._cursor.delta_path if parent._active_dg._cursor else []
+        # Compute a stable identity for the dialog based on its attributes.
+        # This ID is used in the frontend to distinguish between different dialogs
+        # and prevent showing stale content from a previous dialog (issue #10907).
+        # It's also used for widget registration when on_dismiss is activated
+        # but we don't want this to be a widget in its default case since it
+        # would change the behavior (especially with fragments).
+        element_id = compute_and_register_element_id(
+            "dialog",
+            user_key=None,
+            key_as_main_identity=False,
+            dg=parent,
+            title=title,
+            dismissible=dismissible,
+            width=width,
+            icon=icon,
+            on_dismiss=str(on_dismiss) if not callable(on_dismiss) else "callback",
         )
+        # The block.id is used to identify the dialog in the frontend to
+        # prevent showing stale content from a previous dialog.
+        # For actual widget registration, we set the dialog.id also
+        # below. This will activate the widget behavior on dismiss.
+        block_proto.id = element_id
+
+        # Handle on_dismiss functionality
+        is_dismiss_activated = on_dismiss != "ignore"
+
+        if is_dismiss_activated:
+            # Register the dialog as a widget when on_dismiss is activated.
+            # The same element_id is used for widget registration.
+            ctx = get_script_run_ctx()
+
+            # Setting the dialog.id will activate the rerun on dismiss functionality
+            # in the frontend (we might add a dedicated flag later)
+            block_proto.dialog.id = element_id
+
+            register_widget(
+                element_id,
+                on_change_handler=on_dismiss_callback,
+                deserializer=lambda x: x,  # Simple passthrough for trigger values
+                serializer=lambda x: x,  # Simple passthrough for trigger values
+                ctx=ctx,
+                value_type="trigger_value",
+            )
+
         dialog = cast("Dialog", parent._block(block_proto=block_proto, dg_type=Dialog))
 
-        dialog._delta_path = delta_path
+        # `_update` re-sends the block proto at this path. Use the path `_block()` wrote
+        # to, not the parent cursor, so the update targets the block even if a wrapper
+        # sits between them. Dialogs land top level in the event container, which never
+        # gets a wrapper, so this is a no-op today and stays correct if that changes.
+        # Same idiom as StatusContainer. See issue #16281.
+        dialog._delta_path = dialog._block_delta_path
         dialog._current_proto = block_proto
+
         return dialog
 
     def __init__(
@@ -115,7 +175,9 @@ class Dialog(DeltaGenerator):
     def _update(self, should_open: bool) -> None:
         """Send an updated proto message to indicate the open-status for the dialog."""
 
-        if self._current_proto is None or self._delta_path is None:
+        if (
+            self._current_proto is None or self._delta_path is None
+        ):  # pragma: no cover - defensive
             raise RuntimeError(
                 "Dialog not correctly initialized. This should never happen."
             )
@@ -135,7 +197,7 @@ class Dialog(DeltaGenerator):
     def close(self) -> None:
         self._update(False)
 
-    def __enter__(self) -> Self:  # type: ignore[override]
+    def __enter__(self) -> Self:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         # This is a little dubious: we're returning a different type than
         # our superclass' `__enter__` function. Maybe DeltaGenerator.__enter__
         # should always return `self`?
@@ -144,8 +206,8 @@ class Dialog(DeltaGenerator):
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
+        typ: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> Literal[False]:
-        return super().__exit__(exc_type, exc_val, exc_tb)
+        return super().__exit__(typ, exc, tb)

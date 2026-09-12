@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,19 +15,23 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Union, cast
-
-from typing_extensions import TypeAlias
+from typing import TYPE_CHECKING, Final, TypeAlias, Union, cast
 
 from streamlit import runtime, type_util, url_util
-from streamlit.elements.lib.form_utils import current_form_id
 from streamlit.elements.lib.layout_utils import WidthWithoutContent, validate_width
 from streamlit.elements.lib.subtitle_utils import process_subtitle_data
 from streamlit.elements.lib.utils import compute_and_register_element_id
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitIncompatibleParametersError,
+    StreamlitInvalidParameterTypeError,
+    StreamlitMissingRequiredParameterError,
+)
+from streamlit.logger import get_logger
 from streamlit.proto.Audio_pb2 import Audio as AudioProto
 from streamlit.proto.Video_pb2 import Video as VideoProto
 from streamlit.proto.WidthConfig_pb2 import WidthConfig
@@ -41,7 +45,8 @@ if TYPE_CHECKING:
     from numpy import typing as npt
 
     from streamlit.delta_generator import DeltaGenerator
-    from streamlit.type_util import NumpyShape
+
+_LOGGER: Final = get_logger(__name__)
 
 
 MediaData: TypeAlias = Union[
@@ -55,11 +60,11 @@ MediaData: TypeAlias = Union[
     None,
 ]
 
-SubtitleData: TypeAlias = Union[
-    str, Path, bytes, io.BytesIO, dict[str, Union[str, Path, bytes, io.BytesIO]], None
-]
+SubtitleData: TypeAlias = (
+    str | Path | bytes | io.BytesIO | dict[str, str | Path | bytes | io.BytesIO] | None
+)
 
-MediaTime: TypeAlias = Union[int, float, timedelta, str]
+MediaTime: TypeAlias = int | float | timedelta | str
 
 TIMEDELTA_PARSE_ERROR_MESSAGE: Final = (
     "Failed to convert '{param_name}' to a timedelta. "
@@ -91,7 +96,9 @@ class MediaMixin:
         data : str, Path, bytes, BytesIO, numpy.ndarray, or file
             The audio to play. This can be one of the following:
 
-            - A URL (string) for a hosted audio file.
+            - A URL (string) for a hosted audio file. Also supports
+              ``/app/static/<asset>`` URLs for files served via
+              `static file serving <https://docs.streamlit.io/develop/concepts/configuration/serving-static-files>`_.
             - A path to a local audio file. The path can be a ``str``
               or ``Path`` object. Paths can be absolute or relative to the
               working directory (where you execute ``streamlit run``).
@@ -109,7 +116,7 @@ class MediaMixin:
             For more information about MIME types, see
             https://www.iana.org/assignments/media-types/media-types.xhtml.
 
-        start_time: int, float, timedelta, str, or None
+        start_time : int, float, timedelta, str, or None
             The time from which the element should start playing. This can be
             one of the following:
 
@@ -122,10 +129,10 @@ class MediaMixin:
             - A ``timedelta`` object from `Python's built-in datetime library
               <https://docs.python.org/3/library/datetime.html#timedelta-objects>`_,
               e.g. ``timedelta(seconds=70)``.
-        sample_rate: int or None
+        sample_rate : int or None
             The sample rate of the audio data in samples per second. This is
             only required if ``data`` is a NumPy array.
-        end_time: int, float, timedelta, str, or None
+        end_time : int, float, timedelta, str, or None
             The time at which the element should stop playing. This can be
             one of the following:
 
@@ -138,18 +145,22 @@ class MediaMixin:
             - A ``timedelta`` object from `Python's built-in datetime library
               <https://docs.python.org/3/library/datetime.html#timedelta-objects>`_,
               e.g. ``timedelta(seconds=70)``.
-        loop: bool
+        loop : bool
             Whether the audio should loop playback.
-        autoplay: bool
+        autoplay : bool
             Whether the audio file should start playing automatically. This is
             ``False`` by default. Browsers will not autoplay audio files if the
             user has not interacted with the page by clicking somewhere.
-        width: int or "stretch"
-            The width of the audio player. This can be one of the following:
+        width : "stretch" or int
+            The width of the audio player element. This can be one of the
+            following:
 
-            - An int: The width in pixels, e.g. ``200`` for a width of 200 pixels.
-            - ``"stretch"``: The default value. The audio player stretches to fill
-              available space in its container.
+            - ``"stretch"`` (default): The width of the element matches the
+              width of the parent container.
+            - An integer specifying the width in pixels: The element has a
+              fixed width. If the specified width is greater than the width of
+              the parent container, the width of the element matches the width
+              of the parent container.
 
         Examples
         --------
@@ -197,16 +208,20 @@ class MediaMixin:
         is_data_numpy_array = type_util.is_type(data, "numpy.ndarray")
 
         if is_data_numpy_array and sample_rate is None:
-            raise StreamlitAPIException(
-                "`sample_rate` must be specified when `data` is a numpy array."
+            raise StreamlitMissingRequiredParameterError(
+                "sample_rate",
+                detail="Must be specified when `data` is a numpy array.",
             )
         if not is_data_numpy_array and sample_rate is not None:
-            self.dg.warning(
-                "Warning: `sample_rate` will be ignored since data is not a numpy "
-                "array."
+            # `sample_rate` only applies to NumPy data, so it is dropped here
+            # and surfaced to the developer via the console.
+            _LOGGER.warning(
+                "`sample_rate` will be ignored since data is not a numpy array.",
+                stack_info=True,
             )
         coordinates = self.dg._get_delta_path_str()
         marshall_audio(
+            self.dg,
             coordinates,
             audio_proto,
             data,
@@ -216,7 +231,6 @@ class MediaMixin:
             end_time,
             loop,
             autoplay,
-            form_id=current_form_id(self.dg),
             width=width,
         )
         return self.dg._enqueue("audio", audio_proto)
@@ -243,6 +257,8 @@ class MediaMixin:
             The video to play. This can be one of the following:
 
             - A URL (string) for a hosted video file, including YouTube URLs.
+              Also supports ``/app/static/<asset>`` URLs for files served via
+              `static file serving <https://docs.streamlit.io/develop/concepts/configuration/serving-static-files>`_.
             - A path to a local video file. The path can be a ``str``
               or ``Path`` object. Paths can be absolute or relative to the
               working directory (where you execute ``streamlit run``).
@@ -254,7 +270,7 @@ class MediaMixin:
             For more information about MIME types, see
             https://www.iana.org/assignments/media-types/media-types.xhtml.
 
-        start_time: int, float, timedelta, str, or None
+        start_time : int, float, timedelta, str, or None
             The time from which the element should start playing. This can be
             one of the following:
 
@@ -267,7 +283,7 @@ class MediaMixin:
             - A ``timedelta`` object from `Python's built-in datetime library
               <https://docs.python.org/3/library/datetime.html#timedelta-objects>`_,
               e.g. ``timedelta(seconds=70)``.
-        subtitles: str, bytes, Path, io.BytesIO, or dict
+        subtitles : str, bytes, Path, io.BytesIO, or dict
             Optional subtitle data for the video, supporting several input types:
 
             - ``None`` (default): No subtitles.
@@ -290,10 +306,10 @@ class MediaMixin:
             When provided, subtitles are displayed by default. For multiple
             tracks, the first one is displayed by default. If you don't want any
             subtitles displayed by default, use an empty string for the value
-            in a dictrionary's first pair: ``{"None": "", "English": "path/to/english.vtt"}``
+            in a dictionary's first pair: ``{"None": "", "English": "path/to/english.vtt"}``
 
             Not supported for YouTube videos.
-        end_time: int, float, timedelta, str, or None
+        end_time : int, float, timedelta, str, or None
             The time at which the element should stop playing. This can be
             one of the following:
 
@@ -306,27 +322,31 @@ class MediaMixin:
             - A ``timedelta`` object from `Python's built-in datetime library
               <https://docs.python.org/3/library/datetime.html#timedelta-objects>`_,
               e.g. ``timedelta(seconds=70)``.
-        loop: bool
+        loop : bool
             Whether the video should loop playback.
-        autoplay: bool
+        autoplay : bool
             Whether the video should start playing automatically. This is
             ``False`` by default. Browsers will not autoplay unmuted videos
             if the user has not interacted with the page by clicking somewhere.
             To enable autoplay without user interaction, you must also set
             ``muted=True``.
-        muted: bool
+        muted : bool
             Whether the video should play with the audio silenced. This is
             ``False`` by default. Use this in conjunction with ``autoplay=True``
             to enable autoplay without user interaction.
-        width: int or "stretch"
-            The width of the video player. This can be one of the following:
+        width : "stretch" or int
+            The width of the video player element. This can be one of the
+            following:
 
-            - An int: The width in pixels, e.g. ``200`` for a width of 200 pixels.
-            - ``"stretch"``: The default value. The video player stretches to fill
-              available space in its container.
+            - ``"stretch"`` (default): The width of the element matches the
+              width of the parent container.
+            - An integer specifying the width in pixels: The element has a
+              fixed width. If the specified width is greater than the width of
+              the parent container, the width of the element matches the width
+              of the parent container.
 
-        Example
-        -------
+        Examples
+        --------
         >>> import streamlit as st
         >>>
         >>> video_file = open("myvideo.mp4", "rb")
@@ -382,6 +402,7 @@ class MediaMixin:
         video_proto = VideoProto()
         coordinates = self.dg._get_delta_path_str()
         marshall_video(
+            self.dg,
             coordinates,
             video_proto,
             data,
@@ -392,14 +413,13 @@ class MediaMixin:
             loop,
             autoplay,
             muted,
-            form_id=current_form_id(self.dg),
             width=width,
         )
         return self.dg._enqueue("video", video_proto)
 
     @property
     def dg(self) -> DeltaGenerator:
-        """Get our DeltaGenerator."""
+        """The associated DeltaGenerator."""
         return cast("DeltaGenerator", self)
 
 
@@ -419,8 +439,8 @@ def _reshape_youtube_url(url: str) -> str | None:
     ----------
         url : str
 
-    Example
-    -------
+    Examples
+    --------
     >>> print(_reshape_youtube_url("https://youtu.be/_T8LGqJtuGc"))
 
     .. output::
@@ -449,7 +469,7 @@ def _marshall_av_media(
     Otherwise assume strings are filenames and let any OS errors raise.
 
     Load data either from file or through bytes-processing methods into a
-    MediaFile object.  Pack proto with generated Tornado-based URL.
+    MediaFile object.  Pack proto with generated media URL.
 
     (When running in "raw" mode, we won't actually load data into the
     MediaFileManager, and we'll return an empty URL.)
@@ -476,9 +496,13 @@ def _marshall_av_media(
             return
         data_or_filename = read_data
     elif type_util.is_type(data, "numpy.ndarray"):
-        data_or_filename = cast("npt.NDArray[Any]", data).tobytes()
+        data_or_filename = data.tobytes()
     else:
-        raise RuntimeError(f"Invalid binary data format: {type(data)}")
+        raise StreamlitInvalidParameterTypeError(
+            "data",
+            type(data).__name__,
+            ["str", "bytes", "Path", "BytesIO", "file-like", "ndarray"],
+        )
 
     if runtime.exists():
         file_url = runtime.get_instance().media_file_mgr.add(
@@ -493,6 +517,7 @@ def _marshall_av_media(
 
 
 def marshall_video(
+    dg: DeltaGenerator,
     coordinates: str,
     proto: VideoProto,
     data: MediaData,
@@ -503,7 +528,6 @@ def marshall_video(
     loop: bool = False,
     autoplay: bool = False,
     muted: bool = False,
-    form_id: str | None = None,
     width: WidthWithoutContent = "stretch",
 ) -> None:
     """Marshalls a video proto, using url processors as needed.
@@ -548,9 +572,6 @@ def marshall_video(
     muted: bool
         Whether the video should play with the audio silenced. This can be used to
         enable autoplay without user interaction. Defaults to False.
-    form_id: str | None
-        The ID of the form that this element is placed in. Provide None if
-        the element is not placed in a form.
     width: int or "stretch"
         The width of the video player. This can be one of the following:
         - An int: The width in pixels, e.g. 200 for a width of 200 pixels.
@@ -559,7 +580,10 @@ def marshall_video(
     """
 
     if start_time < 0 or (end_time is not None and end_time <= start_time):
-        raise StreamlitAPIException("Invalid start_time and end_time combination.")
+        raise StreamlitAPIException(
+            "Invalid start_time and end_time combination.",
+            error_id="media-invalid-start-end-time",
+        )
 
     proto.start_time = start_time
     proto.muted = muted
@@ -581,15 +605,23 @@ def marshall_video(
     if isinstance(data, Path):
         data = str(data)  # Convert Path to string
 
-    if isinstance(data, str) and url_util.is_url(
-        data, allowed_schemas=("http", "https", "data")
+    # If it's an absolute URL or relative static URL (and not a local file), use it directly.
+    if (
+        isinstance(data, str)
+        and not os.path.isfile(data)
+        and (
+            url_util.is_url(data, allowed_schemas=("http", "https", "data"))
+            or url_util.is_relative_static_url(data)
+        )
     ):
         if youtube_url := _reshape_youtube_url(data):
             proto.url = youtube_url
             proto.type = VideoProto.Type.YOUTUBE_IFRAME
             if subtitles:
-                raise StreamlitAPIException(
-                    "Subtitles are not supported for YouTube videos."
+                raise StreamlitIncompatibleParametersError(
+                    "subtitles",
+                    "data=<YouTube URL>",
+                    explanation="Subtitles are not supported for YouTube videos.",
                 )
         else:
             proto.url = data
@@ -606,9 +638,10 @@ def marshall_video(
         elif isinstance(subtitles, dict):
             subtitle_items.extend(subtitles.items())
         else:
-            raise StreamlitAPIException(
-                f"Unsupported data type for subtitles: {type(subtitles)}. "
-                f"Only str (file paths) and dict are supported."
+            raise StreamlitInvalidParameterTypeError(
+                "subtitles",
+                type(subtitles).__name__,
+                ["str", "bytes", "BytesIO", "Path", "dict"],
             )
 
         for label, subtitle_data in subtitle_items:
@@ -625,9 +658,14 @@ def marshall_video(
                 sub.url = process_subtitle_data(
                     subtitle_coordinates, subtitle_data, label
                 )
-            except (TypeError, ValueError) as original_err:
+            except (TypeError, ValueError, StreamlitAPIException) as original_err:
+                # Include the track label so a multi-track dict names which
+                # subtitle failed. Subtitle helpers raise Streamlit types;
+                # lower-level parsing can still raise native TypeError/ValueError.
                 raise StreamlitAPIException(
-                    f"Failed to process the provided subtitle: {label}"
+                    f"Failed to process the provided subtitle {label!r}: "
+                    f"{original_err}",
+                    error_id="video-failed-processing-subtitle",
                 ) from original_err
 
     if autoplay:
@@ -636,7 +674,8 @@ def marshall_video(
             "video",
             # video does not yet allow setting a user-defined key
             user_key=None,
-            form_id=form_id,
+            key_as_main_identity=False,
+            dg=dg,
             url=proto.url,
             mimetype=mimetype,
             start_time=start_time,
@@ -662,7 +701,9 @@ def _parse_start_time_end_time(
         error_msg = TIMEDELTA_PARSE_ERROR_MESSAGE.format(
             param_name="start_time", param_value=start_time
         )
-        raise StreamlitAPIException(error_msg) from None
+        raise StreamlitAPIException(
+            error_msg, error_id="media-invalid-start-time"
+        ) from None
 
     try:
         end_time = time_to_seconds(end_time, coerce_none_to_inf=False)
@@ -672,7 +713,9 @@ def _parse_start_time_end_time(
         error_msg = TIMEDELTA_PARSE_ERROR_MESSAGE.format(
             param_name="end_time", param_value=end_time
         )
-        raise StreamlitAPIException(error_msg) from None
+        raise StreamlitAPIException(
+            error_msg, error_id="media-invalid-end-time"
+        ) from None
 
     return start_time, end_time
 
@@ -701,7 +744,7 @@ def _validate_and_normalize(data: npt.NDArray[Any]) -> tuple[bytes, int]:
 
     transformed_data: npt.NDArray[Any] = np.array(data, dtype=float)
 
-    if len(cast("NumpyShape", transformed_data.shape)) == 1:
+    if len(transformed_data.shape) == 1:
         nchan = 1
     elif len(transformed_data.shape) == 2:
         # In wave files,channels are interleaved. E.g.,
@@ -711,7 +754,10 @@ def _validate_and_normalize(data: npt.NDArray[Any]) -> tuple[bytes, int]:
         nchan = transformed_data.shape[0]
         transformed_data = transformed_data.T.ravel()
     else:
-        raise StreamlitAPIException("Numpy array audio input must be a 1D or 2D array.")
+        raise StreamlitAPIException(
+            "Numpy array audio input must be a 1D or 2D array.",
+            error_id="audio-numpy-invalid-rank",
+        )
 
     if transformed_data.size == 0:
         return transformed_data.astype(np.int16).tobytes(), nchan
@@ -756,6 +802,7 @@ def _maybe_convert_to_wav_bytes(data: MediaData, sample_rate: int | None) -> Med
 
 
 def marshall_audio(
+    dg: DeltaGenerator,
     coordinates: str,
     proto: AudioProto,
     data: MediaData,
@@ -765,7 +812,6 @@ def marshall_audio(
     end_time: int | None = None,
     loop: bool = False,
     autoplay: bool = False,
-    form_id: str | None = None,
     width: WidthWithoutContent = "stretch",
 ) -> None:
     """Marshalls an audio proto, using data and url processors as needed.
@@ -793,9 +839,6 @@ def marshall_audio(
     autoplay : bool
         Whether the audio should start playing automatically.
         Browsers will not autoplay audio files if the user has not interacted with the page yet.
-    form_id: str | None
-        The ID of the form that this element is placed in. Provide None if
-        the element is not placed in a form.
     width: int or "stretch"
         The width of the audio player. This can be one of the following:
         - An int: The width in pixels, e.g. 200 for a width of 200 pixels.
@@ -818,8 +861,14 @@ def marshall_audio(
     if isinstance(data, Path):
         data = str(data)  # Convert Path to string
 
-    if isinstance(data, str) and url_util.is_url(
-        data, allowed_schemas=("http", "https", "data")
+    # If it's an absolute URL or relative static URL (and not a local file), use it directly.
+    if (
+        isinstance(data, str)
+        and not os.path.isfile(data)
+        and (
+            url_util.is_url(data, allowed_schemas=("http", "https", "data"))
+            or url_util.is_relative_static_url(data)
+        )
     ):
         proto.url = data
     else:
@@ -831,7 +880,8 @@ def marshall_audio(
         proto.id = compute_and_register_element_id(
             "audio",
             user_key=None,
-            form_id=form_id,
+            key_as_main_identity=False,
+            dg=dg,
             url=proto.url,
             mimetype=mimetype,
             start_time=start_time,

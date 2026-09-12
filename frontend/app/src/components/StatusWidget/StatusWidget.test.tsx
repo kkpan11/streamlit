@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { act, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 
-import { fireEvent, screen, waitFor } from "@testing-library/react"
-
-import { render, ScriptRunState } from "@streamlit/lib"
-import { SessionEvent } from "@streamlit/protobuf"
 import { ConnectionState } from "@streamlit/connection"
-import { SessionEventDispatcher } from "@streamlit/app/src/SessionEventDispatcher"
+import { ScriptRunState } from "@streamlit/lib"
+import { render } from "@streamlit/lib/testing"
 
 import StatusWidget, { StatusWidgetProps } from "./StatusWidget"
 
@@ -29,17 +27,20 @@ const getProps = (
   propOverrides: Partial<StatusWidgetProps> = {}
 ): StatusWidgetProps => ({
   connectionState: ConnectionState.CONNECTED,
-  sessionEventDispatcher: new SessionEventDispatcher(),
-  scriptRunState: ScriptRunState.RUNNING,
+  scriptRunState: ScriptRunState.NOT_RUNNING,
   rerunScript: vi.fn(),
-  stopScript: () => {},
+  stopScript: vi.fn(),
   allowRunOnSave: true,
+  showScriptChangedActions: false,
   ...propOverrides,
 })
 
 describe("StatusWidget element", () => {
   it("renders a StatusWidget", () => {
-    render(<StatusWidget {...getProps()} />)
+    // StatusWidget only renders when there's something to show
+    // For CONNECTED state with NOT_RUNNING script, it doesn't render
+    // So we test with a showScriptChangedActions=true to make it render
+    render(<StatusWidget {...getProps({ showScriptChangedActions: true })} />)
 
     expect(screen.getByTestId("stStatusWidget")).toBeInTheDocument()
   })
@@ -70,28 +71,14 @@ describe("StatusWidget element", () => {
     expect(screen.getByTestId("stTooltipHoverTarget")).toBeInTheDocument()
   })
 
-  it("renders its tooltip when running and minimized", async () => {
-    vi.useFakeTimers()
-    render(<StatusWidget {...getProps()} />)
-    expect(
-      screen.queryByTestId("stTooltipHoverTarget")
-    ).not.toBeInTheDocument()
-
-    // Set scrollY so shouldMinimize returns true
-    global.scrollY = 50
-
-    render(<StatusWidget {...getProps()} />)
-    vi.runAllTimers()
-    expect(await screen.findByTestId("stTooltipHoverTarget")).toBeVisible()
-
-    // Reset scrollY for following tests not impacted
-    global.scrollY = 0
-  })
-
   it("does not render its tooltip when connected", () => {
+    // When connected with script changes, it should render without tooltip
     render(
       <StatusWidget
-        {...getProps({ connectionState: ConnectionState.CONNECTED })}
+        {...getProps({
+          connectionState: ConnectionState.CONNECTED,
+          showScriptChangedActions: true,
+        })}
       />
     )
 
@@ -100,183 +87,170 @@ describe("StatusWidget element", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("sets and unsets the sessionEventConnection", () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
-    const connectSpy = vi.fn()
-    const disconnectSpy = vi.fn()
-    sessionEventDispatcher.onSessionEvent.connect =
-      connectSpy.mockImplementation(() => ({
-        disconnect: disconnectSpy,
-      }))
-
-    const { unmount } = render(
-      <StatusWidget {...getProps({ sessionEventDispatcher })} />
-    )
-
-    expect(connectSpy).toHaveBeenCalled()
-
-    unmount()
-
-    expect(disconnectSpy).toHaveBeenCalled()
-  })
-
   it("calls stopScript when clicked", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
     vi.useFakeTimers()
     const stopScript = vi.fn()
-    render(<StatusWidget {...getProps({ stopScript })} />)
+    render(
+      <StatusWidget
+        {...getProps({ stopScript, scriptRunState: ScriptRunState.RUNNING })}
+      />
+    )
 
-    vi.runAllTimers()
-    const baseButtonHeader = await screen.findByTestId("stBaseButton-header")
+    // Advance timers to ensure the running animation is shown
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
-    // TODO: Utilize user-event instead of fireEvent
-    // eslint-disable-next-line testing-library/prefer-user-event
-    fireEvent.click(baseButtonHeader)
+    // Wait for the stop button to appear
+    const stopButton = await screen.findByRole("button", { name: "Stop" })
+
+    await user.click(stopButton)
 
     expect(stopScript).toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
   it("shows the rerun button when script changes", async () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
+    const user = userEvent.setup()
     const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(2)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-
-    const buttons = await waitFor(() => {
-      const foundButtons = screen.getAllByRole("button")
-      expect(foundButtons).toHaveLength(2)
-      return foundButtons
-    })
 
     expect(buttons[0]).toHaveTextContent("Rerun")
     expect(buttons[1]).toHaveTextContent("Always rerun")
 
     // Click "Rerun" button
-    // TODO: Utilize user-event instead of fireEvent
-    // eslint-disable-next-line testing-library/prefer-user-event
-    fireEvent.click(buttons[0])
+    await user.click(buttons[0])
 
     expect(rerunScript).toHaveBeenCalledWith(false)
   })
 
   it("shows the always rerun button when script changes", async () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
+    const user = userEvent.setup()
     const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(2)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-
-    const buttons = await waitFor(() => {
-      const foundButtons = screen.getAllByRole("button")
-      expect(foundButtons).toHaveLength(2)
-      return foundButtons
-    })
 
     expect(buttons[0]).toHaveTextContent("Rerun")
     expect(buttons[1]).toHaveTextContent("Always rerun")
 
     // Click "Always Rerun" button
-    // TODO: Utilize user-event instead of fireEvent
-    // eslint-disable-next-line testing-library/prefer-user-event
-    fireEvent.click(buttons[1])
+    await user.click(buttons[1])
 
     expect(rerunScript).toHaveBeenCalledWith(true)
   })
 
   it("does not show the always rerun button when script changes", async () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
     const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
           allowRunOnSave: false,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(1)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-
-    const buttons = await waitFor(() => {
-      const foundButtons = screen.getAllByRole("button")
-      expect(foundButtons).toHaveLength(1)
-      return foundButtons
-    })
 
     expect(buttons[0]).toHaveTextContent("Rerun")
   })
 
   it("calls always run on save", async () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
+    const user = userEvent.setup()
     const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
-    )
-    // Verify the Always rerun is visible
-    expect(await screen.findByText("Always rerun")).toBeVisible()
+    // Verify the Always rerun button is visible
+    expect(
+      await screen.findByText("Always rerun", {}, { timeout: 1000 })
+    ).toBeVisible()
 
-    // TODO: Utilize user-event instead of fireEvent
-    // eslint-disable-next-line testing-library/prefer-user-event
-    fireEvent.keyDown(document.body, {
-      key: "a",
-      which: 65,
-    })
+    // Click "Always rerun" button
+    const alwaysRerunButton = screen.getByText("Always rerun")
+    await user.click(alwaysRerunButton)
 
     expect(rerunScript).toHaveBeenCalledWith(true)
+  })
+
+  it.each([
+    ["A", "a"],
+    ["Shift+A", "{Shift>}a{/Shift}"],
+  ])("calls Always rerun when %s is pressed", async (_label, keys) => {
+    const user = userEvent.setup()
+    const rerunScript = vi.fn()
+
+    render(
+      <StatusWidget
+        {...getProps({
+          rerunScript,
+          scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
+        })}
+      />
+    )
+
+    expect(await screen.findByText("Always rerun")).toBeVisible()
+
+    await user.keyboard(keys)
+
+    expect(rerunScript).toHaveBeenCalledWith(true)
+    expect(rerunScript).not.toHaveBeenCalledWith(false)
   })
 })
 
@@ -289,7 +263,7 @@ describe("Running Icon", () => {
     vi.useRealTimers()
   })
 
-  it("renders regular running gif before New Years", async () => {
+  it("renders regular running icon before New Years", async () => {
     vi.setSystemTime(new Date("December 30, 2022 23:59:00"))
 
     render(
@@ -298,11 +272,14 @@ describe("Running Icon", () => {
       />
     )
 
-    vi.runAllTimers()
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
     await waitFor(() => {
-      const icon = screen.queryByRole("img")
-      expect(icon).toHaveAttribute("src", "/src/assets/img/icon_running.gif")
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
     })
   })
 
@@ -315,12 +292,18 @@ describe("Running Icon", () => {
       />
     )
 
-    vi.runAllTimers()
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
     await waitFor(() => {
-      const icon = screen.queryByRole("img")
-      expect(icon).toHaveAttribute("src", "/src/assets/img/fireworks.gif")
+      expect(screen.getByTestId("stStatusWidgetNewYearsIcon")).toBeVisible()
     })
+    expect(screen.getByTestId("stStatusWidgetNewYearsIcon")).toHaveAttribute(
+      "src",
+      "/src/assets/img/fireworks.gif"
+    )
   })
 
   it("renders firework gif on Jan 6th", async () => {
@@ -332,12 +315,18 @@ describe("Running Icon", () => {
       />
     )
 
-    vi.runAllTimers()
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
     await waitFor(() => {
-      const icon = screen.queryByRole("img")
-      expect(icon).toHaveAttribute("src", "/src/assets/img/fireworks.gif")
+      expect(screen.getByTestId("stStatusWidgetNewYearsIcon")).toBeVisible()
     })
+    expect(screen.getByTestId("stStatusWidgetNewYearsIcon")).toHaveAttribute(
+      "src",
+      "/src/assets/img/fireworks.gif"
+    )
   })
 
   it("renders regular running gif after New Years", async () => {
@@ -349,11 +338,14 @@ describe("Running Icon", () => {
       />
     )
 
-    vi.runAllTimers()
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
     await waitFor(() => {
-      const icon = screen.queryByRole("img")
-      expect(icon).toHaveAttribute("src", "/src/assets/img/icon_running.gif")
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
     })
   })
 
@@ -370,14 +362,14 @@ describe("Running Icon", () => {
     const icon = screen.queryByRole("img")
     expect(icon).not.toBeInTheDocument()
 
-    vi.runAllTimers()
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
     await waitFor(() => {
-      const foundIcon = screen.getByRole("img")
-      expect(foundIcon).toHaveAttribute(
-        "src",
-        "/src/assets/img/icon_running.gif"
-      )
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
     })
   })
 })

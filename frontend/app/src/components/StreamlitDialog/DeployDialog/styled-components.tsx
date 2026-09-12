@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,45 @@
 
 import styled from "@emotion/styled"
 
+export const StyledDeployCard = styled.div(({ theme }) => ({
+  borderTopWidth: theme.sizes.borderWidth,
+  borderRightWidth: theme.sizes.borderWidth,
+  borderBottomWidth: theme.sizes.borderWidth,
+  borderLeftWidth: theme.sizes.borderWidth,
+  borderTopStyle: "solid",
+  borderRightStyle: "solid",
+  borderBottomStyle: "none",
+  borderLeftStyle: "none",
+  borderTopColor: theme.colors.borderColor,
+  borderRightColor: theme.colors.borderColor,
+  borderBottomColor: theme.colors.borderColor,
+  borderLeftColor: theme.colors.borderColor,
+  padding: theme.spacing.twoXL,
+  height: "100%",
+  display: "flex",
+  flexDirection: "column",
+  "&:last-child": {
+    borderRightStyle: "none",
+    borderBottomRightRadius: theme.radii.xl,
+  },
+  "&:first-child": { borderBottomLeftRadius: theme.radii.xl },
+  [`@media (max-width: ${theme.breakpoints.md})`]: {
+    padding: theme.spacing.xl,
+    "&:last-child": { borderBottomLeftRadius: theme.radii.xl },
+  },
+}))
+
+export const StyledDeployCardBody = styled("div", {
+  shouldForwardProp: prop => prop !== "$flexGrow",
+})<{ $flexGrow?: number }>(({ $flexGrow = 1 }) => ({
+  flexGrow: $flexGrow,
+}))
+
 export const StyledHeader = styled.div(({ theme }) => ({
   // We do not want to change the font for this based on theme.
   fontFamily: theme.fonts.sansSerif,
   fontWeight: theme.fontWeights.bold,
   fontSize: theme.fontSizes.lg,
-  color: theme.colors.grey90,
   marginTop: theme.spacing.twoXL,
   marginBottom: theme.spacing.twoXS,
 
@@ -35,7 +68,6 @@ export const StyledSubheader = styled.div(({ theme }) => ({
   fontFamily: theme.fonts.sansSerif,
   fontWeight: theme.fontWeights.normal,
   fontSize: theme.fontSizes.md,
-  color: theme.colors.grey90,
   marginTop: theme.spacing.twoXS,
   marginBottom: theme.spacing.md,
 

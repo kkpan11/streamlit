@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,7 +32,12 @@ with st.form("form_1"):
     text_input = st.text_input("Text Input", value="foo")
     time_input = st.time_input("Time Input", time(8, 45))
     toggle_input = st.toggle("Toggle Input", value=False)
-    st.form_submit_button("Submit")
+    st.form_submit_button("Submit", key="submit_button_form_1")
+    shortcut_submit_clicked = st.form_submit_button(
+        "Submit with shortcut",
+        key="shortcut_submit_button",
+        shortcut="Ctrl+Alt+S",
+    )
 
 st.write("Checkbox:", checkbox)
 st.write("Date Input:", date_input)
@@ -46,112 +51,114 @@ st.write("Text Area:", text_area)
 st.write("Text Input:", text_input)
 st.write("Time Input:", time_input)
 st.write("Toggle Input:", toggle_input)
+st.write("Submit button session state:", st.session_state.get("submit_button_form_1"))
+
+if shortcut_submit_clicked:
+    st.write("Shortcut form submitted!")
 
 with st.form("form_2"):
     st.write("Inside form 2")
-    text_input = st.text_input("Form 2 - Text Input")
+    st.text_input("Form 2 - Text Input")
     col1, col2 = st.columns(2)
     col1.form_submit_button(
-        "Form 2 - Submit (use_container_width, help)",
-        use_container_width=True,
+        "Form 2 - Submit (width=stretch, help)",
+        width="stretch",
         help="Submit by clicking",
     )
-    col2.form_submit_button(
-        "Form 2 - Submit 2 (use_container_width)", use_container_width=True
-    )
+    col2.form_submit_button("Form 2 - Submit 2 (width=stretch)", width="stretch")
 
 
 with st.form("form_3", border=False):
     st.write("Inside form 3 (border=False)")
-    text_input = st.text_input("Form 3 - Text Input")
+    st.text_input("Form 3 - Text Input")
     st.form_submit_button(
-        "Form 3 - Submit (use_container_width)",
-        use_container_width=True,
+        "Form 3 - Submit (width=stretch)",
+        width="stretch",
     )
 
 with st.form("form_4"):
     st.write("Inside form 4 - emoji icon")
-    text_input = st.text_input("Form 4 - Text Input")
+    st.text_input("Form 4 - Text Input")
     st.form_submit_button(
         "Form 4 - Submit with emoji icon",
-        use_container_width=True,
+        width="stretch",
         icon="🔍",
     )
 
 with st.form("form_5"):
     st.write("Inside form 5 - material icon")
-    text_input = st.text_input("Form 5 - Text Input")
+    st.text_input("Form 5 - Text Input")
     st.form_submit_button(
         "Form 5 - Submit with material icon",
-        use_container_width=True,
+        width="stretch",
         icon=":material/key:",
     )
 
 with st.form("form_6"):
     st.write("Inside form 6 - Submit on Enter")
-    text_input = st.text_input("Form 6 - Text Input")
+    st.text_input("Form 6 - Text Input")
     submitted_6 = st.form_submit_button(
         "Form 6 - First Submit",
-        use_container_width=True,
+        width="stretch",
     )
     submitted_6b = st.form_submit_button(
         "Form 6 - Second Submit",
         disabled=True,
-        use_container_width=True,
+        width="stretch",
     )
     if submitted_6 or submitted_6b:
         st.write("Form submitted")
 
 with st.form("form_7"):
     st.write("Inside form 7")
-    text_input = st.text_input("Form 7 - Text Input")
+    st.text_input("Form 7 - Text Input")
     submitted_7 = st.form_submit_button(
         "Form 7 - Disables Submit on Enter",
-        use_container_width=True,
+        width="stretch",
         disabled=True,
     )
     submitted_7b = st.form_submit_button(
         "Form 7 - Second Submit",
-        use_container_width=True,
+        width="stretch",
     )
     if submitted_7 or submitted_7b:
         st.write("Form submitted")
 
 with st.form("form_8", enter_to_submit=False):
     st.write("Inside form 8")
-    number_input = st.number_input("Form 8 - Number Input", 0, 100, step=1)
+    st.number_input("Form 8 - Number Input", 0, 100, step=1)
     submitted_8 = st.form_submit_button(
         "Form 8 - Submit",
-        use_container_width=True,
+        width="stretch",
     )
     if submitted_8:
         st.write("Form submitted")
 
 with st.form("form_9", enter_to_submit=False):
     st.write("Inside form 9")
-    number_input = st.number_input("Form 9 - Number Input", 0, 100, step=1)
+    st.number_input("Form 9 - Number Input", 0, 100, step=1)
     submitted_9 = st.form_submit_button(
         "Form 9 - Submit",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     )
     if submitted_9:
         st.write("Form submitted")
 
 with st.form("form_10"):
     st.write("Inside form 10")
-    number_input = st.number_input("Form 10 - Number Input", 0, 100, step=1)
+    st.number_input("Form 10 - Number Input", 0, 100, step=1)
     submitted_10 = st.form_submit_button(
         "Form 10 - Submit",
         type="tertiary",
-        use_container_width=True,
+        width="stretch",
     )
     if submitted_10:
         st.write("Form submitted")
 
 with st.form("form_11"):
     st.write("Inside form 11")
-    text_input = st.text_input("Form 11 - Text Input")
+    st.text_input("Form 11 - Text Input")
     submitted_11 = st.form_submit_button(
         "Form 11 - Submit",
         help="Submit by clicking",
@@ -162,7 +169,7 @@ with st.form("form_11"):
 with st.form("form_12", width=300):
     st.write("Inside form 12")
     st.write("Form width: 300px")
-    text_input = st.text_input("Form 12 - Text Input")
+    st.text_input("Form 12 - Text Input")
     submitted_12 = st.form_submit_button(
         "Form 12 - Submit",
         help="Submit by clicking",
@@ -173,7 +180,7 @@ with st.form("form_12", width=300):
 with st.form("form_13", width="content"):
     st.write("Inside form 13")
     st.write("Form width: content")
-    text_input = st.text_input("Form 13 - Text Input")
+    st.text_input("Form 13 - Text Input")
     submitted_13 = st.form_submit_button(
         "Form 13 - Submit",
         help="Submit by clicking",
@@ -184,7 +191,7 @@ with st.form("form_13", width="content"):
 with st.form("form_14", width="stretch"):
     st.write("Inside form 14")
     st.write("Form width: stretch")
-    text_input = st.text_input("Form 14 - Text Input")
+    st.text_input("Form 14 - Text Input")
     submitted_14 = st.form_submit_button(
         "Form 14 - Submit",
         help="Submit by clicking",
@@ -195,7 +202,7 @@ with st.form("form_14", width="stretch"):
 with st.form("form_15", height=100):
     st.write("Inside form 15")
     st.write("Form height: 100px")
-    text_input = st.text_input("Form 15 - Text Input")
+    st.text_input("Form 15 - Text Input")
     submitted_15 = st.form_submit_button(
         "Form 15 - Submit",
         help="Submit by clicking",
@@ -206,7 +213,7 @@ with st.form("form_15", height=100):
 with st.form("form_16", height="content"):
     st.write("Inside form 16")
     st.write("Form height: content")
-    text_input = st.text_input("Form 16 - Text Input")
+    st.text_input("Form 16 - Text Input")
     submitted_16 = st.form_submit_button(
         "Form 16 - Submit",
         help="Submit by clicking",
@@ -214,13 +221,94 @@ with st.form("form_16", height="content"):
     if submitted_16:
         st.write("Form submitted")
 
-with st.form("form_17", height="stretch"):
-    st.write("Inside form 17")
-    st.write("Form height: stretch")
-    text_input = st.text_input("Form 17 - Text Input")
-    submitted_17 = st.form_submit_button(
-        "Form 17 - Submit",
-        help="Submit by clicking",
+
+col1, col2 = st.columns(2)
+with col1:
+    with st.form("form_17", height=400):
+        st.write("Form height: 400px")
+        st.text_input("Form 17 - Text Input")
+        st.form_submit_button(
+            help="Submit by clicking",
+        )
+
+    with st.form("form_18", height="stretch"):
+        st.write("Form height: stretch")
+        st.text_input("Form 18 - Text Input")
+        st.form_submit_button(
+            help="Submit by clicking",
+        )
+
+with col2:
+    with st.form("form_19", height="stretch"):
+        st.write("Form height: stretch")
+        st.text_input("Form 19 - Text Input")
+        st.form_submit_button(
+            help="Submit by clicking",
+        )
+
+with st.container(height=600, border=True):
+    with st.form("form_20", height="stretch"):
+        st.write("Form height: stretch")
+        st.text_input("Form 20 - Text Input")
+        st.form_submit_button(
+            help="Submit by clicking",
+        )
+
+    with st.form("form_21", height="content"):
+        st.write("Form height: content")
+        st.text_input("Form 21 - Text Input")
+        st.form_submit_button(
+            help="Submit by clicking",
+        )
+
+with st.container(border=True):
+    st.write("")
+    with st.form("form_22"):
+        st.dataframe([1, 2, 3])
+        st.form_submit_button("Submit")
+
+with st.container(key="width_tests"):
+    with st.form("width_form"):
+        st.write("Form Submit Button Width Examples:")
+        st.form_submit_button("Content Width (Default)", width="content")
+        st.form_submit_button("Stretch Width", width="stretch")
+        st.form_submit_button("250px Width", width=250)
+
+
+update_button_props = st.toggle("Update button props")
+
+with st.form("form_with_dynamic_button"):
+    st.write("Form with dynamic button")
+
+    if update_button_props:
+        clicked = st.form_submit_button(
+            "Updated dynamic button",
+            type="secondary",
+            icon=":material/looks_two:",
+            width="stretch",
+            help="updated help",
+            key="dynamic_button_with_key",
+        )
+        st.write("Clicked updated button:", clicked)
+    else:
+        clicked = st.form_submit_button(
+            "Initial dynamic button",
+            type="primary",
+            icon=":material/looks_one:",
+            width="content",
+            help="initial help",
+            key="dynamic_button_with_key",
+        )
+        st.write("Clicked initial button:", clicked)
+
+# wrap=False keeps the submit button on one row and ellipsizes an overflowing
+# label, exposing the full label via a native title. A fixed width narrower than
+# the label forces the truncation.
+with st.form("wrap_submit_form"):
+    st.write("Form with a no-wrap submit button")
+    st.form_submit_button(
+        "Regenerate the complete quarterly report now",
+        width=200,
+        wrap=False,
+        key="wrap_false_submit_button",
     )
-    if submitted_17:
-        st.write("Form submitted")

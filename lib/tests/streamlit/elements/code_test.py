@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -168,6 +168,19 @@ class CodeElement(DeltaGeneratorTestCase):
         )
         assert element.width_config.use_stretch
 
+    def test_st_code_with_width_content(self):
+        """Test st.code with content width."""
+        code = "print('My string = %d' % my_value)"
+        st.code(code, width="content")
+
+        element = self.get_delta_from_queue().new_element
+        assert element.code.code_text == code
+        assert (
+            element.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_CONTENT.value
+        )
+        assert element.width_config.use_content
+
     @parameterized.expand(
         [
             "invalid",
@@ -212,6 +225,19 @@ class CodeElement(DeltaGeneratorTestCase):
         )
         assert element.height_config.use_content
 
+    def test_st_code_with_height_none_defaults_to_content(self):
+        """Test st.code with an explicit height=None falls back to content height."""
+        code = "print('My string = %d' % my_value)"
+        st.code(code, height=None)
+
+        element = self.get_delta_from_queue().new_element
+        assert element.code.code_text == code
+        assert (
+            element.height_config.WhichOneof("height_spec")
+            == HeightConfigFields.USE_CONTENT.value
+        )
+        assert element.height_config.use_content
+
     def test_st_code_with_height_stretch(self):
         """Test st.code with stretch height."""
         code = "print('My string = %d' % my_value)"
@@ -225,15 +251,7 @@ class CodeElement(DeltaGeneratorTestCase):
         )
         assert element.height_config.use_stretch
 
-    @parameterized.expand(
-        [
-            "invalid",
-            -100,
-            0,
-            100.5,
-            None,
-        ]
-    )
+    @parameterized.expand(["invalid", -100, 0, 100.5])
     def test_st_code_with_invalid_height(self, height):
         """Test st.code with invalid height values."""
         code = "print('My string = %d' % my_value)"
@@ -241,3 +259,18 @@ class CodeElement(DeltaGeneratorTestCase):
         with pytest.raises(StreamlitInvalidHeightError) as e:
             st.code(code, height=height)
         assert "Invalid height" in str(e.value)
+
+    def test_st_code_with_leading_whitespace(self):
+        """Test st.code with code containing leading whitespace."""
+        code = """
+            def hello():
+                print("Hello, Streamlit!")
+"""
+        st.code(code)
+
+        element = self.get_delta_from_queue().new_element
+        assert (
+            element.code.code_text
+            == """            def hello():
+                print("Hello, Streamlit!")"""
+        )

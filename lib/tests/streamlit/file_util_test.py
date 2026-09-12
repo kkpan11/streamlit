@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import errno
+import io
 import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
@@ -115,6 +116,20 @@ class FileUtilTest(unittest.TestCase):
             file_util.get_app_static_dir("/some_path/to/app/myapp.py")
             == "/some_path/to/app/static"
         )
+
+    def test_get_static_dir_is_package_static_folder(self) -> None:
+        """Package static assets live next to the ``streamlit`` package."""
+        static_dir = file_util.get_static_dir()
+        assert os.path.isabs(static_dir)
+        assert static_dir.endswith(os.path.join("streamlit", "static"))
+
+    def test_get_streamlit_file_path_raises_without_home(self) -> None:
+        """A missing home directory is a hard error."""
+        with (
+            patch("streamlit.file_util.Path.home", return_value=None),
+            pytest.raises(RuntimeError, match="No home directory"),
+        ):
+            file_util.get_streamlit_file_path("config.toml")
 
     @patch("os.path.getsize", MagicMock(return_value=42))
     @patch(
@@ -260,6 +275,35 @@ class FileInPythonPathTest(unittest.TestCase):
                 file_util.get_main_script_directory("/path/to/my/app.py")
                 == "/path/to/my"
             )
+
+    def test_get_encoded_file_data_auto_text(self):
+        """Test get_encoded_file_data auto-detects text data and returns StringIO."""
+        text_data = b"Hello, this is plain text."
+        result = file_util.get_encoded_file_data(text_data, encoding="auto")
+        assert isinstance(result, io.StringIO)
+        assert result.read() == "Hello, this is plain text."
+
+    def test_get_encoded_file_data_auto_binary(self):
+        """Test get_encoded_file_data auto-detects binary data and returns BytesIO."""
+        binary_data = bytes(range(256))
+        result = file_util.get_encoded_file_data(binary_data, encoding="auto")
+        assert isinstance(result, io.BytesIO)
+        assert result.read() == binary_data
+
+    def test_get_encoded_file_data_explicit_encoding(self):
+        """Test get_encoded_file_data with explicit encoding returns StringIO."""
+        data = "Héllo wörld".encode()
+        result = file_util.get_encoded_file_data(data, encoding="utf-8")
+        assert isinstance(result, io.StringIO)
+        assert result.read() == "Héllo wörld"
+
+    def test_get_main_script_streamlit_file_path(self):
+        """Test get_main_script_streamlit_file_path returns correct path."""
+        result = file_util.get_main_script_streamlit_file_path(
+            "/home/user/app.py", "config.toml"
+        )
+        assert result.endswith(".streamlit/config.toml")
+        assert "/home/user/" in result
 
     def test_normalize_path_join(self):
         """Test file_util.normalize_path_join."""

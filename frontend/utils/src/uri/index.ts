@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ export function buildHttpUri(
   path: string
 ): string {
   const fullPath = makePath(pathname, path)
-  return `${protocol}//${hostname}:${port}/${fullPath}`
+  return `${protocol}//${hostname}${port ? `:${port}` : ""}/${fullPath}`
 }
 
 export function makePath(basePath: string, subPath: string): string {

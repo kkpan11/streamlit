@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,38 +14,116 @@
  * limitations under the License.
  */
 
+import { describe, expect, it } from "vitest"
+
 import { PageConfig } from "@streamlit/protobuf"
 
-import { shouldCollapse } from "./utils"
+import { clampSidebarWidth, DEFAULT_WIDTH, shouldCollapse } from "./utils"
+
+const MIN_SIDEBAR_WIDTH = 200
+const MAX_SIDEBAR_WIDTH = 600
 
 describe("shouldCollapse", () => {
-  const { innerWidth: originalInnerWidth } = window
-  beforeEach(() => {
-    // Replace window.innerWidth with a mutable object that otherwise has
-    // the same contents so that we can change innerWidth below.
-    // @ts-expect-error
-    delete window.innerWidth
-    window.innerWidth = originalInnerWidth
-  })
-  afterEach(() => {
-    window.innerWidth = originalInnerWidth
-  })
-
   it("should collapse given state is collapsed", () => {
-    expect(shouldCollapse(PageConfig.SidebarState.COLLAPSED, 50)).toBeTruthy()
+    expect(
+      shouldCollapse(PageConfig.SidebarState.COLLAPSED, 50, 100)
+    ).toBeTruthy()
   })
 
   it("should not collapse given state is expanded", () => {
-    expect(shouldCollapse(PageConfig.SidebarState.EXPANDED, 50)).toBeFalsy()
+    expect(
+      shouldCollapse(PageConfig.SidebarState.EXPANDED, 50, 100)
+    ).toBeFalsy()
+  })
+
+  it("should not collapse given state is locked and viewport is desktop-width", () => {
+    // Wider than breakpoint — sidebar is pinned open
+    expect(
+      shouldCollapse(PageConfig.SidebarState.LOCKED, 500, 1200)
+    ).toBeFalsy()
+  })
+
+  it("should collapse given state is locked and viewport is mobile-width", () => {
+    // Narrower than breakpoint — lock degrades so the overlay sidebar doesn't trap users
+    expect(
+      shouldCollapse(PageConfig.SidebarState.LOCKED, 500, 400)
+    ).toBeTruthy()
   })
 
   it("should collapse given state is auto and width is less than breakpoint", () => {
-    window.innerWidth = 40
-    expect(shouldCollapse(PageConfig.SidebarState.AUTO, 50)).toBeTruthy()
+    const windowInnerWidth = 40
+    expect(
+      shouldCollapse(PageConfig.SidebarState.AUTO, 50, windowInnerWidth)
+    ).toBeTruthy()
   })
 
   it("should not collapse given state is auto and width greater less than breakpoint", () => {
-    window.innerWidth = 60
-    expect(shouldCollapse(PageConfig.SidebarState.AUTO, 50)).toBeFalsy()
+    const windowInnerWidth = 60
+    expect(
+      shouldCollapse(PageConfig.SidebarState.AUTO, 50, windowInnerWidth)
+    ).toBeFalsy()
+  })
+})
+
+describe("clampSidebarWidth", () => {
+  describe("minimum width clamping", () => {
+    it("should clamp values below minimum to 200px", () => {
+      const testCases = [50, Number.NEGATIVE_INFINITY, Number.MIN_SAFE_INTEGER]
+
+      testCases.forEach(width => {
+        expect(clampSidebarWidth(width)).toBe(MIN_SIDEBAR_WIDTH)
+      })
+    })
+
+    it("should handle exactly minimum width", () => {
+      expect(clampSidebarWidth(MIN_SIDEBAR_WIDTH)).toBe(MIN_SIDEBAR_WIDTH)
+    })
+  })
+
+  describe("maximum width clamping", () => {
+    it("should clamp values above maximum to 600px", () => {
+      const testCases = [
+        1000,
+        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER,
+      ]
+
+      testCases.forEach(width => {
+        expect(clampSidebarWidth(width)).toBe(MAX_SIDEBAR_WIDTH)
+      })
+    })
+
+    it("should handle exactly maximum width", () => {
+      expect(clampSidebarWidth(MAX_SIDEBAR_WIDTH)).toBe(MAX_SIDEBAR_WIDTH)
+    })
+  })
+
+  describe("valid width range", () => {
+    it("should return width unchanged when within valid bounds", () => {
+      const validWidths = [300, 250.5]
+
+      validWidths.forEach(width => {
+        expect(clampSidebarWidth(width)).toBe(width)
+      })
+    })
+  })
+
+  describe("edge cases and error handling", () => {
+    it("should handle boundary values correctly", () => {
+      // Just below minimum
+      expect(clampSidebarWidth(MIN_SIDEBAR_WIDTH - 1)).toBe(MIN_SIDEBAR_WIDTH)
+
+      // Just above maximum
+      expect(clampSidebarWidth(MAX_SIDEBAR_WIDTH + 1)).toBe(MAX_SIDEBAR_WIDTH)
+    })
+
+    it("should handle special numeric values", () => {
+      // These should be handled gracefully by Math.max/Math.min
+      expect(clampSidebarWidth(Number.NaN)).toBe(
+        Number.parseInt(DEFAULT_WIDTH, 10)
+      )
+      expect(clampSidebarWidth(Number.MAX_VALUE)).toBe(MAX_SIDEBAR_WIDTH)
+      expect(clampSidebarWidth(Number.MIN_VALUE)).toBe(MIN_SIDEBAR_WIDTH)
+    })
   })
 })

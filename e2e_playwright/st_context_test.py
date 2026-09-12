@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,15 +39,14 @@ def test_locale(app: Page):
     expect_prefixed_markdown(app, "Locale primary language:", "it-IT")
 
 
-def test_url(app: Page, app_port: int):
+def test_url(app: Page, app_base_url: str):
     """Test that the URL is correctly set."""
-    expected_url = f"http://localhost:{app_port}"
-    expect_prefixed_markdown(app, "Full url:", expected_url)
+    expect_prefixed_markdown(app, "Full url:", app_base_url)
 
 
 @pytest.mark.browser_context_args(timezone_id="Europe/Paris")
 def test_rerun_preserves_context(app: Page):
-    """Test that the timezone is preserved after rerun."""
+    """Test that the timezone is preserved after a rerun."""
     # Check the initial timezone
     expect_prefixed_markdown(app, "Timezone name:", "Europe/Paris")
 
@@ -56,3 +55,15 @@ def test_rerun_preserves_context(app: Page):
 
     # Check that the timezone is still correct after rerun
     expect_prefixed_markdown(app, "Timezone name:", "Europe/Paris")
+
+
+def test_theme_type(themed_app: Page, app_theme: str):
+    """Test that the theme.type is correctly set."""
+    if app_theme == "light_theme":
+        expected_value = "light"
+    elif app_theme == "dark_theme":
+        expected_value = "dark"
+    else:
+        raise ValueError(f"Unrecognized app_theme fixture value: {app_theme}")
+
+    expect_prefixed_markdown(themed_app, "Theme type:", expected_value)

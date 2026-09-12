@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,18 +34,22 @@ if TYPE_CHECKING:
     assert_type(select_slider("foo", [1, 2, 3]), int)
     assert_type(select_slider("foo", [1, 2, 3], value=2), int)
     assert_type(select_slider("foo", [1, 2, 3], value=(1, 3)), tuple[int, int])
-    assert_type(select_slider("foo", [1.0, 2.0, 3.0]), float)
-    assert_type(select_slider("foo", [1.0, 2.0, 3.0], value=3.0), float)
+    # ty infers `float*` (not equivalent to `float`).
+    assert_type(select_slider("foo", [1.0, 2.0, 3.0]), float)  # ty: ignore[type-assertion-failure]
+    # ty infers `float*` (not equivalent to `float`).
+    assert_type(select_slider("foo", [1.0, 2.0, 3.0], value=3.0), float)  # ty: ignore[type-assertion-failure]
     assert_type(
         select_slider("foo", [1.0, 2.0, 3.0], value=(2.0, 3.0)), tuple[float, float]
     )
     assert_type(select_slider("foo", ["foo", "bar"]), str)
     assert_type(select_slider("foo", Alfred), Alfred)
     assert_type(select_slider("foo", [Alfred.HITCHCOCK, Alfred.GREENE]), Alfred)
-    assert_type(
+    # ty infers `int | Alfred | str` rather than `object`.
+    assert_type(  # ty: ignore[type-assertion-failure]
         select_slider("foo", [1, Alfred.HITCHCOCK, "five"], value="five"), object
     )
-    assert_type(
+    # ty infers `tuple[int | Alfred | str, int | Alfred | str]`.
+    assert_type(  # ty: ignore[type-assertion-failure]
         select_slider("foo", [1, Alfred.HITCHCOCK, "five"], value=[1, "five"]),
         tuple[object, object],
     )
@@ -54,8 +58,49 @@ if TYPE_CHECKING:
         tuple[list[int], list[int]],
     )
     opt: list[object] = [1, 2, "4"]
-    assert_type(select_slider("foo", options=opt, value=[1, 2]), object)
+    # ty infers `tuple[object, object]` rather than `object`.
+    assert_type(select_slider("foo", options=opt, value=[1, 2]), object)  # ty: ignore[type-assertion-failure]
     # See note in select_slider.py; we can't really tell mypy that this will return a
     # tuple[object, object] since value: Sequence[int] is a subtype of object.
     # Technically this return type isn't wrong (tuple[object, object] is a subtype
     # of object), it's just not as specific as we'd like.
+
+    # Check bind parameter
+    assert_type(select_slider("foo", [1, 2, 3], bind="query-params"), int)
+    assert_type(select_slider("foo", ["a", "b", "c"], bind="query-params"), str)
+    assert_type(select_slider("foo", [1, 2, 3], bind=None), int)
+    assert_type(
+        select_slider("foo", [1, 2, 3], value=(1, 3), bind="query-params"),
+        tuple[int, int],
+    )
+
+    # Check on_change parameter modes
+    assert_type(select_slider("foo", [1, 2, 3], on_change=None), int)
+    assert_type(select_slider("foo", [1, 2, 3], on_change="rerun"), int)
+    assert_type(select_slider("foo", [1, 2, 3], on_change="ignore"), int)
+    assert_type(select_slider("foo", [1, 2, 3], on_change=lambda: None), int)
+    assert_type(
+        select_slider("foo", [1, 2, 3], value=(1, 3), on_change="ignore"),
+        tuple[int, int],
+    )
+
+    def on_select_slider_change(prefix: str) -> None: ...
+
+    # Common parameters combined
+    assert_type(
+        select_slider(
+            "foo",
+            [1, 2, 3],
+            format_func=lambda value: f"Option {value}",
+            key="range",
+            help="Choose a value",
+            on_change=on_select_slider_change,
+            args=("range",),
+            kwargs={},
+            disabled=False,
+            label_visibility="visible",
+            width=360,
+            persist_state="page",
+        ),
+        int,
+    )

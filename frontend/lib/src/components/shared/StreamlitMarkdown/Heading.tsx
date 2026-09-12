@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,28 @@
  * limitations under the License.
  */
 
-import React, { Fragment, ReactElement, useContext } from "react"
+import { Fragment, ReactElement, useContext } from "react"
 
-import type { Components } from "react-markdown/lib/ast-to-react"
+import { Components } from "react-markdown"
 
 import { Heading as HeadingProto } from "@streamlit/protobuf"
 
-import IsSidebarContext from "~lib/components/core/IsSidebarContext"
 import IsDialogContext from "~lib/components/core/IsDialogContext"
+import { FlexContext } from "~lib/components/core/Layout/FlexContext"
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
 
-import {
-  StyledHeaderDivider,
-  StyledStreamlitMarkdown,
-} from "./styled-components"
-import "katex/dist/katex.min.css"
 import {
   HeadingWithActionElements,
   RenderedMarkdown,
   Tags,
 } from "./StreamlitMarkdown"
+import {
+  StyledHeaderDivider,
+  StyledHeadingIcon,
+  StyledStreamlitMarkdown,
+} from "./styled-components"
+
+import "katex/dist/katex.min.css"
 
 export interface HeadingProtoProps {
   element: HeadingProto
@@ -70,18 +73,33 @@ const OVERRIDE_COMPONENTS: Components = {
 
 function Heading(props: HeadingProtoProps): ReactElement {
   const { element } = props
-  const { tag, anchor, body, help, hideAnchor, divider } = element
-  const isInSidebar = useContext(IsSidebarContext)
+  const { tag, anchor, body, help, hideAnchor, divider, icon } = element
   const isInDialog = useContext(IsDialogContext)
-  // st.header can contain new lines which are just interpreted as new
-  // markdown to be rendered as such.
+  const flexContext = useContext(FlexContext)
+  const truncate = element.wrap === false
+  // Heading bodies may contain newlines. Render the first line as the heading
+  // and, when wrapping is enabled, render the remainder as Markdown below it.
+  // With wrap=false the extra lines are dropped so the element stays one line tall.
   const [heading, ...rest] = body.split("\n")
+
+  // Keep the icon as an inline sibling instead of injecting it into the markdown source:
+  // - wrapping and text_alignment match a markdown icon when wrap=True
+  // - the glyph stays out of the accessible name and auto-anchor
+  // - "spinner" works (it has no markdown equivalent)
+  const headingIcon = icon ? (
+    <StyledHeadingIcon aria-hidden="true" data-testid="stHeadingIconWrapper">
+      <DynamicIcon iconValue={icon} size="inherit" testid="stHeadingIcon" />
+    </StyledHeadingIcon>
+  ) : undefined
 
   return (
     <div className="stHeading" data-testid="stHeading">
+      {/* Truncation CSS lives on HeadingWithActionElements. Applying it here
+          would flatten the heading to display:inline and clip help icons. */}
       <StyledStreamlitMarkdown
         isCaption={Boolean(false)}
-        isInSidebarOrDialog={isInSidebar || isInDialog}
+        isInDialog={isInDialog}
+        isInHorizontalLayout={flexContext?.isInHorizontalLayout}
         data-testid="stMarkdownContainer"
       >
         <HeadingWithActionElements
@@ -89,6 +107,8 @@ function Heading(props: HeadingProtoProps): ReactElement {
           help={help}
           hideAnchor={hideAnchor}
           tag={tag}
+          icon={headingIcon}
+          truncate={truncate}
         >
           <RenderedMarkdown
             allowHTML={false}
@@ -97,8 +117,8 @@ function Heading(props: HeadingProtoProps): ReactElement {
             overrideComponents={OVERRIDE_COMPONENTS}
           />
         </HeadingWithActionElements>
-        {/* Only the first line of the body is used as a heading, the remaining text is added as regular mardkown below. */}
-        {rest.length > 0 && (
+        {/* wrap=false keeps only the first line; extra body lines would otherwise render as markdown below. */}
+        {!truncate && rest.length > 0 && (
           <RenderedMarkdown source={rest.join("\n")} allowHTML={false} />
         )}
       </StyledStreamlitMarkdown>

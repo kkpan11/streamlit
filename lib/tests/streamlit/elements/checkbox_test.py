@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""checkbox unit tests."""
+from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
@@ -21,10 +21,16 @@ from parameterized import parameterized
 
 import streamlit as st
 from streamlit.elements.lib.policies import _LOGGER
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitDuplicateElementId,
+    StreamlitValueError,
+)
 from streamlit.proto.Checkbox_pb2 import Checkbox as CheckboxProto
-from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
+from streamlit.runtime.state.widgets import register_widget_from_metadata
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class SomeObj:
@@ -43,10 +49,23 @@ class CheckboxTest(DeltaGeneratorTestCase):
         assert not c.default
         assert not c.disabled
         assert (
-            c.label_visibility.value
-            == LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
         assert c.type == CheckboxProto.StyleType.DEFAULT
+
+    def test_non_str_label_is_coerced(self):
+        """Non-string labels are coerced so protobuf assignment does not TypeError."""
+        st.checkbox(123)
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert c.label == "123"
+
+    def test_non_str_help_is_coerced(self):
+        """Non-string help is coerced so protobuf assignment does not TypeError."""
+        st.checkbox("the label", help=123)
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert c.help == "123"
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
@@ -112,9 +131,9 @@ hello
 
     @parameterized.expand(
         [
-            ("visible", LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE),
-            ("hidden", LabelVisibilityMessage.LabelVisibilityOptions.HIDDEN),
-            ("collapsed", LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED),
+            ("visible", LabelVisibility.LabelVisibilityOptions.VISIBLE),
+            ("hidden", LabelVisibility.LabelVisibilityOptions.HIDDEN),
+            ("collapsed", LabelVisibility.LabelVisibilityOptions.COLLAPSED),
         ]
     )
     def test_label_visibility(self, label_visibility_value, proto_value):
@@ -126,11 +145,11 @@ hello
         assert c.label_visibility.value == proto_value
 
     def test_label_visibility_wrong_value(self):
-        with pytest.raises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitValueError) as e:
             st.checkbox("the label", label_visibility="wrong_value")
         assert (
             str(e.value)
-            == "Unsupported label_visibility option 'wrong_value'. Valid values are 'visible', 'hidden' or 'collapsed'."
+            == "Invalid `label_visibility` value. Supported values: 'visible', 'hidden', 'collapsed'."
         )
 
     def test_empty_label_warning(self):
@@ -155,17 +174,69 @@ hello
         assert not c.default
         assert not c.disabled
         assert (
-            c.label_visibility.value
-            == LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
         assert c.type == CheckboxProto.StyleType.TOGGLE
+
+    @parameterized.expand(
+        [
+            (
+                "checkbox",
+                lambda label="Label", **kwargs: st.checkbox(label, **kwargs),
+                "checkbox",
+            ),
+            (
+                "toggle",
+                lambda label="Label", **kwargs: st.toggle(label, **kwargs),
+                "checkbox",
+            ),
+        ]
+    )
+    def test_stable_id_with_key(self, name, command, attr):
+        """Test that the widget ID is stable when a stable key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            # First render with certain params
+            command(
+                label="Label 1",
+                key=f"{name}_key",
+                value=True,
+                help="Help 1",
+                disabled=False,
+                width="content",
+                on_change=lambda: None,
+                args=("arg1", "arg2"),
+                kwargs={"kwarg1": "kwarg1"},
+                label_visibility="visible",
+            )
+            c1 = getattr(self.get_delta_from_queue().new_element, attr)
+            id1 = c1.id
+
+            # Second render with different params but same key
+            command(
+                label="Label 2",
+                key=f"{name}_key",
+                value=False,
+                help="Help 2",
+                disabled=True,
+                width="stretch",
+                on_change=lambda: None,
+                args=("arg_1", "arg_2"),
+                kwargs={"kwarg_1": "kwarg_1"},
+                label_visibility="hidden",
+            )
+            c2 = getattr(self.get_delta_from_queue().new_element, attr)
+            id2 = c2.id
+            assert id1 == id2
 
     def test_checkbox_shows_cached_widget_replay_warning(self):
         """Test that a warning is shown when this widget is used inside a cached function."""
         st.cache_data(lambda: st.checkbox("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
+        el = self.get_delta_from_queue(-3).new_element.exception
         assert el.type == "CachedWidgetWarning"
         assert el.is_warning
 
@@ -174,6 +245,280 @@ hello
         st.cache_data(lambda: st.toggle("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
+        el = self.get_delta_from_queue(-3).new_element.exception
         assert el.type == "CachedWidgetWarning"
         assert el.is_warning
+
+    def test_checkbox_with_width(self):
+        """Test st.checkbox with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for index, (
+            width_value,
+            expected_width_spec,
+            field_name,
+            field_value,
+        ) in enumerate(test_cases):
+            with self.subTest(width_value=width_value):
+                st.checkbox(f"checkbox width test {index}", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.checkbox.label == f"checkbox width test {index}"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_checkbox_with_invalid_width(self):
+        """Test st.checkbox with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for index, (width_value, expected_error_message) in enumerate(test_cases):
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.checkbox(
+                        f"invalid checkbox width test {index}", width=width_value
+                    )
+
+                assert expected_error_message in str(exc.value)
+
+    def test_checkbox_default_width(self):
+        """Test that st.checkbox defaults to content width."""
+        st.checkbox("the label")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.checkbox.label == "the label"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_CONTENT.value
+        )
+        assert el.width_config.use_content is True
+
+    def test_toggle_with_width(self):
+        """Test st.toggle with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for index, (
+            width_value,
+            expected_width_spec,
+            field_name,
+            field_value,
+        ) in enumerate(test_cases):
+            with self.subTest(width_value=width_value):
+                st.toggle(f"toggle width test {index}", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.checkbox.label == f"toggle width test {index}"
+                assert el.checkbox.type == CheckboxProto.StyleType.TOGGLE
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_toggle_with_invalid_width(self):
+        """Test st.toggle with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for index, (width_value, expected_error_message) in enumerate(test_cases):
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.toggle(f"invalid toggle test {index}", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_toggle_default_width(self):
+        """Test that st.toggle defaults to content width."""
+        st.toggle("the label")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.checkbox.label == "the label"
+        assert el.checkbox.type == CheckboxProto.StyleType.TOGGLE
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_CONTENT.value
+        )
+        assert el.width_config.use_content is True
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_bind_query_params_sets_query_param_key(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that bind='query-params' with a key sets query_param_key in proto."""
+        widget_func("the label", key="my_widget", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert c.query_param_key == "my_widget"
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_bind_query_params_without_key_raises_exception(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that bind='query-params' without a key raises an exception."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            widget_func("the label", bind="query-params")
+
+        assert "must have a unique 'key' parameter" in str(exc.value)
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_no_bind_does_not_set_query_param_key(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that without bind parameter, query_param_key is not set."""
+        widget_func("the label", key="my_widget")
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert c.query_param_key == ""
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_invalid_bind_value_raises_exception(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that an invalid bind value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as exc:
+            widget_func("the label", key="my_widget", bind="invalid-value")
+
+        assert "Invalid `bind` value" in str(exc.value)
+        assert "query-params" in str(exc.value)
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_persist_state_passed_to_metadata(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that persist_state is threaded onto the widget's WidgetMetadata."""
+        with patch(
+            "streamlit.runtime.state.widgets.register_widget_from_metadata",
+            wraps=register_widget_from_metadata,
+        ) as patched:
+            widget_func("the label", key="my_widget", persist_state="session")
+
+        metadata = patched.call_args[0][0]
+        assert metadata.persist_state == "session"
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_persist_state_without_key_raises(
+        self, _name: str, widget_func: object
+    ) -> None:
+        """Test that persist_state without a key raises an exception."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            widget_func("the label", persist_state="session")
+
+        assert "must have a unique 'key' parameter" in str(exc.value)
+
+    @parameterized.expand(
+        [
+            ("checkbox_default", st.checkbox, {}),
+            ("checkbox_explicit_none", st.checkbox, {"wrap": None}),
+            ("toggle_default", st.toggle, {}),
+            ("toggle_explicit_none", st.toggle, {"wrap": None}),
+        ]
+    )
+    def test_wrap_default(
+        self, _name: str, widget_func: object, kwargs: dict[str, object]
+    ) -> None:
+        """Omitting wrap or passing wrap=None leaves the proto field unset (auto),
+        so the frontend resolves wrapping from the layout."""
+        widget_func("the label", **kwargs)
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert not c.HasField("wrap")
+
+    @parameterized.expand(
+        [
+            ("checkbox_true", st.checkbox, True),
+            ("checkbox_false", st.checkbox, False),
+            ("toggle_true", st.toggle, True),
+            ("toggle_false", st.toggle, False),
+        ]
+    )
+    def test_wrap(self, _name: str, widget_func: object, wrap_value: bool) -> None:
+        """The wrap parameter is forwarded to the checkbox proto."""
+        widget_func("the label", wrap=wrap_value)
+
+        c = self.get_delta_from_queue().new_element.checkbox
+        assert c.wrap is wrap_value
+
+    @parameterized.expand(
+        [
+            ("checkbox", st.checkbox),
+            ("toggle", st.toggle),
+        ]
+    )
+    def test_wrap_excluded_from_id(self, _name: str, widget_func: object) -> None:
+        """wrap is layout-only and must not affect the element id (state-preserving).
+
+        Two otherwise-identical widgets that differ only in wrap collide on the
+        same auto-generated id, proving wrap is excluded from id computation.
+        """
+        widget_func("same label")
+        with pytest.raises(StreamlitDuplicateElementId):
+            widget_func("same label", wrap=False)

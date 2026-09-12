@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,14 +31,17 @@ from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit.elements.lib.image_utils import (
     AtomicImage,
-    WidthBehavior,
     _image_may_have_alpha_channel,
     _np_array_to_bytes,
     _pil_to_bytes,
     image_to_url,
     marshall_images,
 )
-from streamlit.errors import StreamlitAPIException
+from streamlit.elements.lib.layout_utils import LayoutConfig
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitValueError,
+)
 from streamlit.proto.Image_pb2 import ImageList as ImageListProto
 from streamlit.runtime.memory_media_file_storage import (
     _calculate_file_id,
@@ -229,7 +232,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
     def test_image_to_url_prefix(self, img, expected_prefix):
         url = image_to_url(
             img,
-            width=-1,
+            layout_config=LayoutConfig(width="stretch"),
             clamp=False,
             channels="RGB",
             output_format="JPEG",
@@ -248,7 +251,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
     def test_image_to_url_suffix(self, img, expected_suffix):
         url = image_to_url(
             img,
-            width=-1,
+            layout_config=LayoutConfig(width="stretch"),
             clamp=False,
             channels="RGB",
             output_format="auto",
@@ -280,7 +283,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         storage backend that's able to open the file, so it's up to the manager -
         and not image_to_url - to throw an error.)
         """
-        # Mock out save_image_data to avoid polluting the cache for later tests
+        # Mock out save_media_data to avoid polluting the cache for later tests
         with (
             mock.patch(
                 "streamlit.runtime.media_file_manager.MediaFileManager.add"
@@ -291,7 +294,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
 
             result = image_to_url(
                 input_string,
-                width=-1,
+                layout_config=LayoutConfig(width="stretch"),
                 clamp=False,
                 channels="RGB",
                 output_format="auto",
@@ -359,7 +362,6 @@ class ImageProtoTest(DeltaGeneratorTestCase):
 
     def test_BytesIO_to_bytes(self):
         """Test streamlit.image.BytesIO_to_bytes."""
-        pass
 
     def test_verify_np_shape(self):
         """Test streamlit.image.verify_np_shape.
@@ -368,9 +370,9 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         - check shape 3 but dims 1, 3, 4
         - if only one channel convert to just 2 dimensions.
         """
-        with pytest.raises(StreamlitAPIException) as shape_exc:
+        with pytest.raises(StreamlitValueError) as shape_exc:
             st.image(np.ndarray(shape=1))
-        assert str(shape_exc.value) == "Numpy shape has to be of length 2 or 3."
+        assert "2D or 3D" in str(shape_exc.value)
 
         with pytest.raises(StreamlitAPIException) as shape2_exc:
             st.image(np.ndarray(shape=(1, 2, 2)))
@@ -387,7 +389,6 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         - float with clipping
         - int  with clipping
         """
-        pass
 
     @parameterized.expand([("P", True), ("RGBA", True), ("LA", True), ("RGB", False)])
     def test_image_may_have_alpha_channel(self, format: str, expected_alpha: bool):
@@ -401,7 +402,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(img, caption="some caption", width=100, output_format="PNG")
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == 100
+        assert el.width_config.pixel_width == 100
         assert el.imgs.imgs[0].caption == "some caption"
 
         # locate resultant file in the file manager and check its metadata.
@@ -422,14 +423,13 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(
             imgs,
             caption=["some caption"] * 3,
-            width=200,
-            use_column_width=True,
+            width="stretch",
             clamp=True,
             output_format="PNG",
         )
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == -2
+        assert el.width_config.use_stretch
 
         # locate resultant file in the file manager and check its metadata.
         for idx in range(len(imgs)):
@@ -449,7 +449,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(url, caption="some caption", width=300)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == 300
+        assert el.width_config.pixel_width == 300
         assert el.imgs.imgs[0].caption == "some caption"
         assert el.imgs.imgs[0].url == url
 
@@ -463,30 +463,19 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(urls, caption=["some caption"] * 3, width=300)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == 300
+        assert el.width_config.pixel_width == 300
         for idx, url in enumerate(urls):
             assert el.imgs.imgs[idx].caption == "some caption"
             assert el.imgs.imgs[idx].url == url
 
-    def test_st_image_bad_width(self):
-        """Test st.image with bad width."""
-        st.image(
-            Image.new("RGB", (64, 64), color="red"),
-            use_column_width=False,
-            width=-1234,
-        )
-
-        el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == WidthBehavior.ORIGINAL
-
-    def test_st_image_use_container_width_default(self):
+    def test_st_image_default_width(self):
         """Test st.image without specifying a use_container_width."""
         img = Image.new("RGB", (64, 64), color="red")
 
         st.image(img)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == WidthBehavior.MIN_IMAGE_OR_CONTAINER
+        assert el.width_config.use_content
 
     def test_st_image_use_container_width_true(self):
         """Test st.image with use_container_width=True."""
@@ -495,7 +484,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(img, use_container_width=True)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == WidthBehavior.MAX_IMAGE_OR_CONTAINER
+        assert el.width_config.use_stretch
 
     def test_st_image_use_container_width_false(self):
         """Test st.image with use_container_width=False."""
@@ -504,7 +493,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(img, use_container_width=False)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == WidthBehavior.MIN_IMAGE_OR_CONTAINER
+        assert el.width_config.use_content
 
     def test_st_image_use_container_width_true_and_given_width(self):
         """Test st.image with use_container_width=True and a given width."""
@@ -513,7 +502,7 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(img, width=100, use_container_width=True)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == WidthBehavior.MAX_IMAGE_OR_CONTAINER
+        assert el.width_config.use_stretch
 
     def test_st_image_use_container_width_false_and_given_width(self):
         """Test st.image with use_container_width=False and a given width."""
@@ -522,16 +511,143 @@ class ImageProtoTest(DeltaGeneratorTestCase):
         st.image(img, width=100, use_container_width=False)
 
         el = self.get_delta_from_queue().new_element
-        assert el.imgs.width == 100
+        assert el.width_config.pixel_width == 100
 
-    def test_st_image_use_container_width_and_use_column_width(self):
-        """Test st.image with use_container_width and use_column_width."""
+    def test_st_image_width_stretch(self):
+        """Test st.image with width='stretch'."""
         img = Image.new("RGB", (64, 64), color="red")
 
-        with pytest.raises(StreamlitAPIException) as e:
-            st.image(img, use_container_width=True, use_column_width=True)
+        st.image(img, width="stretch")
 
-        assert (
-            "`use_container_width` and `use_column_width` cannot be set at the same time."
-            in str(e.value)
-        )
+        el = self.get_delta_from_queue().new_element
+        assert el.width_config.use_stretch
+
+    def test_st_image_width_content(self):
+        """Test st.image with width='content'."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, width="content")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.width_config.use_content
+
+    @parameterized.expand(
+        [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                "",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -1,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                None,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+    )
+    def test_st_image_invalid_width(self, invalid_width, expected_error_message):
+        """Test st.image with invalid width values."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        with pytest.raises(StreamlitAPIException) as exc_info:
+            st.image(img, width=invalid_width)
+
+        assert expected_error_message in str(exc_info.value)
+
+    def test_st_image_with_link(self):
+        """Test st.image with a valid link parameter."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, link="https://streamlit.io")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == "https://streamlit.io"
+
+    def test_st_image_with_http_link(self):
+        """Test st.image with an http link."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, link="http://example.com")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == "http://example.com"
+
+    def test_st_image_without_link(self):
+        """Test st.image without a link parameter."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == ""
+
+    def test_st_image_with_empty_string_link(self):
+        """Test st.image with link='' is treated the same as link=None."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, link="")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == ""
+
+    def test_st_image_with_relative_link(self):
+        """Test st.image with a relative link."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, link="/my_page")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == "/my_page"
+
+    def test_st_image_with_link_no_scheme(self):
+        """Test st.image with a link without scheme."""
+        img = Image.new("RGB", (64, 64), color="red")
+
+        st.image(img, link="example.com/path")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.imgs.link == "example.com/path"
+
+    def test_st_image_link_with_multiple_images(self):
+        """Test st.image with link and multiple images raises an error."""
+        imgs = [
+            Image.new("RGB", (64, 64), color="red"),
+            Image.new("RGB", (64, 64), color="blue"),
+        ]
+
+        with pytest.raises(StreamlitAPIException) as exc_info:
+            st.image(imgs, link="https://streamlit.io")
+
+        assert "single image" in str(exc_info.value)
+        assert "2 images" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "static_url",
+    [
+        "/app/static/my_image.png",
+        "/app/static/images/subdir/my_image.png",
+    ],
+    ids=["simple", "subdirectory"],
+)
+def test_image_to_url_with_relative_static_url(static_url: str) -> None:
+    """Test that image_to_url passes through relative static URLs unchanged."""
+    result = image_to_url(
+        static_url,
+        layout_config=LayoutConfig(width="stretch"),
+        clamp=False,
+        channels="RGB",
+        output_format="auto",
+        image_id="test",
+    )
+    assert result == static_url

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useEffect } from "react"
+import { ReactElement } from "react"
 
-import { BaseProvider } from "baseui"
 import createCache from "@emotion/cache"
 import {
   CacheProvider,
@@ -24,9 +23,10 @@ import {
   Global,
 } from "@emotion/react"
 
-import { globalStyles, ThemeConfig } from "./theme"
+import { globalStyles } from "./theme/globalStyles"
+import type { ThemeConfig } from "./theme/types"
 
-export interface RootStyleProviderProps {
+interface RootStyleProviderProps {
   theme: ThemeConfig
   children: React.ReactNode
 }
@@ -40,62 +40,17 @@ const cache = createCache({
   ...(nonce && { nonce }),
 })
 
-/**
- * React hook to detect the scrollbar width and set it as a CSS custom property (--scrollbar-width).
- */
-const useScrollbarWidth = (): void => {
-  useEffect(() => {
-    // Create a temporary div to measure scrollbar width
-    const outer = document.createElement("div")
-    outer.style.position = "absolute"
-    outer.style.visibility = "hidden"
-    outer.style.overflow = "scroll" // Triggers scrollbar
-    outer.style.width = "50px" // Give it a fixed size to ensure overflow
-    outer.style.height = "50px" // Give it a fixed size to ensure overflow
-    document.body.appendChild(outer)
-
-    // Create an inner div to measure content width
-    const inner = document.createElement("div")
-    inner.style.width = "100%" // Inner div takes full width of outer's content area
-    outer.appendChild(inner)
-
-    // Calculate the scrollbar width
-    const calculatedWidth = outer.offsetWidth - inner.offsetWidth
-
-    // Remove the temporary divs
-    outer.parentNode?.removeChild(outer)
-
-    // Store the scrollbar width in a CSS custom property(variable)
-    document.documentElement.style.setProperty(
-      "--scrollbar-width",
-      `${calculatedWidth}px`
-    )
-  }, []) // Run this only once.
-}
-
 export function RootStyleProvider(
   props: RootStyleProviderProps
 ): ReactElement {
   const { children, theme } = props
 
-  // Inject the --scrollbar-width variable into :root
-  useScrollbarWidth()
-
   return (
-    <BaseProvider
-      theme={theme.basewebTheme}
-      // This zIndex is required for modals/dialog. However,
-      // it would be good to do some investigation
-      // and find a better way to configure the zIndex
-      // for the modals/dialogs.
-      zIndex={theme.emotion.zIndices.popup}
-    >
-      <CacheProvider value={cache}>
-        <EmotionThemeProvider theme={theme.emotion}>
-          <Global styles={globalStyles} />
-          {children}
-        </EmotionThemeProvider>
-      </CacheProvider>
-    </BaseProvider>
+    <CacheProvider value={cache}>
+      <EmotionThemeProvider theme={theme.emotion}>
+        <Global styles={globalStyles} />
+        {children}
+      </EmotionThemeProvider>
+    </CacheProvider>
   )
 }

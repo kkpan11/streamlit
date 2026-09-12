@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 
 export { ConnectionManager } from "./ConnectionManager"
 export { ConnectionState } from "./ConnectionState"
+export { IS_DEV_ENV } from "./constants"
 export { DefaultStreamlitEndpoints } from "./DefaultStreamlitEndpoints"
 export { mockEndpoints } from "./testUtils"
-export { IS_DEV_ENV } from "./constants"
 export * from "./types"
+export { isHostConfigBypassEnabled, parseUriIntoBaseParts } from "./utils"

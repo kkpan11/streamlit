@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,13 @@
 
 import { renderHook } from "@testing-library/react"
 import { Field, Int64, Utf8 } from "apache-arrow"
+import { getLogger } from "loglevel"
 
-import { Arrow as ArrowProto } from "@streamlit/protobuf"
+import {
+  type ArrowData,
+  Dataframe as DataframeProto,
+  streamlit,
+} from "@streamlit/protobuf"
 
 import {
   BaseColumn,
@@ -31,7 +36,7 @@ import {
 } from "~lib/components/widgets/DataFrame/columns"
 import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
 import { Quiver } from "~lib/dataframes/Quiver"
-import { UNICODE } from "~lib/mocks/arrow"
+import { UNICODE } from "~lib/mocks/arrow/types/unicode"
 
 import useColumnLoader, {
   applyColumnConfig,
@@ -123,7 +128,7 @@ describe("applyColumnConfig", () => {
           type_config: {
             type: "text",
           },
-        } as ColumnConfigProps,
+        },
       ],
       [
         "column_2",
@@ -133,15 +138,14 @@ describe("applyColumnConfig", () => {
           alignment: "center",
           required: true,
           default: "this is the default",
-        } as ColumnConfigProps,
+        },
       ],
     ])
 
     const column1 = applyColumnConfig(MOCK_COLUMNS[1], columnConfig)
     expect(column1.isEditable).toBe(true)
     expect(column1.width).toBe(COLUMN_WIDTH_MAPPING.small)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    expect((column1.columnTypeOptions as any).type).toBe("text")
+    expect(column1.columnTypeOptions?.type).toBe("text")
     expect(column1).toEqual({
       ...MOCK_COLUMNS[1],
       width: COLUMN_WIDTH_MAPPING.small,
@@ -350,12 +354,40 @@ describe("applyColumnConfig", () => {
       step: 1, // From ID config (last)
     })
   })
+
+  it("logs a warning and ignores invalid alignment values", () => {
+    const LOG = getLogger("useColumnLoader")
+    const warnSpy = vi.spyOn(LOG, "warn")
+
+    const columnConfig: Map<string | number, ColumnConfigProps> = new Map([
+      [
+        "column_1",
+        {
+          // Invalid alignment value (cast to bypass TypeScript type checking)
+          alignment: "justify" as "left",
+        },
+      ],
+    ])
+
+    const column = applyColumnConfig(MOCK_COLUMNS[1], columnConfig)
+
+    // Should log a warning
+    expect(warnSpy).toHaveBeenCalledWith(
+      'Invalid alignment value in column configuration: "justify". ' +
+        'Expected "left", "center", or "right".'
+    )
+
+    // Should not apply the invalid alignment
+    expect(column.contentAlignment).toBeUndefined()
+
+    warnSpy.mockRestore()
+  })
 })
 
 describe("getColumnConfig", () => {
   it("extract the column config from the proto element", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
+    const element = DataframeProto.create({
+      arrowData: { data: UNICODE },
       columns: JSON.stringify({
         c1: {
           width: "small",
@@ -432,13 +464,12 @@ describe("getColumnType", () => {
 
 describe("useColumnLoader hook", () => {
   it("creates columns from the Arrow data", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-    })
-    const data = new Quiver(element)
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     const { columns } = result.current
@@ -456,14 +487,15 @@ describe("useColumnLoader hook", () => {
   })
 
   it("reorders columns when specified via column order", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
       columnOrder: ["c2", "c1"],
     })
-    const data = new Quiver(element)
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     const { columns } = result.current
@@ -481,14 +513,15 @@ describe("useColumnLoader hook", () => {
   })
 
   it("hides columns not specified in column order", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
       columnOrder: ["c2"],
     })
-    const data = new Quiver(element)
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     const { columns } = result.current
@@ -502,16 +535,21 @@ describe("useColumnLoader hook", () => {
     expect(columns[1].isIndex).toBe(false)
   })
 
-  it("activates column stretch if configured by user", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-      useContainerWidth: true,
-    })
+  it("activates column stretch if configured via widthConfig", () => {
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
 
-    const data = new Quiver(element)
+    const widthConfig = new streamlit.WidthConfig({ useStretch: true })
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
     })
 
     for (const column of result.current.columns) {
@@ -520,16 +558,23 @@ describe("useColumnLoader hook", () => {
   })
 
   it("configures the editable icon for editable columns", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-      useContainerWidth: true,
-      editingMode: ArrowProto.EditingMode.FIXED,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
+      editingMode: DataframeProto.EditingMode.FIXED,
     })
 
-    const data = new Quiver(element)
+    const widthConfig = new streamlit.WidthConfig({ useStretch: true })
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
     })
 
     for (const column of result.current.columns) {
@@ -538,9 +583,10 @@ describe("useColumnLoader hook", () => {
   })
 
   it("disallows hidden for editable columns that are required for dynamic editing", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-      editingMode: ArrowProto.EditingMode.DYNAMIC,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
+      editingMode: DataframeProto.EditingMode.DYNAMIC,
       columns: JSON.stringify({
         c1: {
           required: true,
@@ -549,10 +595,10 @@ describe("useColumnLoader hook", () => {
       }),
     })
 
-    const data = new Quiver(element)
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     expect(result.current.columns[1].isRequired).toBe(true)
@@ -560,9 +606,10 @@ describe("useColumnLoader hook", () => {
   })
 
   it("respects hiding required columns for fixed editing", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-      editingMode: ArrowProto.EditingMode.FIXED,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
+      editingMode: DataframeProto.EditingMode.FIXED,
       columns: JSON.stringify({
         c1: {
           required: true,
@@ -571,10 +618,10 @@ describe("useColumnLoader hook", () => {
       }),
     })
 
-    const data = new Quiver(element)
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     // Test that the column is hidden (not part of columns).
@@ -583,16 +630,23 @@ describe("useColumnLoader hook", () => {
   })
 
   it("doesn't configure any icon for non-editable columns", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
-      useContainerWidth: true,
-      editingMode: ArrowProto.EditingMode.READ_ONLY,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
+      editingMode: DataframeProto.EditingMode.READ_ONLY,
     })
 
-    const data = new Quiver(element)
+    const widthConfig = new streamlit.WidthConfig({ useStretch: true })
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
     })
 
     for (const column of result.current.columns) {
@@ -601,8 +655,9 @@ describe("useColumnLoader hook", () => {
   })
 
   it("uses column order to order pinned columns", () => {
-    const element = ArrowProto.create({
-      data: UNICODE,
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({
+      arrowData,
       columnOrder: ["c2", "c1"],
       columns: JSON.stringify({
         c1: {
@@ -614,10 +669,10 @@ describe("useColumnLoader hook", () => {
       }),
     })
 
-    const data = new Quiver(element)
+    const data = new Quiver(arrowData)
 
     const { result } = renderHook(() => {
-      return useColumnLoader(element, data, false, element.columnOrder)
+      return useColumnLoader(element, data, false, element.columnOrder, null)
     })
 
     // Range index:
@@ -629,5 +684,86 @@ describe("useColumnLoader hook", () => {
     expect(result.current.columns[1].isPinned).toBe(true)
     expect(result.current.columns[2].name).toBe("c1")
     expect(result.current.columns[2].isPinned).toBe(true)
+  })
+
+  it("activates column stretch with widthConfig.useStretch", () => {
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
+
+    const widthConfig = new streamlit.WidthConfig({ useStretch: true })
+    const data = new Quiver(arrowData)
+
+    const { result } = renderHook(() => {
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
+    })
+
+    for (const column of result.current.columns) {
+      expect(column.isStretched).toBe(true)
+    }
+  })
+
+  it("does not activate column stretch with widthConfig.useContent", () => {
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
+
+    const widthConfig = new streamlit.WidthConfig({ useContent: true })
+    const data = new Quiver(arrowData)
+
+    const { result } = renderHook(() => {
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
+    })
+
+    for (const column of result.current.columns) {
+      expect(column.isStretched).toBe(false)
+    }
+  })
+
+  it("activates column stretch with widthConfig.pixelWidth", () => {
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
+
+    const widthConfig = new streamlit.WidthConfig({ pixelWidth: 400 })
+    const data = new Quiver(arrowData)
+
+    const { result } = renderHook(() => {
+      return useColumnLoader(
+        element,
+        data,
+        false,
+        element.columnOrder,
+        widthConfig
+      )
+    })
+
+    for (const column of result.current.columns) {
+      expect(column.isStretched).toBe(true)
+    }
+  })
+
+  it("does not activate column stretch when widthConfig is null", () => {
+    const arrowData: ArrowData.$Properties = { data: UNICODE }
+    const element = DataframeProto.create({ arrowData })
+
+    const data = new Quiver(arrowData)
+
+    const { result } = renderHook(() => {
+      return useColumnLoader(element, data, false, element.columnOrder, null)
+    })
+
+    for (const column of result.current.columns) {
+      expect(column.isStretched).toBe(false)
+    }
   })
 })

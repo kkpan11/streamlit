@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,9 +17,13 @@ from __future__ import annotations
 import contextlib
 import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from streamlit.error_util import _print_rich_exception, handle_uncaught_app_exception
+from streamlit.error_util import (
+    _print_rich_exception,
+    handle_uncaught_app_exception,
+    show_uncaught_app_exception,
+)
 from tests import testutil
 
 
@@ -90,3 +94,14 @@ class ErrorUtilTest(unittest.TestCase):
         ):
             handle_uncaught_app_exception(Exception("boom!"))
             mock_logger.assert_called_once()
+
+    @patch(
+        "streamlit.error_util.exception._exception",
+        side_effect=RuntimeError("display failed"),
+    )
+    def test_show_uncaught_app_exception_swallows_display_errors(
+        self, mock_display: MagicMock
+    ) -> None:
+        """UI display failures must not replace the original exception."""
+        show_uncaught_app_exception(RuntimeError("original"))
+        mock_display.assert_called_once()

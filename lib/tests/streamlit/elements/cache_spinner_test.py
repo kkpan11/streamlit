@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,14 @@
 
 """Unit tests for cache's show_spinner option."""
 
+import time
+
 import streamlit as st
+from streamlit.elements.spinner import DELAY_SECS
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+
+# Wait needs to be longer than the spinner delay timeout:
+TEST_DELAY_SECS = DELAY_SECS + 0.2
 
 
 @st.cache_data(show_spinner=False)
@@ -47,3 +53,51 @@ class CacheSpinnerTest(DeltaGeneratorTestCase):
         """
         function_without_spinner()
         assert self.forward_msg_queue.is_empty()
+
+    def test_cache_data_with_spinner_and_time(self):
+        """If show_time is true, the spinner should show the elapsed time."""
+
+        @st.cache_data(show_spinner=True, show_time=True)
+        def function_with_spinner_and_time():
+            time.sleep(TEST_DELAY_SECS)
+            el = self.get_delta_from_queue().new_transient
+            assert el.elements[0].spinner.show_time is True
+            return 3
+
+        function_with_spinner_and_time()
+
+    def test_cache_data_with_spinner_and_no_time(self):
+        """If show_time is false, the spinner should not show the elapsed time."""
+
+        @st.cache_data(show_spinner=True, show_time=False)
+        def function_with_spinner_and_no_time():
+            time.sleep(TEST_DELAY_SECS)
+            el = self.get_delta_from_queue().new_transient
+            assert el.elements[0].spinner.show_time is False
+            return 3
+
+        function_with_spinner_and_no_time()
+
+    def test_cache_resource_with_spinner_and_time(self):
+        """If show_time is true, the spinner should show the elapsed time."""
+
+        @st.cache_resource(show_spinner=True, show_time=True)
+        def function_with_spinner_and_time():
+            time.sleep(TEST_DELAY_SECS)
+            el = self.get_delta_from_queue().new_transient
+            assert el.elements[0].spinner.show_time is True
+            return 3
+
+        function_with_spinner_and_time()
+
+    def test_cache_resource_with_spinner_and_no_time(self):
+        """If show_time is false, the spinner should not show the elapsed time."""
+
+        @st.cache_resource(show_spinner=True, show_time=False)
+        def function_with_spinner_and_no_time():
+            time.sleep(TEST_DELAY_SECS)
+            el = self.get_delta_from_queue().new_transient
+            assert el.elements[0].spinner.show_time is False
+            return 3
+
+        function_with_spinner_and_no_time()

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,25 @@
  * limitations under the License.
  */
 
-import React from "react"
-
 import { screen } from "@testing-library/react"
 
 import { Block as BlockProto } from "@streamlit/protobuf"
 
 import { mockEndpoints } from "~lib/mocks/mocks"
-import { render } from "~lib/test_util"
+import { render, renderWithContexts } from "~lib/test_util"
 
 import ChatMessage, { ChatMessageProps } from "./ChatMessage"
+
+// Mock StreamlitConfig using global mock state (see vitest.setup.ts)
+vi.mock("@streamlit/utils", async () => {
+  const actual = await vi.importActual("@streamlit/utils")
+  return {
+    ...actual,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 const getProps = (
   elementProps: Partial<BlockProto.ChatMessage> = {}
@@ -66,14 +75,88 @@ describe("ChatMessage", () => {
     expect(screen.getByText("😃")).toBeTruthy()
   })
 
-  it("renders with an image avatar", () => {
-    const props = getProps({
-      avatar: "http://example.com/avatar.jpg",
-      avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+  describe("image avatar", () => {
+    it("renders with an image avatar", () => {
+      const props = getProps({
+        avatar: "http://example.com/avatar.jpg",
+        avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+      })
+      render(<ChatMessage {...props} />)
+      const chatAvatar = screen.getByAltText("user avatar")
+      expect(chatAvatar).toHaveAttribute(
+        "src",
+        "http://example.com/avatar.jpg"
+      )
     })
-    render(<ChatMessage {...props} />)
-    const chatAvatar = screen.getByAltText("user avatar")
-    expect(chatAvatar).toHaveAttribute("src", "http://example.com/avatar.jpg")
+
+    describe("crossOrigin attribute", () => {
+      afterEach(() => {
+        globalThis.__mockStreamlitConfig = {}
+      })
+
+      it("sets crossOrigin when BACKEND_BASE_URL is configured", () => {
+        // Setup StreamlitConfig.BACKEND_BASE_URL
+        globalThis.__mockStreamlitConfig.BACKEND_BASE_URL =
+          "http://localhost:8501"
+
+        const props = getProps({
+          avatar: "avatar.jpg",
+          avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+        })
+        renderWithContexts(<ChatMessage {...props} />, {
+          libConfigContext: {
+            resourceCrossOriginMode: "anonymous",
+          },
+        })
+
+        const chatAvatar = screen.getByAltText("user avatar")
+        expect(chatAvatar).toHaveAttribute("crossOrigin", "anonymous")
+      })
+
+      it("does not set crossOrigin when BACKEND_BASE_URL is not configured (same-origin)", () => {
+        const props = getProps({
+          avatar: "avatar.jpg",
+          avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+        })
+        renderWithContexts(<ChatMessage {...props} />, {
+          libConfigContext: {
+            resourceCrossOriginMode: "anonymous",
+          },
+        })
+
+        const chatAvatar = screen.getByAltText("user avatar")
+        expect(chatAvatar).not.toHaveAttribute("crossOrigin")
+      })
+
+      it.each([
+        { backendBaseUrl: undefined, description: "without BACKEND_BASE_URL" },
+        {
+          backendBaseUrl: "http://localhost:8501",
+          description: "with BACKEND_BASE_URL",
+        },
+      ])(
+        "does not set crossOrigin attribute when resourceCrossOriginMode is undefined ($description)",
+        ({ backendBaseUrl }) => {
+          // Setup StreamlitConfig.BACKEND_BASE_URL if specified
+          if (backendBaseUrl) {
+            globalThis.__mockStreamlitConfig.BACKEND_BASE_URL = backendBaseUrl
+          }
+
+          const props = getProps({
+            avatar: "avatar.jpg",
+            avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+          })
+          renderWithContexts(<ChatMessage {...props} />, {
+            libConfigContext: {
+              resourceCrossOriginMode: undefined,
+            },
+          })
+
+          const chatAvatar = screen.getByAltText("user avatar")
+          expect(chatAvatar).not.toHaveAttribute("crossOrigin")
+        }
+      )
+    })
   })
 
   it("renders with a name label character as fallback", () => {
@@ -84,6 +167,43 @@ describe("ChatMessage", () => {
     })
     render(<ChatMessage {...props} />)
     expect(screen.getByText("T")).toBeTruthy()
+  })
+
+  it("falls back to the name initial when an ICON avatar is unrecognized", () => {
+    const props = getProps({
+      avatar: "mystery",
+      avatarType: BlockProto.ChatMessage.AvatarType.ICON,
+      name: "alice",
+    })
+    render(<ChatMessage {...props} />)
+
+    expect(screen.getByText("A")).toBeVisible()
+    expect(screen.queryByAltText("alice avatar")).not.toBeInTheDocument()
+  })
+
+  it("falls back to the name initial when avatar type is omitted", () => {
+    const props = getProps()
+    render(
+      <ChatMessage
+        {...props}
+        // Plain object so avatarType stays undefined; create() would default it to IMAGE.
+        element={{ name: "alice", avatar: "unused" } as BlockProto.ChatMessage}
+      />
+    )
+
+    expect(screen.getByText("A")).toBeVisible()
+    expect(screen.queryByAltText("alice avatar")).not.toBeInTheDocument()
+  })
+
+  it("falls back to a default avatar when the name is empty", () => {
+    const props = getProps({
+      avatar: undefined,
+      avatarType: undefined,
+      name: "",
+    })
+    render(<ChatMessage {...props} />)
+
+    expect(screen.getByText("🧑‍💻")).toBeVisible()
   })
 
   it("renders with a 'user' icon avatar", () => {
@@ -110,6 +230,23 @@ describe("ChatMessage", () => {
       "stChatMessageAvatarAssistant"
     )
     expect(assistantAvatarIcon).toBeInTheDocument()
+  })
+
+  it("renders a custom material icon avatar", () => {
+    const props = getProps({
+      avatar: ":material/smart_toy:",
+      avatarType: BlockProto.ChatMessage.AvatarType.ICON,
+      name: "bot",
+    })
+    render(<ChatMessage {...props} />)
+
+    expect(screen.getByTestId("stChatMessageAvatarCustom")).toBeVisible()
+    expect(
+      screen.queryByTestId("stChatMessageAvatarUser")
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId("stChatMessageAvatarAssistant")
+    ).not.toBeInTheDocument()
   })
 
   it("renders with a grey background when name is 'user'", () => {

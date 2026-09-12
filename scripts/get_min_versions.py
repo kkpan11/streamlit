@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This script should be invoked using `make gen-min-dep-constraints`.
+# This script should be invoked using `make update-min-deps`.
 # It has the precondition that you must have installed streamlit locally since
 # you last updated its dependencies, which the make command takes care of.
 from __future__ import annotations
@@ -44,7 +44,7 @@ def get_min_version(specifier_set: SpecifierSet) -> str | None:
     # Find the minimum version from all specifiers
     min_version: str | None = None
     for spec in specifier_set:
-        if spec.operator in (">=", ">", "=="):
+        if spec.operator in {">=", ">", "=="}:
             version = str(spec.version)
             if min_version is None or version < min_version:
                 min_version = version

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import React, { FC, PropsWithChildren, useContext } from "react"
+import { FC, PropsWithChildren, useContext } from "react"
 
-import { useWindowDimensions } from "~lib/components/shared/WindowDimensions/useWindowDimensions"
 import { WindowDimensionsContext } from "~lib/components/shared/WindowDimensions"
+import { useWindowDimensions } from "~lib/components/shared/WindowDimensions/useWindowDimensions"
 
 /**
  * Registers the current window dimensions in the context. A runtime error will
@@ -33,7 +33,7 @@ export const WindowDimensionsProvider: FC<PropsWithChildren> = ({
 
   if (existingDimensions) {
     throw new Error(
-      "WindowDimensionsProvider should only be used once per app. If you need to read window dimensions, utilize `useRequiredContext(WindowDimensionsContext)` instead."
+      "WindowDimensionsProvider should only be used once per app. If you need to read window dimensions, utilize `useWindowDimensionsContext()` instead."
     )
   }
 

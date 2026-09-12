@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,35 +14,73 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import {
+  act,
+  createEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 
 import {
   FileUploader as FileUploaderProto,
   FileUploaderState as FileUploaderStateProto,
   FileURLs as FileURLsProto,
-  IFileURLs,
-  LabelVisibilityMessage as LabelVisibilityMessageProto,
+  LabelVisibility as LabelVisibilityProto,
   UploadedFileInfo as UploadedFileInfoProto,
 } from "@streamlit/protobuf"
 
+import * as UseResizeObserver from "~lib/hooks/useResizeObserver"
 import { render } from "~lib/test_util"
 import { WidgetStateManager } from "~lib/WidgetStateManager"
-import * as UseResizeObserver from "~lib/hooks/useResizeObserver"
 
 import FileUploader, { Props } from "./FileUploader"
 
-const createFile = (filename = "filename.txt"): File => {
-  return new File(["Text in a file!"], filename, {
-    type: "text/plain",
+const createFile = (
+  filename = "filename.txt",
+  webkitRelativePath?: string,
+  type = "text/plain"
+): File => {
+  const file = new File(["Text in a file!"], filename, {
+    type,
     lastModified: 0,
+  })
+  if (webkitRelativePath) {
+    Object.defineProperty(file, "webkitRelativePath", {
+      value: webkitRelativePath,
+      writable: false,
+    })
+  }
+  return file
+}
+
+/**
+ * Dispatch a drag-and-drop of `files` onto a dropzone container. `userEvent.upload`
+ * only targets `<input>` elements, so it cannot simulate drops on arbitrary dropzone
+ * containers or multi-file selection on a non-multiple input — this helper builds the
+ * drop event manually to exercise those paths.
+ */
+const dropFiles = (dropzone: HTMLElement, files: File[]): void => {
+  const dropEvent = createEvent.drop(dropzone)
+  Object.defineProperty(dropEvent, "dataTransfer", {
+    value: {
+      types: ["Files"],
+      files,
+      items: files.map(file => ({
+        kind: "file",
+        type: file.type,
+        getAsFile: () => file,
+      })),
+    },
+  })
+  act(() => {
+    dropzone.dispatchEvent(dropEvent)
   })
 }
 
 const buildFileUploaderStateProto = (
-  fileUrlsArray: IFileURLs[]
+  fileUrlsArray: FileURLsProto.$Properties[]
 ): FileUploaderStateProto =>
   new FileUploaderStateProto({
     uploadedFileInfo: fileUrlsArray.map(
@@ -115,7 +153,7 @@ describe("FileUploader widget tests", () => {
     const { element, widgetMgr } = props
 
     widgetMgr.setFileUploaderStateValue(
-      element,
+      element.id,
       buildFileUploaderStateProto([
         new FileURLsProto({
           fileId: "filename.txt",
@@ -123,13 +161,28 @@ describe("FileUploader widget tests", () => {
           deleteUrl: "filename.txt",
         }),
       ]),
-      { fromUi: false },
-      undefined
+      { formId: element.formId, fragmentId: undefined, fromUser: false }
     )
 
     render(<FileUploader {...props} />)
     const fileNameNode = screen.getByText("filename.txt")
     expect(fileNameNode).toBeInTheDocument()
+  })
+
+  it("renders the empty dropzone when widget state has no uploaded files", () => {
+    const props = getProps()
+    const { element, widgetMgr } = props
+
+    widgetMgr.setFileUploaderStateValue(
+      element.id,
+      buildFileUploaderStateProto([]),
+      { formId: element.formId, fragmentId: undefined, fromUser: false }
+    )
+
+    render(<FileUploader {...props} />)
+
+    expect(screen.queryByTestId("stFileChip")).not.toBeInTheDocument()
+    expect(screen.getByText("Upload")).toBeVisible()
   })
 
   it("shows a label", () => {
@@ -144,7 +197,7 @@ describe("FileUploader widget tests", () => {
     const props = getProps({
       label: "Test label",
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.HIDDEN,
+        value: LabelVisibilityProto.LabelVisibilityOptions.HIDDEN,
       },
     })
     render(<FileUploader {...props} />)
@@ -158,7 +211,7 @@ describe("FileUploader widget tests", () => {
     const props = getProps({
       label: "Test label",
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.COLLAPSED,
+        value: LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED,
       },
     })
     render(<FileUploader {...props} />)
@@ -182,12 +235,12 @@ describe("FileUploader widget tests", () => {
 
     await user.upload(fileDropZoneInput, fileToUpload)
 
-    const fileName = screen.getByTestId("stFileUploaderFile")
+    const fileName = screen.getByTestId("stFileChip")
     expect(fileName.textContent).toContain("filename.txt")
     expect(fileDropZoneInput.files?.[0]).toEqual(fileToUpload)
 
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
           fileId: "filename.txt",
@@ -195,10 +248,7 @@ describe("FileUploader widget tests", () => {
           deleteUrl: "filename.txt",
         },
       ]),
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
   })
 
@@ -216,7 +266,7 @@ describe("FileUploader widget tests", () => {
     await user.upload(fileDropZoneInput, fileToUpload)
 
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
           fileId: "filename.txt",
@@ -225,9 +275,10 @@ describe("FileUploader widget tests", () => {
         },
       ]),
       {
-        fromUi: true,
-      },
-      "myFragmentId"
+        formId: props.element.formId,
+        fragmentId: "myFragmentId",
+        fromUser: true,
+      }
     )
   })
 
@@ -253,31 +304,28 @@ describe("FileUploader widget tests", () => {
       }),
     ]
 
-    fireEvent.drop(fileDropZone, {
-      dataTransfer: {
-        types: ["Files", "Files", "Files"],
-        files: filesToUpload,
-      },
-    })
+    // Drop multiple files onto a single-file dropzone; user.upload on a
+    // non-multiple input cannot exercise this rejection path.
+    dropFiles(fileDropZone, filesToUpload)
 
     await waitFor(() =>
       expect(props.uploadClient.uploadFile).toHaveBeenCalledTimes(1)
     )
 
-    const fileElements = screen.getAllByTestId("stFileUploaderFile")
+    const fileElements = screen.getAllByTestId("stFileChip")
     // We should have 3 files. One will be uploading, the other two will
-    // be in the error state.
+    // be in the error state. Rejected files appear first (added synchronously),
+    // accepted files appear last (added after async URL fetch).
     expect(fileElements.length).toBe(3)
-    expect(fileElements[0].textContent).toContain("filename1.txt")
 
-    const errors = screen.getAllByTestId("stFileUploaderFileErrorMessage")
+    const errors = screen.getAllByRole("alert")
 
     expect(errors.length).toBe(2)
     expect(errors[0].textContent).toContain("Only one file is allowed.")
     expect(errors[1].textContent).toContain("Only one file is allowed.")
 
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
           fileId: "filename1.txt",
@@ -285,10 +333,7 @@ describe("FileUploader widget tests", () => {
           deleteUrl: "filename1.txt",
         },
       ]),
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
   })
   it("replaces file on single file uploader", async () => {
@@ -305,7 +350,7 @@ describe("FileUploader widget tests", () => {
 
     await user.upload(fileDropZoneInput, firstFile)
 
-    const fileName = screen.getByTestId("stFileUploaderFile")
+    const fileName = screen.getByTestId("stFileChip")
     expect(fileName.textContent).toContain("filename.txt")
     expect(fileDropZoneInput.files?.[0]).toEqual(firstFile)
 
@@ -322,22 +367,24 @@ describe("FileUploader widget tests", () => {
     // Upload a replacement file
     await user.upload(fileDropZoneInput, secondFile)
 
-    const currentFiles = screen.getAllByTestId("stFileUploaderFile")
+    const currentFiles = screen.getAllByTestId("stFileChip")
     expect(currentFiles.length).toBe(1)
     expect(currentFiles[0].textContent).toContain("filename2.txt")
     expect(fileDropZoneInput.files?.[0]).toEqual(secondFile)
     expect(props.uploadClient.uploadFile).toHaveBeenCalledTimes(2)
-    // setFileUploaderStateValue should have been called once on init and
-    // once each for the first and second file uploads.
-    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(3)
+    // setFileUploaderStateValue should have been called once on init (fromUser false),
+    // once when the first file finished uploading, once when the existing file was
+    // cleared before the replacement, and once for the replacement upload.
+    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(4)
   })
 
   it("uploads multiple files, even if some have errors", async () => {
+    const user = userEvent.setup({ applyAccept: false })
     const props = getProps({ multipleFiles: true, type: [".txt"] })
     vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
     render(<FileUploader {...props} />)
 
-    const fileDropZone = screen.getByTestId("stFileUploaderDropzone")
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
 
     const filesToUpload = [
       new File(["Text in a file!"], "filename1.txt", {
@@ -354,32 +401,20 @@ describe("FileUploader widget tests", () => {
       }),
     ]
 
-    fireEvent.drop(fileDropZone, {
-      dataTransfer: {
-        types: ["Files"],
-        files: filesToUpload,
-        items: filesToUpload.map(file => ({
-          kind: "file",
-          type: file.type,
-          getAsFile: () => file,
-        })),
-      },
-    })
+    await user.upload(fileDropZoneInput, filesToUpload)
 
     await waitFor(() =>
       expect(props.uploadClient.uploadFile).toHaveBeenCalledTimes(2)
     )
 
-    const fileNames = screen.getAllByTestId("stFileUploaderFile")
+    const fileNames = screen.getAllByTestId("stFileChip")
     expect(fileNames.length).toBe(3)
 
-    const errorFileNames = screen.getAllByTestId(
-      "stFileUploaderFileErrorMessage"
-    )
+    const errorFileNames = screen.getAllByRole("alert")
     expect(errorFileNames.length).toBe(1)
 
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
           fileId: "filename1.txt",
@@ -392,11 +427,183 @@ describe("FileUploader widget tests", () => {
           deleteUrl: "filename2.txt",
         },
       ]),
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
+  })
+
+  it("uploads directory with multiple files successfully", async () => {
+    const user = userEvent.setup()
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+      type: [".txt", ".py", ".md"],
+    })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+
+    // Simulate directory upload with files in different folders
+    const directoryFiles = [
+      createFile("project/main.py", "project/main.py"),
+      createFile("project/tests/test_main.py", "project/tests/test_main.py"),
+      createFile("project/README.md", "project/README.md"),
+      createFile("project/config.txt", "project/config.txt"),
+    ]
+
+    await user.upload(fileDropZoneInput, directoryFiles)
+
+    await waitFor(() =>
+      expect(props.uploadClient.uploadFile).toHaveBeenCalledTimes(4)
+    )
+
+    const fileElements = screen.getAllByTestId("stFileChip")
+    expect(fileElements.length).toBe(4)
+
+    // Verify all files are accepted since they match the allowed types
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+
+    // Verify that setFileUploaderStateValue was called (internal structure may vary)
+    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalled()
+  })
+
+  it("filters directory upload files by type restrictions", async () => {
+    const user = userEvent.setup({ applyAccept: false })
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+      type: [".txt"], // Only allow .txt files
+    })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+
+    // Mix of valid and invalid files for directory upload
+    const mixedFiles = [
+      createFile("docs/valid.txt", "docs/valid.txt"),
+      createFile("docs/subfolder/another.txt", "docs/subfolder/another.txt"),
+      createFile("docs/image.jpg", "docs/image.jpg", "image/jpeg"),
+      createFile("docs/document.pdf", "docs/document.pdf", "application/pdf"),
+    ]
+
+    await user.upload(fileDropZoneInput, mixedFiles)
+
+    await waitFor(() =>
+      expect(props.uploadClient.uploadFile).toHaveBeenCalledTimes(2)
+    )
+
+    const fileElements = screen.getAllByTestId("stFileChip")
+    expect(fileElements.length).toBe(4)
+
+    // Should have 2 error messages for the rejected files that don't match file type
+    const errorElements = screen.queryAllByRole("alert")
+    expect(errorElements.length).toBe(2)
+
+    // Only valid .txt files should be uploaded - verify widget state was updated
+    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalled()
+  })
+
+  it("renders directory upload button text correctly", () => {
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+    })
+    render(<FileUploader {...props} />)
+
+    expect(screen.getByText("Upload directories")).toBeVisible()
+  })
+
+  it("sets webkitdirectory attribute for directory uploads", () => {
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+    })
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput: HTMLInputElement = screen.getByTestId(
+      "stFileUploaderDropzoneInput"
+    )
+    expect(fileDropZoneInput).toHaveAttribute("webkitdirectory", "")
+  })
+
+  it("preserves directory structure in file names", async () => {
+    const user = userEvent.setup()
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+    })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput: HTMLInputElement = screen.getByTestId(
+      "stFileUploaderDropzoneInput"
+    )
+
+    // Create files with webkitRelativePath to simulate directory structure
+    const directoryFiles = [
+      createFile("project/src/main.py", "project/src/main.py"),
+      createFile("project/tests/test_main.py", "project/tests/test_main.py"),
+    ]
+
+    await user.upload(fileDropZoneInput, directoryFiles)
+
+    // Files should show with their relative paths
+    const fileElements = screen.getAllByTestId("stFileChip")
+    expect(fileElements).toHaveLength(2)
+
+    // Check that both files are present via their title attributes
+    // (chip text may be truncated by truncateFilename)
+    const fileNameElements = screen.getAllByTestId("stFileChipName")
+    const fileTitles = fileNameElements.map(el => el.getAttribute("title"))
+    expect(fileTitles).toEqual(
+      expect.arrayContaining([
+        "project/src/main.py",
+        "project/tests/test_main.py",
+      ])
+    )
+  })
+
+  it("handles empty directory upload gracefully", async () => {
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+    })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+    render(<FileUploader {...props} />)
+
+    const fileDropZone = screen.getByTestId("stFileUploaderDropzone")
+
+    // Simulate empty directory. userEvent.upload no-ops on an empty selection,
+    // so dispatch the drop directly to actually exercise the empty-drop path.
+    dropFiles(fileDropZone, [])
+
+    await waitFor(() => {
+      // No upload calls should be made
+      expect(props.uploadClient.uploadFile).not.toHaveBeenCalled()
+    })
+
+    // No file elements should be created
+    expect(screen.queryByTestId("stFileChip")).not.toBeInTheDocument()
+
+    // Widget state should be initialized but not updated with files for empty directory
+    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(1)
+  })
+
+  it("displays correct instructions for directory upload", () => {
+    const props = getProps({
+      multipleFiles: true,
+      acceptDirectory: true,
+    })
+    render(<FileUploader {...props} />)
+
+    // Check that browse button shows directory text
+    const browseButton = screen.getByText("Upload directories")
+    expect(browseButton).toBeVisible()
+
+    // Verify dropzone has webkitdirectory attribute
+    const input = screen.getByTestId("stFileUploaderDropzoneInput")
+    expect(input).toHaveAttribute("webkitdirectory", "")
   })
 
   it("can delete completed upload", async () => {
@@ -411,16 +618,16 @@ describe("FileUploader widget tests", () => {
     await user.upload(fileDropZoneInput, createFile("filename1.txt"))
     await user.upload(fileDropZoneInput, createFile("filename2.txt"))
 
-    const fileNames = screen.getAllByTestId("stFileUploaderFile")
+    const fileNames = screen.getAllByTestId("stFileChip")
     expect(fileNames.length).toBe(2)
-    expect(fileNames[0].textContent).toContain("filename2.txt")
-    expect(fileNames[1].textContent).toContain("filename1.txt")
+    expect(fileNames[0].textContent).toContain("filename1.txt")
+    expect(fileNames[1].textContent).toContain("filename2.txt")
 
     // WidgetStateManager should have been called with our two file IDs and first time with empty state
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(3)
 
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenLastCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
           fileId: "filename1.txt",
@@ -433,39 +640,82 @@ describe("FileUploader widget tests", () => {
           deleteUrl: "filename2.txt",
         },
       ]),
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
 
-    const firstDeleteBtn = screen.getAllByTestId("stFileUploaderDeleteBtn")[0]
+    const firstDeleteBtn = screen.getAllByTestId("stFileChipDeleteBtn")[0]
 
     await user.click(within(firstDeleteBtn).getByRole("button"))
 
-    // We should only have a single file - the second file from the original upload list (filename1.txt).
-    const fileNamesAfterDelete = screen.getAllByTestId("stFileUploaderFile")
+    // We should only have a single file - the second file from the original upload list (filename2.txt).
+    const fileNamesAfterDelete = screen.getAllByTestId("stFileChip")
     expect(fileNamesAfterDelete.length).toBe(1)
-    expect(fileNamesAfterDelete[0].textContent).toContain("filename1.txt")
+    expect(fileNamesAfterDelete[0].textContent).toContain("filename2.txt")
 
     // WidgetStateManager should have been called with the file ID
     // of the remaining file. This should be the fourth time WidgetStateManager
     // has been updated.
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(4)
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenLastCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([
         {
-          fileId: "filename1.txt",
-          uploadUrl: "filename1.txt",
-          deleteUrl: "filename1.txt",
+          fileId: "filename2.txt",
+          uploadUrl: "filename2.txt",
+          deleteUrl: "filename2.txt",
         },
       ]),
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
+  })
+
+  it("does not allow deleting files when disabled", async () => {
+    const user = userEvent.setup()
+    const props = getProps({ multipleFiles: true }, { disabled: true })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+
+    // Seed an existing uploaded file before rendering (simulates server state)
+    props.widgetMgr.setFileUploaderStateValue(
+      props.element.id,
+      buildFileUploaderStateProto([
+        new FileURLsProto({
+          fileId: "file1.txt",
+          uploadUrl: "file1.txt",
+          deleteUrl: "file1.txt",
+        }),
+      ]),
+      { formId: props.element.formId, fragmentId: undefined, fromUser: false }
+    )
+
+    render(<FileUploader {...props} />)
+
+    // There should be one file displayed and a delete button present but disabled
+    const deleteBtns = screen.getAllByTestId("stFileChipDeleteBtn")
+    expect(deleteBtns.length).toBe(1)
+    const buttonEl = within(deleteBtns[0]).getByRole("button")
+    expect(buttonEl).toBeDisabled()
+
+    // Clicking should not change files nor trigger state update
+    await user.click(buttonEl)
+    expect(screen.getAllByTestId("stFileChip").length).toBe(1)
+  })
+
+  it("allows deleting files when enabled", async () => {
+    const user = userEvent.setup()
+    const props = getProps({ multipleFiles: true })
+    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+    await user.upload(
+      fileDropZoneInput,
+      new File(["a"], "file1.txt", { type: "text/plain" })
+    )
+    const deleteBtn = screen.getByTestId("stFileChipDeleteBtn")
+    const buttonEl = within(deleteBtn).getByRole("button")
+    expect(buttonEl).not.toBeDisabled()
+    await user.click(buttonEl)
+    expect(screen.queryByTestId("stFileChip")).not.toBeInTheDocument()
   })
 
   it("can delete in-progress upload", async () => {
@@ -484,35 +734,31 @@ describe("FileUploader widget tests", () => {
 
     await user.upload(fileDropZoneInput, createFile())
 
-    const progressBar = screen.getByRole("progressbar")
-    expect(progressBar).toBeInTheDocument()
+    const spinner = screen.getByTestId("stFileChipIconSpinner")
+    expect(spinner).toBeInTheDocument()
 
     // and then immediately delete it before upload "completes"
-    const deleteBtn = screen.getByTestId("stFileUploaderDeleteBtn")
+    const deleteBtn = screen.getByTestId("stFileChipDeleteBtn")
 
     await user.click(within(deleteBtn).getByRole("button"))
 
-    const fileNames = screen.queryAllByTestId("stFileUploaderFile")
-    expect(fileNames.length).toBe(0)
+    expect(screen.queryByTestId("stFileChip")).not.toBeInTheDocument()
 
     // WidgetStateManager will still have been called once, during component mounting
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledTimes(1)
     expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       buildFileUploaderStateProto([]),
-      {
-        fromUi: false,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: false }
     )
   })
 
   it("can delete file with ErrorStatus", async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ applyAccept: false })
     const props = getProps({ multipleFiles: false, type: [".txt"] })
     render(<FileUploader {...props} />)
 
-    const fileDropZone = screen.getByTestId("stFileUploaderDropzone")
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
 
     const filesToUpload = [
       new File(["Another PDF file"], "anotherpdffile.pdf", {
@@ -522,35 +768,22 @@ describe("FileUploader widget tests", () => {
     ]
 
     // Drop a file with an error (wrong extension)
-    fireEvent.drop(fileDropZone, {
-      dataTransfer: {
-        types: ["Files"],
-        files: filesToUpload,
-        items: filesToUpload.map(file => ({
-          kind: "file",
-          type: file.type,
-          getAsFile: () => file,
-        })),
-      },
-    })
+    await user.upload(fileDropZoneInput, filesToUpload)
 
     await waitFor(() =>
-      expect(screen.getAllByTestId("stFileUploaderFile").length).toBe(1)
+      expect(screen.getAllByTestId("stFileChip").length).toBe(1)
     )
 
-    const errorFileNames = screen.getAllByTestId(
-      "stFileUploaderFileErrorMessage"
-    )
+    const errorFileNames = screen.getAllByRole("alert")
     expect(errorFileNames.length).toBe(1)
 
     // Delete the file
-    const firstDeleteBtn = screen.getAllByTestId("stFileUploaderDeleteBtn")[0]
+    const firstDeleteBtn = screen.getAllByTestId("stFileChipDeleteBtn")[0]
 
     await user.click(within(firstDeleteBtn).getByRole("button"))
 
     // File should be gone
-    const fileNamesAfterDelete = screen.queryAllByTestId("stFileUploaderFile")
-    expect(fileNamesAfterDelete.length).toBe(0)
+    expect(screen.queryByTestId("stFileChip")).not.toBeInTheDocument()
   })
 
   it("handles upload error", async () => {
@@ -569,15 +802,16 @@ describe("FileUploader widget tests", () => {
     await user.upload(fileDropZoneInput, createFile())
 
     // Our file should have an error status
-    const errorFileNames = screen.getByTestId("stFileUploaderFileErrorMessage")
-    expect(errorFileNames.textContent).toContain("random upload error!")
+    const errorAlert = screen.getByRole("alert")
+    expect(errorAlert.textContent).toContain("random upload error!")
   })
 
   it("shows an ErrorStatus when File extension is not allowed", async () => {
+    const user = userEvent.setup({ applyAccept: false })
     const props = getProps({ multipleFiles: false, type: [".png"] })
     render(<FileUploader {...props} />)
 
-    const fileDropZone = screen.getByTestId("stFileUploaderDropzone")
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
 
     const filesToUpload = [
       new File(["TXT file"], "txtfile.txt", {
@@ -587,24 +821,14 @@ describe("FileUploader widget tests", () => {
     ]
 
     // Drop a file with an error (wrong extension)
-    fireEvent.drop(fileDropZone, {
-      dataTransfer: {
-        types: ["Files"],
-        files: filesToUpload,
-        items: filesToUpload.map(file => ({
-          kind: "file",
-          type: file.type,
-          getAsFile: () => file,
-        })),
-      },
-    })
+    await user.upload(fileDropZoneInput, filesToUpload)
 
     await waitFor(() =>
-      expect(screen.getAllByTestId("stFileUploaderFile").length).toBe(1)
+      expect(screen.getAllByTestId("stFileChip").length).toBe(1)
     )
 
-    const errorFileNames = screen.getByTestId("stFileUploaderFileErrorMessage")
-    expect(errorFileNames.textContent).toContain(
+    const errorAlert = screen.getByRole("alert")
+    expect(errorAlert.textContent).toContain(
       "text/plain files are not allowed."
     )
   })
@@ -618,63 +842,94 @@ describe("FileUploader widget tests", () => {
 
     await user.upload(fileDropZoneInput, createFile())
 
-    const errorFileNames = screen.getByTestId("stFileUploaderFileErrorMessage")
-    expect(errorFileNames.textContent).toContain(
-      "File must be 0.0B or smaller."
+    const errorAlert = screen.getByRole("alert")
+    expect(errorAlert.textContent).toContain("File must be 0.0B or smaller.")
+  })
+
+  it("marks files as error when fetching upload URLs fails", async () => {
+    const user = userEvent.setup()
+    const props = getProps()
+    props.uploadClient.fetchFileURLs = vi
+      .fn()
+      .mockRejectedValue("fetch URLs failed")
+
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+    await user.upload(fileDropZoneInput, createFile("failing.txt"))
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("fetch URLs failed")
     )
+
+    expect(props.uploadClient.uploadFile).not.toHaveBeenCalled()
+  })
+
+  it("shows uploading spinner while file is in-flight", async () => {
+    const user = userEvent.setup()
+    const props = getProps()
+    props.uploadClient.uploadFile = vi
+      .fn()
+      .mockImplementation(() => new Promise(() => {}))
+
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+    await user.upload(fileDropZoneInput, createFile("inflight.txt"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stFileChipIconSpinner")).toBeInTheDocument()
+    })
+  })
+
+  it("shows add files button after uploading a file", async () => {
+    const user = userEvent.setup()
+    const props = getProps({ multipleFiles: true })
+
+    render(<FileUploader {...props} />)
+
+    const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
+    await user.upload(fileDropZoneInput, createFile("file1.txt"))
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stFileChip")).toBeInTheDocument()
+    })
+
+    const addButton = screen.getByLabelText("Add files")
+    expect(addButton).toBeInTheDocument()
+  })
+
+  it("does not show add files button when no files are uploaded", () => {
+    const props = getProps()
+    render(<FileUploader {...props} />)
+
+    expect(screen.queryByLabelText("Add files")).not.toBeInTheDocument()
+    expect(
+      screen.getByTestId("stFileUploaderDropzoneInstructions")
+    ).toBeInTheDocument()
   })
 
   it("resets its value when form is cleared", async () => {
     const user = userEvent.setup()
+    const props = getProps({ multipleFiles: true, formId: "form-id" })
 
-    // Create a widget in a clearOnSubmit form
-    const props = getProps({ formId: "form" })
-    vi.spyOn(props.widgetMgr, "setFileUploaderStateValue")
-    props.widgetMgr.setFormSubmitBehaviors("form", true)
+    props.widgetMgr.setFormSubmitBehaviors("form-id", true)
 
-    vi.spyOn(props.widgetMgr, "setIntValue")
-
-    const { rerender } = render(<FileUploader {...props} />)
+    render(<FileUploader {...props} />)
 
     const fileDropZoneInput = screen.getByTestId("stFileUploaderDropzoneInput")
 
-    // Upload a single file
-    await user.upload(fileDropZoneInput, createFile())
+    await user.upload(fileDropZoneInput, createFile("filename1.txt"))
+    await user.upload(fileDropZoneInput, createFile("filename2.txt"))
 
-    const fileName = screen.getByTestId("stFileUploaderFile")
-    expect(fileName.textContent).toContain("filename.txt")
+    expect(screen.getAllByTestId("stFileChip").length).toBe(2)
 
-    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenCalledWith(
-      props.element,
-      buildFileUploaderStateProto([
-        {
-          fileId: "filename.txt",
-          uploadUrl: "filename.txt",
-          deleteUrl: "filename.txt",
-        },
-      ]),
-      {
-        fromUi: true,
-      },
-      undefined
-    )
+    act(() => {
+      props.widgetMgr.submitForm("form-id", undefined)
+    })
 
-    // "Submit" the form
-    props.widgetMgr.submitForm("form", undefined)
-    rerender(<FileUploader {...props} />)
-
-    // Our widget should be reset, and the widgetMgr should be updated
-    const fileNames = screen.queryAllByTestId("stFileUploaderFile")
-    expect(fileNames.length).toBe(0)
-
-    // WidgetStateManager will still have been called once, during component mounting
-    expect(props.widgetMgr.setFileUploaderStateValue).toHaveBeenLastCalledWith(
-      props.element,
-      buildFileUploaderStateProto([]),
-      {
-        fromUi: true,
-      },
-      undefined
-    )
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("stFileChip")).toHaveLength(0)
+    })
   })
 })

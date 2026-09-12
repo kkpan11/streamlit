@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,24 +17,28 @@ from __future__ import annotations
 import json
 import types
 from collections import ChainMap, UserDict
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
-from streamlit.elements.lib.layout_utils import (
-    LayoutConfig,
-    WidthWithoutContent,
-    validate_width,
-)
+from streamlit.elements.lib.layout_utils import create_layout_config
+from streamlit.errors import StreamlitInvalidParameterTypeError
+from streamlit.logger import get_logger
 from streamlit.proto.Json_pb2 import Json as JsonProto
 from streamlit.runtime.metrics_util import gather_metrics
 from streamlit.type_util import (
+    dump_pydantic_sequence,
     is_custom_dict,
     is_list_like,
     is_namedtuple,
     is_pydantic_model,
+    is_sequence_of_pydantic_models,
 )
+from streamlit.user_info import UserInfoProxy
 
 if TYPE_CHECKING:
     from streamlit.delta_generator import DeltaGenerator
+    from streamlit.elements.lib.layout_utils import WidthWithoutContent
+
+_LOGGER: Final = get_logger(__name__)
 
 
 def _ensure_serialization(o: object) -> str | list[Any]:
@@ -76,12 +80,17 @@ class JsonMixin:
             expand any key-value pair to show or hide any part of the object.
 
         width : "stretch" or int
-            The width of the JSON element. This can be either:
-            - "stretch" (default): The element will stretch to fill the container width
-            - An integer: The element will have a fixed width in pixels
+            The width of the JSON element. This can be one of the following:
 
-        Example
-        -------
+            - ``"stretch"`` (default): The width of the element matches the
+              width of the parent container.
+            - An integer specifying the width in pixels: The element has a
+              fixed width. If the specified width is greater than the width of
+              the parent container, the width of the element matches the width
+              of the parent container.
+
+        Examples
+        --------
         >>> import streamlit as st
         >>>
         >>> st.json(
@@ -104,10 +113,13 @@ class JsonMixin:
         """
 
         if is_custom_dict(body):
-            body = body.to_dict()
+            is_user = isinstance(body, UserInfoProxy)
+            body = body.to_dict()  # ty: ignore[unresolved-attribute]
+            if is_user and "tokens" in body:
+                body["tokens"] = dict.fromkeys(body["tokens"], "***")
 
         if is_namedtuple(body):
-            body = body._asdict()
+            body = body._asdict()  # ty: ignore[unresolved-attribute]
 
         if isinstance(
             body, (ChainMap, types.MappingProxyType, UserDict)
@@ -115,17 +127,29 @@ class JsonMixin:
             body = dict(body)  # type: ignore
 
         if is_list_like(body):
-            body = list(body)
+            if is_sequence_of_pydantic_models(body):
+                try:
+                    body = dump_pydantic_sequence(body)
+                except AttributeError:
+                    # Fallback to list(body) if it contains non-Pydantic models:
+                    body = list(body)  # ty: ignore[invalid-argument-type]
+            else:
+                body = list(body)  # ty: ignore[invalid-argument-type]
 
         if not isinstance(body, str):
             try:
                 # Serialize body to string and try to interpret sets as lists
                 body = json.dumps(body, default=_ensure_serialization)
             except TypeError as err:
-                self.dg.warning(
-                    "Warning: this data structure was not fully serializable as "
+                # Incomplete JSON still gets an in-app warning; also log it
+                # with a stack trace so CLI and agent users can find the call
+                # site.
+                warning_message = (
+                    "this data structure was not fully serializable as "
                     f"JSON due to one or more unexpected keys.  (Error was: {err})"
                 )
+                _LOGGER.warning("%s", warning_message, stack_info=True)
+                self.dg.warning(f"Warning: {warning_message}")
                 body = json.dumps(body, skipkeys=True, default=_ensure_serialization)
 
         json_proto = JsonProto()
@@ -137,17 +161,17 @@ class JsonMixin:
             json_proto.expanded = True
             json_proto.max_expand_depth = expanded
         else:
-            raise TypeError(
-                f"The type {type(expanded)} of `expanded` is not supported"
-                ", must be bool or int."
+            raise StreamlitInvalidParameterTypeError(
+                "expanded",
+                type(expanded).__name__,
+                ["bool", "int"],
             )
 
-        validate_width(width)
-        layout_config = LayoutConfig(width=width)
+        layout_config = create_layout_config(width=width)
 
         return self.dg._enqueue("json", json_proto, layout_config=layout_config)
 
     @property
     def dg(self) -> DeltaGenerator:
-        """Get our DeltaGenerator."""
+        """The associated DeltaGenerator."""
         return cast("DeltaGenerator", self)

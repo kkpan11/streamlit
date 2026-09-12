@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ class DividerTest(DeltaGeneratorTestCase):
 
         c = self.get_delta_from_queue().new_element
         assert c.markdown.body == "---"
+        assert not c.markdown.HasField("wrap")
 
     @parameterized.expand(
         [

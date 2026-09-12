@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,25 +34,25 @@ random.seed(0)
 st.set_page_config(layout="wide")
 
 st.subheader("Base types")
-st.dataframe(BASE_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(BASE_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Number types")
-st.dataframe(NUMBER_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(NUMBER_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Date, time and datetime types")
-st.dataframe(DATETIME_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(DATETIME_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("List types")
-st.dataframe(LIST_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(LIST_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Interval types")
-st.dataframe(INTERVAL_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(INTERVAL_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Special types")
-st.dataframe(SPECIAL_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(SPECIAL_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Period types")
-st.dataframe(PERIOD_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(PERIOD_TYPES_DF, width="stretch", hide_index=True)
 
 st.subheader("Unsupported types (string fallback)")
-st.dataframe(UNSUPPORTED_TYPES_DF, use_container_width=True, hide_index=True)
+st.dataframe(UNSUPPORTED_TYPES_DF, width="stretch", hide_index=True)

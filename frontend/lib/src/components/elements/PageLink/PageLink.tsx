@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,17 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement, useContext } from "react"
-
-import { useTheme } from "@emotion/react"
+import { memo, ReactElement, useContext } from "react"
 
 import { PageLink as PageLinkProto } from "@streamlit/protobuf"
 
-import { DynamicIcon } from "~lib/components/shared/Icon"
-import { Placement } from "~lib/components/shared/Tooltip"
-import { BaseButtonTooltip } from "~lib/components/shared/BaseButton"
-import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown"
-import { EmotionTheme } from "~lib/theme"
-import { LibContext } from "~lib/components/core/LibContext"
-import IsSidebarContext from "~lib/components/core/IsSidebarContext"
+import { NavigationContext } from "~lib/components/core/NavigationContext"
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import { mapProtoIconPosition } from "~lib/components/shared/BaseButton/iconPosition"
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 
 import {
   StyledNavLink,
@@ -34,35 +32,47 @@ import {
   StyledNavLinkText,
 } from "./styled-components"
 
+/**
+ * Builds the href URL for a page link, appending query string parameters if present.
+ */
+export function buildHref(element: PageLinkProto): string {
+  let href = element.page
+  if (element.queryString) {
+    if (element.external) {
+      // External links: use URL API to properly handle fragments
+      try {
+        const url = new URL(element.page)
+        const params = new URLSearchParams(element.queryString)
+        params.forEach((value, key) => url.searchParams.append(key, value))
+        href = url.toString()
+      } catch {
+        // Fallback if URL parsing fails
+        const [urlBase, fragment] = href.split("#")
+        href =
+          urlBase +
+          (urlBase.includes("?") ? "&" : "?") +
+          element.queryString +
+          (fragment ? "#" + fragment : "")
+      }
+    } else {
+      // Internal links: append query string to relative path
+      href += (href.includes("?") ? "&" : "?") + element.queryString
+    }
+  }
+  return href
+}
+
 export interface Props {
   disabled: boolean
   element: PageLinkProto
 }
 
-function shouldUseContainerWidth(
-  useContainerWidth: boolean | null | undefined,
-  isInSidebar: boolean
-): boolean {
-  if (useContainerWidth === null && isInSidebar) {
-    return true
-  } else if (useContainerWidth === null && !isInSidebar) {
-    return false
-  }
-  return useContainerWidth === true ? true : false
-}
-
 function PageLink(props: Readonly<Props>): ReactElement {
-  const { onPageChange, currentPageScriptHash } = useContext(LibContext)
-  const isInSidebar = useContext(IsSidebarContext)
+  const { onPageChange, currentPageScriptHash } = useContext(NavigationContext)
 
-  const { colors }: EmotionTheme = useTheme()
+  const { colors } = useEmotionTheme()
 
   const { disabled, element } = props
-
-  const useContainerWidth = shouldUseContainerWidth(
-    element.useContainerWidth,
-    isInSidebar
-  )
 
   const isCurrentPage = currentPageScriptHash === element.pageScriptHash
 
@@ -76,32 +86,34 @@ function PageLink(props: Readonly<Props>): ReactElement {
       // MPA Page Link
       e.preventDefault()
       if (!disabled) {
-        onPageChange(element.pageScriptHash)
+        onPageChange(element.pageScriptHash, element.queryString)
       }
     }
   }
+
+  const iconPosition = mapProtoIconPosition(element.iconPosition)
+  const href = buildHref(element)
 
   return (
     <div className="stPageLink" data-testid="stPageLink">
       <BaseButtonTooltip
         help={element.help}
         placement={Placement.TOP_RIGHT}
-        containerWidth={useContainerWidth}
+        containerWidth={true}
       >
-        <StyledNavLinkContainer containerWidth={useContainerWidth}>
+        <StyledNavLinkContainer>
           <StyledNavLink
             data-testid="stPageLink-NavLink"
             disabled={disabled}
             isCurrentPage={isCurrentPage}
-            containerWidth={useContainerWidth}
-            href={element.page}
+            href={href}
             target={element.external ? "_blank" : ""}
             rel="noreferrer"
             onClick={handleClick}
           >
-            {element.icon && (
+            {element.icon && iconPosition === "left" && (
               <DynamicIcon
-                size="lg"
+                size="base"
                 color={disabled ? colors.fadedText40 : colors.bodyText}
                 iconValue={element.icon}
               />
@@ -112,10 +124,16 @@ function PageLink(props: Readonly<Props>): ReactElement {
                 allowHTML={false}
                 isLabel
                 boldLabel={isCurrentPage}
-                largerLabel
                 disableLinks
               />
             </StyledNavLinkText>
+            {element.icon && iconPosition === "right" && (
+              <DynamicIcon
+                size="base"
+                color={disabled ? colors.fadedText40 : colors.bodyText}
+                iconValue={element.icon}
+              />
+            )}
           </StyledNavLink>
         </StyledNavLinkContainer>
       </BaseButtonTooltip>

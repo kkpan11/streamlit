@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -123,3 +123,322 @@ i16 = st.multiselect(
     accept_new_options=True,
 )
 st.text(f"value 16: {i16}")
+
+many_options = (
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "twenty-one",
+    "twenty-two",
+    "twenty-three",
+    "twenty-four",
+    "twenty-five",
+    "twenty-six",
+    "twenty-seven",
+    "twenty-eight",
+    "twenty-nine",
+    "thirty",
+    "thirty-one",
+    "thirty-two",
+    "thirty-three",
+    "thirty-four",
+    "thirty-five",
+    "thirty-six",
+    "thirty-seven",
+    "thirty-eight",
+    "thirty-nine",
+    "forty",
+)
+
+st.multiselect(
+    "multiselect 17 - show maxHeight",
+    options=many_options,
+    default=many_options,
+)
+
+st.multiselect(
+    "multiselect 18 (width=300px)", many_options, default=many_options[0:28], width=300
+)
+st.multiselect(
+    "multiselect 19 (width='stretch')",
+    many_options,
+    default=many_options[0:28],
+    width="stretch",
+)
+
+if st.toggle("Update multiselect props"):
+    ms_value = st.multiselect(
+        "Updated dynamic multiselect",
+        default=[],
+        width=300,
+        help="updated help",
+        key="dynamic_multiselect_with_key",
+        on_change=lambda a, param: print(
+            f"Updated multiselect - callback triggered: {a} {param}"
+        ),
+        args=("Updated ms arg",),
+        kwargs={"param": "updated kwarg param"},
+        placeholder="updated placeholder",
+        options=["mango", "papaya", "grape", "apple"],
+        # Whitelisted kwargs (keep stable):
+        max_selections=3,
+        accept_new_options=False,
+        # format_func is not whitelisted. Changing format_func is allowed,
+        # but selected options will be unselected if their formatted label
+        # no longer matches (e.g., "Apple" vs "APPLE"). This is something
+        # we might be able to support with some additional refactorings.
+        format_func=lambda x: x.capitalize(),
+    )
+    st.write("Updated multiselect value:", str(ms_value))
+else:
+    sms_value = st.multiselect(
+        "Initial dynamic multiselect",
+        default=["apple"],
+        width="stretch",
+        help="initial help",
+        key="dynamic_multiselect_with_key",
+        on_change=lambda a, param: print(
+            f"Initial multiselect - callback triggered: {a} {param}"
+        ),
+        args=("Initial ms arg",),
+        kwargs={"param": "initial kwarg param"},
+        placeholder="initial placeholder",
+        options=["apple", "banana", "mango", "orange"],
+        # Whitelisted kwargs (keep stable):
+        max_selections=3,
+        accept_new_options=False,
+        format_func=lambda x: x.capitalize(),
+    )
+    st.write("Initial multiselect value:", str(sms_value))
+
+
+# Test for issue #13646: Custom class objects without __eq__ should work with format_func
+# This tests that selections are preserved for custom class objects after script reruns
+# when the widget uses a format_func to display the options.
+class CustomOption:  # noqa: B903
+    """Custom class without __eq__ implementation.
+
+    This simulates the common pattern where users have custom objects with a
+    format_func that extracts a display string, but the class itself doesn't
+    implement __eq__ for value comparison.
+    """
+
+    def __init__(self, value: str, label: str):
+        self.value = value
+        self.label = label
+
+
+# Create new options on each script run (simulating the behavior that triggers the bug)
+custom_options_20 = [
+    CustomOption("opt_a", "Option A"),
+    CustomOption("opt_b", "Option B"),
+    CustomOption("opt_c", "Option C"),
+]
+
+i20 = st.multiselect(
+    "multiselect 20 - custom objects",
+    options=custom_options_20,
+    format_func=lambda x: x.label,
+    key="multiselect_custom_objects",
+)
+st.text(f"value 20: {[opt.value for opt in i20]}")
+
+i21 = st.multiselect(
+    "multiselect 21 (filter_mode='prefix')",
+    ["A123", "A1234", "BA123", "CA123"],
+    filter_mode="prefix",
+)
+st.text(f"value 21: {i21}")
+
+i22 = st.multiselect(
+    "multiselect 22 (filter_mode='contains')",
+    ["apple", "grape", "banana"],
+    filter_mode="contains",
+)
+st.text(f"value 22: {i22}")
+
+i23 = st.multiselect(
+    "multiselect 23 (filter_mode=None)",
+    ["Yes", "No", "Maybe"],
+    filter_mode=None,
+)
+st.text(f"value 23: {i23}")
+
+# --- select_all parameter ---
+
+selected_false = st.multiselect(
+    "select_all False",
+    ["apple", "apricot", "banana"],
+    select_all=False,
+    key="select_all_false",
+)
+st.text(f"select_all False: {selected_false}")
+
+selected_true = st.multiselect(
+    "select_all True",
+    [f"item {i}" for i in range(8)],
+    select_all=True,
+    key="select_all_true",
+)
+st.text(f"select_all True: {selected_true}")
+
+selected_threshold = st.multiselect(
+    "select_all threshold",
+    [
+        "alpha",
+        "alpine",
+        "alta",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+    ],
+    select_all=3,
+    filter_mode="contains",
+    key="select_all_threshold",
+)
+st.text(f"select_all threshold: {selected_threshold}")
+
+selected_max = st.multiselect(
+    "select_all with max_selections",
+    ["red", "green", "blue", "yellow", "purple"],
+    select_all=True,
+    max_selections=2,
+    key="select_all_max",
+)
+st.text(f"select_all with max_selections: {selected_max}")
+
+selected_chips = st.multiselect(
+    "select_all custom chips",
+    ["one", "two", "three"],
+    select_all=2,
+    accept_new_options=True,
+    key="select_all_chips",
+)
+st.text(f"select_all custom chips: {selected_chips}")
+
+# --- Bound multiselect widgets ---
+
+bound_multi = st.multiselect(
+    "Bound multiselect",
+    ["Red", "Green", "Blue", "Yellow"],
+    key="bound_multi",
+    bind="query-params",
+)
+st.text(f"bound_multi: {bound_multi}")
+
+bound_multi_default = st.multiselect(
+    "Bound multiselect with default",
+    ["Red", "Green", "Blue", "Yellow"],
+    default=["Red", "Green"],
+    key="bound_multi_default",
+    bind="query-params",
+)
+st.text(f"bound_multi_default: {bound_multi_default}")
+
+bound_multi_fmt = st.multiselect(
+    "Bound multiselect with format_func",
+    ["cat", "dog", "bird"],
+    format_func=str.upper,
+    key="bound_multi_fmt",
+    bind="query-params",
+)
+st.text(f"bound_multi_fmt: {bound_multi_fmt}")
+
+bound_multi_max = st.multiselect(
+    "Bound multiselect with max_selections",
+    ["Red", "Green", "Blue", "Yellow"],
+    max_selections=2,
+    key="bound_multi_max",
+    bind="query-params",
+)
+st.text(f"bound_multi_max: {bound_multi_max}")
+
+bound_multi_new = st.multiselect(
+    "Bound multiselect with accept_new_options",
+    ["Red", "Green", "Blue"],
+    accept_new_options=True,
+    key="bound_multi_new",
+    bind="query-params",
+)
+st.text(f"bound_multi_new: {bound_multi_new}")
+
+# --- ESC key handling (issue #15637) ---
+
+esc_colors = ["Green", "Yellow", "Red", "Blue"]
+
+with st.popover("Popover with multiselect"):
+    esc_multi_popover = st.multiselect(
+        "multiselect esc popover",
+        esc_colors,
+        default=esc_colors,
+        key="multiselect_esc_popover",
+    )
+    st.text(f"value esc popover: {esc_multi_popover}")
+
+# --- wrap parameter ---
+
+wrap_options = [
+    "Afghanistan",
+    "Albania",
+    "Algeria",
+    "Andorra",
+    "Angola",
+    "Argentina",
+    "Armenia",
+    "Australia",
+    "Austria",
+    "Azerbaijan",
+]
+
+with st.container(key="multiselect_wrap_false"):
+    st.multiselect(
+        "multiselect wrap false",
+        wrap_options,
+        default=wrap_options,
+        wrap=False,
+    )
+
+with st.container(key="multiselect_wrap_true"):
+    st.multiselect(
+        "multiselect wrap true",
+        wrap_options,
+        default=wrap_options,
+        wrap=True,
+    )
+
+# Auto (wrap=None) resolves to no-wrap inside a horizontal container ...
+with st.container(horizontal=True, key="multiselect_wrap_auto_horizontal"):
+    st.multiselect(
+        "multiselect wrap auto horizontal",
+        wrap_options,
+        default=wrap_options,
+    )
+
+# ... and to wrapping in a normal vertical layout.
+with st.container(key="multiselect_wrap_auto_vertical"):
+    st.multiselect(
+        "multiselect wrap auto vertical",
+        wrap_options,
+        default=wrap_options,
+    )

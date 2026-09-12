@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,9 +25,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import NoReturn, cast
-
-from typing_extensions import TypeAlias
+from typing import NoReturn, TypeAlias, cast
 
 PackageInfo: TypeAlias = tuple[str, str]
 
@@ -80,11 +78,6 @@ PACKAGE_EXCEPTIONS: set[PackageInfo] = {
     ),
     (
         # Mapbox Web SDK license: https://github.com/mapbox/mapbox-gl-js/blob/main/LICENSE.txt
-        "@plotly/mapbox-gl@npm:1.13.4",
-        "SEE LICENSE IN LICENSE.txt",
-    ),
-    (
-        # Mapbox Web SDK license: https://github.com/mapbox/mapbox-gl-js/blob/main/LICENSE.txt
         "mapbox-gl@npm:1.13.3",
         "SEE LICENSE IN LICENSE.txt",
     ),
@@ -104,10 +97,10 @@ PACKAGE_EXCEPTIONS: set[PackageInfo] = {
         "UNKNOWN",
     ),
     (
-        # Licenses has a typo, is meant to be BSD-3-Clause
-        # https://github.com/luizbarboza/splaytree-ts/blob/master/LICENSE
-        "splaytree-ts@npm:1.0.2",
-        "BDS-3-Clause",
+        # MIT license: https://github.com/fabiospampinato/khroma/blob/master/license
+        # (npm metadata incorrectly shows "Proprietary")
+        "khroma@npm:2.1.0",
+        "UNKNOWN",
     ),
 }
 
@@ -168,7 +161,7 @@ def main() -> NoReturn:
     )
 
     # Run `yarn licenses` for app.
-    licenses_output = licenses_output + (
+    licenses_output += (
         subprocess.check_output(
             ["yarn", "licenses", "list", "--json", "--production", "--recursive"],
             cwd=str(FRONTEND_DIR_APP),

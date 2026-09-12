@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,13 +23,13 @@ import {
   isPeriodType,
   isUnsignedIntegerType,
 } from "~lib/dataframes/arrowTypeUtils"
+import { formatNumber } from "~lib/util/formatNumber"
 import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
   countDecimals,
-  formatNumber,
   getErrorCell,
   mergeColumnParameters,
   toSafeNumber,
@@ -38,17 +38,27 @@ import {
 } from "./utils"
 
 export interface NumberColumnParams {
-  // The minimum allowed value for editing. Is set to 0 for unsigned values.
+  /**
+   * The minimum allowed value for editing. Is set to 0 for unsigned values.
+   */
   readonly min_value?: number
-  // The maximum allowed value for editing.
+  /**
+   * The maximum allowed value for editing.
+   */
   readonly max_value?: number
-  // A formatting syntax (e.g. sprintf) to format the display value.
-  // This can be used for adding prefix or suffix, or changing the number of decimals of the display value.
+  /**
+   * A formatting syntax (e.g. sprintf) to format the display value.
+   * This can be used for adding prefix or suffix, or changing the number of
+   * decimals of the display value.
+   */
   readonly format?: string
-  // Specifies the granularity that the value must adhere.
-  // This will also influence the maximum precision. This will impact the number of decimals
-  // allowed to be entered as well as the number of decimals displayed (if format is not specified).
-  // This is set to 1 for integer types.
+  /**
+   * Specifies the granularity that the value must adhere.
+   * This will also influence the maximum precision. This will impact the
+   * number of decimals allowed to be entered as well as the number of
+   * decimals displayed (if format is not specified).
+   * This is set to 1 for integer types.
+   */
   readonly step?: number
 }
 
@@ -57,17 +67,17 @@ export interface NumberColumnParams {
  * This supports float, integer, and unsigned integer types.
  */
 function NumberColumn(props: BaseColumnProps): BaseColumn {
-  const parameters = mergeColumnParameters(
+  const parameters = mergeColumnParameters<NumberColumnParams>(
     // Default parameters:
     {
       // Set step to 1 for integer types
       step: isIntegerType(props.arrowType) ? 1 : undefined,
       // if uint (unsigned int), only positive numbers are allowed
       min_value: isUnsignedIntegerType(props.arrowType) ? 0 : undefined,
-    } as NumberColumnParams,
+    },
     // User parameters:
     props.columnTypeOptions
-  ) as NumberColumnParams
+  )
 
   // If no custom format is provided & the column type is duration or period,
   // instruct the column to use the arrow formatting for the display value.
@@ -90,7 +100,7 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
     readonly: !props.isEditable,
     allowOverlay: true,
     contentAlign:
-      props.contentAlignment || useArrowFormatting ? "left" : "right",
+      props.contentAlignment ?? (useArrowFormatting ? "left" : "right"),
     // The text in pinned columns should be faded.
     style: props.isPinned ? "faded" : "normal",
     allowNegative,
@@ -100,8 +110,7 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
     thousandSeparator: "",
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  const validateInput = (data?: any): boolean | number => {
+  const validateInput = (data?: unknown): boolean | number => {
     let cellData: number | null = toSafeNumber(data)
 
     if (isNullOrUndefined(cellData)) {
@@ -149,9 +158,9 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
     ...props,
     kind: "number",
     sortMode: "smart",
+    typeIcon: ":material/tag:",
     validateInput,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any, validate?: boolean): GridCell {
+    getCell(data?: unknown, validate?: boolean): GridCell {
       if (validate === true) {
         const validationResult = validateInput(data)
         if (validationResult === false) {
@@ -225,6 +234,13 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
     },
     getCellValue(cell: NumberCell): number | null {
       return cell.data === undefined ? null : cell.data
+    },
+    valuesEqual(a: unknown, b: unknown): boolean {
+      // Compare numerically so a string like "5" and the number 5 match.
+      const numberA = typeof a === "number" ? a : Number(a)
+      const numberB = typeof b === "number" ? b : Number(b)
+
+      return Object.is(numberA, numberB)
     },
   }
 }

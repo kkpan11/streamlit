@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,16 @@
  * limitations under the License.
  */
 
-import React from "react"
-
 import { screen } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 import { Field, Int64, Utf8 } from "apache-arrow"
 
-import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
 import {
   BaseColumn,
   NumberColumn,
   TextColumn,
 } from "~lib/components/widgets/DataFrame/columns"
+import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
 import { render } from "~lib/test_util"
 
 import ColumnVisibilityMenu, {
@@ -102,13 +100,14 @@ const MOCK_COLUMNS: BaseColumn[] = [
 ]
 
 describe("DataFrame ColumnVisibilityMenu", () => {
-  const defaultProps: ColumnVisibilityMenuProps = {
+  const defaultChildren = <button type="button">Toggle Visibility</button>
+
+  const defaultProps: Omit<ColumnVisibilityMenuProps, "children"> = {
     columns: MOCK_COLUMNS,
     columnOrder: [],
     setColumnOrder: vi.fn(),
     hideColumn: vi.fn(),
     showColumn: vi.fn(),
-    children: <button type="button">Toggle Visibility</button>,
     isOpen: true,
     onClose: vi.fn(),
   }
@@ -117,91 +116,214 @@ describe("DataFrame ColumnVisibilityMenu", () => {
     vi.clearAllMocks()
   })
 
-  test("renders the visibility menu with all columns", () => {
-    render(<ColumnVisibilityMenu {...defaultProps} />)
+  it("renders the visibility menu with all columns", () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
-    expect(
-      screen.getByTestId("stDataFrameColumnVisibilityMenu")
-    ).toBeInTheDocument()
-    expect(screen.getByText("Column 1")).toBeInTheDocument()
-    expect(screen.getByText("Column 2")).toBeInTheDocument()
-    expect(screen.getByText("(index)")).toBeInTheDocument()
+    expect(screen.getByTestId("stDataFrameColumnVisibilityMenu")).toBeVisible()
+    expect(screen.getByText("Column 1")).toBeVisible()
+    expect(screen.getByText("Column 2")).toBeVisible()
+    expect(screen.getByText("(index)")).toBeVisible()
+    expect(screen.getByText("Select all")).toBeVisible()
   })
 
-  test("shows correct checkbox states based on column visibility", () => {
-    render(<ColumnVisibilityMenu {...defaultProps} />)
+  it("shows correct checkbox states based on column visibility", () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     const checkboxes = screen.getAllByRole("checkbox")
-    expect(checkboxes[0]).toBeChecked() // Index (visible)
-    expect(checkboxes[1]).toBeChecked() // Column 1 (visible)
-    expect(checkboxes[2]).not.toBeChecked() // Column 2 (hidden)
+    expect(checkboxes[0]).not.toBeChecked() // Select All (visible but indeterminate)
+    expect(checkboxes[1]).toBeChecked() // Index (visible)
+    expect(checkboxes[2]).toBeChecked() // Column 1 (visible)
+    expect(checkboxes[3]).not.toBeChecked() // Column 2 (hidden)
   })
 
-  test("calls hideColumn when unchecking a visible column", async () => {
-    render(<ColumnVisibilityMenu {...defaultProps} />)
+  it("closes the menu when the Escape key is pressed", async () => {
+    const onClose = vi.fn()
+
+    render(
+      <ColumnVisibilityMenu {...defaultProps} onClose={onClose}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
+
+    expect(screen.getByTestId("stDataFrameColumnVisibilityMenu")).toBeVisible()
+
+    // Capture-phase keydown fires regardless of where focus is
+    await userEvent.keyboard("{Escape}")
+
+    expect(onClose).toHaveBeenCalled()
+    // Escape should dismiss the menu, not trigger a column visibility change:
+    expect(defaultProps.hideColumn).not.toHaveBeenCalled()
+    expect(defaultProps.showColumn).not.toHaveBeenCalled()
+  })
+
+  it("calls hideColumn when unchecking a visible column", async () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     await userEvent.click(screen.getByLabelText("Column 1"))
     expect(defaultProps.hideColumn).toHaveBeenCalledWith("_column-1")
   })
 
-  test("calls showColumn when checking a hidden column", async () => {
-    render(<ColumnVisibilityMenu {...defaultProps} />)
+  it("calls showColumn when checking a hidden column", async () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     await userEvent.click(screen.getByLabelText("Column 2"))
     expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-2")
   })
 
-  test("renders children component", () => {
-    render(<ColumnVisibilityMenu {...defaultProps} />)
+  it("renders children component", () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     expect(screen.getByText("Toggle Visibility")).toBeInTheDocument()
   })
 
-  test("doesn't render menu content when closed", () => {
-    render(<ColumnVisibilityMenu {...defaultProps} isOpen={false} />)
+  it("doesn't render menu content when closed", () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps} isOpen={false}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     expect(
       screen.queryByTestId("stDataFrameColumnVisibilityMenu")
     ).not.toBeInTheDocument()
   })
 
-  test("considers columns not in columnOrder as hidden", () => {
+  it("considers columns not in columnOrder as hidden", () => {
     const propsWithColumnOrder = {
       ...defaultProps,
       columnOrder: ["_column-2"], // Only column 2 is in the order
     }
 
-    render(<ColumnVisibilityMenu {...propsWithColumnOrder} />)
+    render(
+      <ColumnVisibilityMenu {...propsWithColumnOrder}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     const checkboxes = screen.getAllByRole("checkbox")
-    expect(checkboxes[0]).toBeChecked() // Index (visible, ignored by columnOrder)
-    expect(checkboxes[1]).not.toBeChecked() // Column 1 (hidden via columnOrder)
-    expect(checkboxes[2]).not.toBeChecked() // Column 2 (hidden via isHidden)
+    expect(checkboxes[0]).not.toBeChecked() // Select All (visible, ignored by columnOrder)
+    expect(checkboxes[1]).toBeChecked() // Index (visible, ignored by columnOrder)
+    expect(checkboxes[2]).not.toBeChecked() // Column 1 (hidden via columnOrder)
+    expect(checkboxes[3]).not.toBeChecked() // Column 2 (hidden via isHidden)
   })
 
-  test("shows column and updates columnOrder when checking a column hidden via columnOrder", async () => {
+  it("shows column and updates columnOrder when checking a column hidden via columnOrder", async () => {
     const propsWithColumnOrder = {
       ...defaultProps,
       columnOrder: ["_column-2"],
     }
 
-    render(<ColumnVisibilityMenu {...propsWithColumnOrder} />)
+    render(
+      <ColumnVisibilityMenu {...propsWithColumnOrder}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     await userEvent.click(screen.getByLabelText("Column 1"))
     expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-1")
     expect(defaultProps.setColumnOrder).toHaveBeenCalledOnce()
   })
 
-  test("doesn't update columnOrder when showing a column hidden via isHidden", async () => {
+  it("doesn't update columnOrder when showing a column hidden via isHidden", async () => {
     const propsWithColumnOrder = {
       ...defaultProps,
       columnOrder: [],
     }
 
-    render(<ColumnVisibilityMenu {...propsWithColumnOrder} />)
+    render(
+      <ColumnVisibilityMenu {...propsWithColumnOrder}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
 
     await userEvent.click(screen.getByLabelText("Column 2"))
     expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-2")
     expect(defaultProps.setColumnOrder).not.toHaveBeenCalled()
+  })
+
+  it("calls showColumn on all columns when selecting an indeterminate select all", async () => {
+    render(
+      <ColumnVisibilityMenu {...defaultProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
+
+    await userEvent.click(screen.getByLabelText("Select all")) // (Indeterminate, column 2 is hidden)
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("index-0")
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-1")
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-2")
+  })
+
+  it("calls showColumn on all columns when selecting a unchecked select all", async () => {
+    const allHiddenProps = {
+      ...defaultProps,
+      columns: MOCK_COLUMNS.map(c => ({ ...c, isHidden: true })),
+    }
+
+    render(
+      <ColumnVisibilityMenu {...allHiddenProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
+
+    await userEvent.click(screen.getByLabelText("Select all"))
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("index-0")
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-1")
+    expect(defaultProps.showColumn).toHaveBeenCalledWith("_column-2")
+  })
+
+  it("calls hideColumn on all columns when clicking a checked select all", async () => {
+    const allVisibleProps = {
+      ...defaultProps,
+      columns: MOCK_COLUMNS.map(c => ({ ...c, isHidden: false })),
+    }
+
+    render(
+      <ColumnVisibilityMenu {...allVisibleProps}>
+        {defaultChildren}
+      </ColumnVisibilityMenu>
+    )
+
+    await userEvent.click(screen.getByLabelText("Select all"))
+    expect(defaultProps.hideColumn).toHaveBeenCalledWith("index-0")
+    expect(defaultProps.hideColumn).toHaveBeenCalledWith("_column-1")
+    expect(defaultProps.hideColumn).toHaveBeenCalledWith("_column-2")
+  })
+
+  it("select all reflects columnOrder-hidden columns when none are explicitly hidden", () => {
+    const props = {
+      ...defaultProps,
+      columns: MOCK_COLUMNS.map(c => ({ ...c, isHidden: false })),
+      columnOrder: ["index-0", "_column-1"], // exclude _column-2 via order
+    }
+
+    render(
+      <ColumnVisibilityMenu {...props}>{defaultChildren}</ColumnVisibilityMenu>
+    )
+
+    const selectAll = screen.getByLabelText("Select all")
+    expect(selectAll).not.toBeChecked()
+    // Indeterminate state should be reflected via aria-checked="mixed"
+    expect(selectAll).toHaveAttribute("aria-checked", "mixed")
   })
 })

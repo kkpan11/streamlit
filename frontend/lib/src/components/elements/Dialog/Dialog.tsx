@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,68 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement, useEffect, useState } from "react"
+import { memo, ReactElement, useCallback, useEffect, useState } from "react"
 
 import { Block as BlockProto } from "@streamlit/protobuf"
 
-import Modal, { ModalBody, ModalHeader } from "~lib/components/shared/Modal"
 import IsDialogContext from "~lib/components/core/IsDialogContext"
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
+import Modal, {
+  ModalBody,
+  ModalHeader,
+} from "~lib/components/shared/Modal/Modal"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { assertNever } from "~lib/util/assertNever"
 import { notNullOrUndefined } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import { StyledDialogIcon, StyledDialogTitle } from "./styled-components"
+
+/**
+ * Maps the dialog width to the modal size.
+ * @param dialogWidth - The dialog width from the proto.
+ * @returns The modal size.
+ */
+function mapDialogWidthToModalSize(
+  dialogWidth: BlockProto.Dialog.DialogWidth
+): "default" | "medium" | "large" {
+  switch (dialogWidth) {
+    case BlockProto.Dialog.DialogWidth.MEDIUM:
+      return "medium"
+    case BlockProto.Dialog.DialogWidth.LARGE:
+      return "large"
+    case BlockProto.Dialog.DialogWidth.SMALL:
+      return "default"
+    default: {
+      // Ensure exhaustive checking if new enum values are added
+      assertNever(dialogWidth)
+      return "default"
+    }
+  }
+}
+
 export interface Props {
   element: BlockProto.Dialog
   deltaMsgReceivedAt?: number
+  widgetMgr: WidgetStateManager
+  fragmentId: string | undefined
 }
 
 const Dialog: React.FC<React.PropsWithChildren<Props>> = ({
   element,
   deltaMsgReceivedAt,
   children,
+  widgetMgr,
+  fragmentId,
 }): ReactElement => {
-  const { title, dismissible, width, isOpen: initialIsOpen } = element
+  const {
+    title,
+    dismissible,
+    width,
+    isOpen: initialIsOpen,
+    id,
+    icon,
+  } = element
   const [isOpen, setIsOpen] = useState<boolean>(false)
 
   useEffect(() => {
@@ -45,19 +89,86 @@ const Dialog: React.FC<React.PropsWithChildren<Props>> = ({
     // changed which would lead to the dialog not opening again.
   }, [initialIsOpen, deltaMsgReceivedAt])
 
+  // Handle dialog dismiss with widget event
+  const handleClose = useCallback(() => {
+    setIsOpen(false)
+
+    // Send widget event if on_dismiss is activated (indicated by presence of id)
+    if (id && widgetMgr) {
+      // Dialogs are not compatible with forms.
+      void widgetMgr.setTriggerValue(id, {
+        formId: "",
+        fragmentId,
+        fromUser: true,
+      })
+    }
+  }, [id, widgetMgr, fragmentId])
+
+  // Suppress R while a non-dismissible dialog is open so the app-level
+  // shortcut cannot rerun (and close) the dialog. Capture-phase keydown
+  // must stopImmediatePropagation so GlobalHotkeys never sees the event.
+  const handleRKeySuppress = useCallback(
+    (e: KeyboardEvent): void => {
+      if (isOpen && e.key.toLowerCase() === "r" && !element.dismissible) {
+        const target = e.target as HTMLElement
+
+        // Allow typing R in inputs, textareas, and contenteditable fields.
+        if (
+          target &&
+          (target.isContentEditable ||
+            target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.tagName === "SELECT")
+        ) {
+          return
+        }
+
+        e.preventDefault()
+        e.stopImmediatePropagation()
+      }
+    },
+    [isOpen, element.dismissible]
+  )
+
+  // Set up keyboard event listeners when dialog is open
+  useEffect(() => {
+    if (isOpen && !element.dismissible) {
+      // capture=true to intercept before App-level hotkeys
+      document.addEventListener("keydown", handleRKeySuppress, true)
+
+      return () => {
+        document.removeEventListener("keydown", handleRKeySuppress, true)
+      }
+    }
+    return undefined
+  }, [isOpen, element.dismissible, handleRKeySuppress])
+
   // don't use the Modal's isOpen prop as it feels laggy when using it
   if (!isOpen) {
     return <></>
   }
-
   return (
     <Modal
       isOpen
       closeable={dismissible}
-      onClose={() => setIsOpen(false)}
-      size={width === BlockProto.Dialog.DialogWidth.LARGE ? "full" : "default"}
+      onClose={handleClose}
+      size={mapDialogWidthToModalSize(width)}
     >
-      <ModalHeader>{title}</ModalHeader>
+      <ModalHeader>
+        <StyledDialogTitle>
+          {icon && (
+            <StyledDialogIcon data-testid="stDialogIcon">
+              <DynamicIcon iconValue={icon} size="lg" />
+            </StyledDialogIcon>
+          )}
+          <StreamlitMarkdown
+            source={title}
+            allowHTML={false}
+            isLabel
+            inheritFont
+          />
+        </StyledDialogTitle>
+      </ModalHeader>
       <ModalBody>{children}</ModalBody>
     </Modal>
   )

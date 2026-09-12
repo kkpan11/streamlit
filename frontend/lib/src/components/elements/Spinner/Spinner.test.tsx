@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,7 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import { BaseProvider, LightTheme } from "baseui"
-import { screen } from "@testing-library/react"
+import { act, screen, waitFor } from "@testing-library/react"
 
 import { Spinner as SpinnerProto } from "@streamlit/protobuf"
 
@@ -37,12 +34,16 @@ const getProps = (
 })
 
 describe("Spinner component", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it("renders without crashing", () => {
-    render(
-      <BaseProvider theme={LightTheme}>
-        <Spinner {...getProps()} />
-      </BaseProvider>
-    )
+    render(<Spinner {...getProps()} />)
 
     const spinnerContainer = screen.getByTestId("stSpinner")
     expect(spinnerContainer).toBeInTheDocument()
@@ -50,22 +51,14 @@ describe("Spinner component", () => {
   })
 
   it("sets the text and width correctly", () => {
-    render(
-      <BaseProvider theme={LightTheme}>
-        <Spinner {...getProps()} />
-      </BaseProvider>
-    )
+    render(<Spinner {...getProps()} />)
 
     const markdownText = screen.getByText("Loading...")
     expect(markdownText).toBeInTheDocument()
   })
 
   it("sets additional className/CSS for caching spinner", () => {
-    render(
-      <BaseProvider theme={LightTheme}>
-        <Spinner {...getProps({}, { cache: true })} />
-      </BaseProvider>
-    )
+    render(<Spinner {...getProps({}, { cache: true })} />)
 
     const spinnerContainer = screen.getByTestId("stSpinner")
     expect(spinnerContainer).toBeInTheDocument()
@@ -76,14 +69,107 @@ describe("Spinner component", () => {
   })
 
   it("shows timer when showTime is true", () => {
-    render(
-      <BaseProvider theme={LightTheme}>
-        <Spinner {...getProps({}, { showTime: true })} />
-      </BaseProvider>
-    )
+    render(<Spinner {...getProps({}, { showTime: true })} />)
 
     const spinnerContainer = screen.getByTestId("stSpinner")
     expect(spinnerContainer).toBeInTheDocument()
     expect(screen.getByText("(0.0 seconds)")).toBeInTheDocument()
+  })
+
+  it("updates timer based on system time", async () => {
+    render(<Spinner {...getProps({}, { showTime: true })} />)
+
+    // Initially shows 0.0 seconds
+    expect(screen.getByText("(0.0 seconds)")).toBeInTheDocument()
+
+    // Advance time by 1.5 seconds and trigger timer update
+    act(() => {
+      vi.advanceTimersByTime(1500)
+    })
+
+    // Wait for the component to update - allow for some timing variance
+    await waitFor(() => {
+      expect(screen.getByText(/\(1\.[0-9] seconds\)/)).toBeInTheDocument()
+    })
+
+    // Advance time by another 3.2 seconds (total 4.7 seconds)
+    act(() => {
+      vi.advanceTimersByTime(3200)
+    })
+
+    await waitFor(() => {
+      // Allow for some variance in timing - should be around 4.7 seconds
+      expect(
+        screen.getByText(/\([4-6]\.\d{1,2} seconds\)/)
+      ).toBeInTheDocument()
+    })
+  })
+
+  it("formats time correctly for different durations", async () => {
+    render(<Spinner {...getProps({}, { showTime: true })} />)
+
+    // Test seconds
+    act(() => {
+      vi.advanceTimersByTime(5300) // 5.3 seconds
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/\(5\.[0-9] seconds\)/)).toBeInTheDocument()
+    })
+
+    // Test minutes
+    act(() => {
+      vi.advanceTimersByTime(60000) // Additional 60 seconds (total 65.3 seconds)
+    })
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/\(1 minute, [5-7]\.[0-9] seconds\)/)
+      ).toBeInTheDocument()
+    })
+  })
+
+  it("puts the label in a live region", () => {
+    render(<Spinner {...getProps()} />)
+
+    const status = screen.getByRole("status")
+    expect(status).toHaveTextContent("Loading...")
+  })
+
+  it("keeps the elapsed time out of the live region", () => {
+    render(<Spinner {...getProps({}, { showTime: true })} />)
+
+    // The timer is rewritten every 100ms, so it must sit outside the live
+    // region to avoid queueing an announcement on every tick.
+    const status = screen.getByRole("status")
+    expect(status).not.toHaveTextContent("seconds")
+    expect(screen.getByText("(0.0 seconds)")).toBeInTheDocument()
+  })
+
+  it("does not rewrite the live region as the timer ticks", async () => {
+    render(<Spinner {...getProps({}, { showTime: true })} />)
+
+    const status = screen.getByRole("status")
+
+    act(() => {
+      vi.advanceTimersByTime(2000)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/\([1-3]\.[0-9] seconds\)/)).toBeInTheDocument()
+    })
+
+    expect(screen.getByRole("status")).toBe(status)
+    expect(status).toHaveTextContent("Loading...")
+  })
+
+  it("does not show timer when showTime is false", () => {
+    render(<Spinner {...getProps({}, { showTime: false })} />)
+
+    const spinnerContainer = screen.getByTestId("stSpinner")
+    expect(spinnerContainer).toBeInTheDocument()
+
+    // Should not find any timer text
+    expect(screen.queryByText(/seconds/)).not.toBeInTheDocument()
   })
 })

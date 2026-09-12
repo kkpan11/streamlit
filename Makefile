@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,17 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Make uses /bin/sh by default, but we are using some bash features.  On Ubuntu
+# Make uses /bin/sh by default, but we are using some bash features. On Ubuntu
 # /bin/sh is POSIX compliant, ie it's not bash.  So let's be explicit:
 SHELL=/bin/bash
 
-INSTALL_DEV_REQS ?= true
-INSTALL_TEST_REQS ?= true
+PYTHON_DEPENDENCY_GROUP ?= dev
+PYTHON_SYNC_LOCK_FLAG ?= --locked
+INSTALL_PLAYWRIGHT ?= true
+INSTALL_PLAYWRIGHT_DEPS ?= auto
+# Flags:
+#  - PYTHON_DEPENDENCY_GROUP: final Python environment to install. Supported
+#    values are runtime, test, dev, and integration (default: dev).
+#  - PYTHON_SYNC_LOCK_FLAG: lock enforcement passed to uv sync (default: --locked).
+#    Automation that repairs the lock may explicitly set this to an empty value.
+#  - INSTALL_PLAYWRIGHT: install Playwright browsers during python-init (default: true)
+#    CI uses a dedicated action to install browsers and typically sets this to false.
+#    Local dev can opt out when not needed: `INSTALL_PLAYWRIGHT=false make init`
+#  - INSTALL_PLAYWRIGHT_DEPS: install Playwright OS-level system deps (default: auto)
+#    `auto` runs --with-deps on Debian, Ubuntu, and macOS only. Use `true` to force
+#    it everywhere, or `false` to skip it (browsers still install in either case).
 PYTHON_VERSION := $(shell python --version | cut -d " " -f 2 | cut -d "." -f 1-2)
 MIN_PROTOC_VERSION = 3.20
-
-# Black magic to get module directories
-PYTHON_MODULES := $(foreach initpy, $(foreach dir, $(wildcard lib/*), $(wildcard $(dir)/__init__.py)), $(realpath $(dir $(initpy))))
 
 # Check if Python is installed and can be executed, otherwise show an error message in red (but continue)
 ifeq ($(PYTHON_VERSION),)
@@ -32,19 +42,26 @@ $(warning ${error_message_red_colored})
 endif
 
 .PHONY: help
+# Show all available make commands.
 help:
 	@# Magic line used to create self-documenting makefiles.
 	@# Note that this means the documenting comment just before the command (but after the .PHONY) must be all one line, and should begin with a capital letter and end with a period.
 	@# See https://stackoverflow.com/a/35730928
-	@awk '/^#/{c=substr($$0,3);next}c&&/^[[:alpha:]][[:alnum:]_-]+:/{print substr($$1,1,index($$1,":")),c}1{c=0}' Makefile | column -s: -t
+	@awk '/^#/{c=substr($$0,3);next}c&&/^[[:alpha:]][[:alnum:]_-]+:/{print substr($$1,1,index($$1,":")-1) ";" c}1{c=0}' Makefile | column -s';' -t
 
 .PHONY: all
-# Get dependencies, build frontend, install Streamlit into Python environment.
-all: init frontend install
+# Install all dependencies, build frontend, and install editable Streamlit.
+all: init frontend
 
-.PHONY: all-devel
-# Get dependencies and install Streamlit into Python environment -- but do not build the frontend.
-all-devel: init develop pre-commit-install frontend-dependencies
+.PHONY: all-dev
+# Install all dependencies and editable Streamlit, but do not build the frontend.
+all-dev: init
+	uv run pre-commit install
+	@# Clone wiki repo for agent artifacts if not present
+	@if [ ! -d "agent-wiki" ]; then \
+		echo "Cloning streamlit.wiki into agent-wiki/..."; \
+		git clone https://github.com/streamlit/streamlit.wiki.git agent-wiki; \
+	fi
 	@echo ""
 	@echo "    The frontend has *not* been rebuilt."
 	@echo "    If you need to make a wheel file, run:"
@@ -52,158 +69,15 @@ all-devel: init develop pre-commit-install frontend-dependencies
 	@echo "    make frontend"
 	@echo ""
 
-.PHONY: mini-devel
-# Get minimal dependencies for development and install Streamlit into Python environment -- but do not build the frontend.
-mini-devel: mini-init frontend-dependencies
-
-.PHONY: build-deps
-# An even smaller installation than mini-devel. Installs the bare minimum necessary to build Streamlit (by leaving out some dependencies necessary for the development process). Does not build the frontend.
-build-deps: mini-init develop
-
 .PHONY: init
-# Install all Python and JS dependencies.
-init: python-init-all react-init protobuf
+# Install all dependencies and build protobufs.
+init: python-init frontend-init protobuf
 
-.PHONY: mini-init
-# Install minimal Python and JS dependencies for development.
-mini-init: python-init-dev-only react-init protobuf
-
-.PHONY: develop
-# Installs Streamlit as editable install in your Python environment.
-develop:
-	INSTALL_DEV_REQS=false INSTALL_TEST_REQS=false make python-init
-
-.PHONY: python-init-all
-# Install Streamlit and all (test and dev) requirements.
-python-init-all:
-	INSTALL_DEV_REQS=true INSTALL_TEST_REQS=true make python-init
-
-.PHONY: python-init-dev-only
-# Install Streamlit and dev requirements.
-python-init-dev-only:
-	INSTALL_DEV_REQS=true INSTALL_TEST_REQS=false make python-init
-
-.PHONY: python-init
-# Install python dependencies and Streamlit as editable install in your Python environment.
-python-init:
-	pip_args=("--editable" "./lib");\
-	if [ "${INSTALL_DEV_REQS}" = "true" ] ; then\
-		pip_args+=("--requirement" "lib/dev-requirements.txt"); \
-	fi;\
-	if [ "${INSTALL_TEST_REQS}" = "true" ] ; then\
-		pip_args+=("--requirement" "lib/test-requirements.txt"); \
-	fi;\
-	if command -v "uv" > /dev/null; then \
-		echo "Running command: uv pip install $${pip_args[@]}"; \
-		uv pip install $${pip_args[@]}; \
-	else \
-		echo "Running command: pip install $${pip_args[@]}"; \
-		pip install $${pip_args[@]}; \
-	fi;\
-	if [ "${INSTALL_TEST_REQS}" = "true" ] ; then\
-		python -m playwright install --with-deps; \
-	fi;\
-
-.PHONY: pylint
-# Verify that our Python files are properly formatted and that there are no lint errors.
-pylint:
-	# Checks if the formatting is correct:
-	ruff format --check
-	# Run linter:
-	ruff check
-
-.PHONY: pyformat
-# Fix Python files that are not properly formatted.
-pyformat:
-	# Sort imports ( see https://docs.astral.sh/ruff/formatter/#sorting-imports )
-	ruff check --select I --fix
-	# Run code formatter
-	ruff format
-
-.PHONY: pytest
-# Run Python unit tests.
-pytest:
-	cd lib; \
-		PYTHONPATH=. \
-		pytest -v \
-			-l tests/ \
-			-m "not performance" \
-			$(PYTHON_MODULES)
-
-.PHONY: performance-pytest
-# Run Python benchmark tests
-performance-pytest:
-	cd lib; \
-		PYTHONPATH=. \
-		pytest -v \
-			-l tests/ \
-			-m "performance" \
-			--benchmark-autosave \
-			--benchmark-storage file://../.benchmarks/pytest \
-			$(PYTHON_MODULES)
-
-.PHONY: pytest-integration
-# Run Python integration tests. This requires the integration-requirements to be installed.
-pytest-integration:
-	cd lib; \
-		PYTHONPATH=. \
-		pytest -v \
-			--require-integration \
-			-l tests/ \
-			$(PYTHON_MODULES)
-
-.PHONY: mypy
-# Run Mypy static type checker.
-mypy:
-	mypy --config-file=mypy.ini
-
-.PHONY: bare-execution-tests
-# Run all our e2e tests in "bare" mode and check for non-zero exit codes.
-bare-execution-tests:
-	PYTHONPATH=. \
-	python3 scripts/run_bare_execution_tests.py
-
-.PHONY: cli-smoke-tests
-# Verify that CLI boots as expected when called with `python -m streamlit`.
-cli-smoke-tests:
-	python3 scripts/cli_smoke_tests.py
-
-.PHONY: distribution
-# Create Python distribution files in dist/.
-distribution:
-	# Get rid of the old build and dist folders to make sure that we clean old js and css.
-	rm -rfv lib/build lib/dist
-	cd lib ; python3 setup.py bdist_wheel sdist
-
-.PHONY: package
-# Build lib and frontend, and then run 'distribution'.
-package: build-deps frontend distribution
-
-.PHONY: conda-distribution
-# Create conda distribution files in lib/conda-recipe/dist.
-conda-distribution:
-	rm -rf lib/conda-recipe/dist
-	mkdir lib/conda-recipe/dist
-	# This can take upwards of 20 minutes to complete in a fresh conda installation! (Dependency solving is slow.)
-	# NOTE: Running the following command requires both conda and conda-build to
-	# be installed.
-	GIT_HASH=$$(git rev-parse --short HEAD) conda build lib/conda-recipe --output-folder lib/conda-recipe/dist
-
-.PHONY: conda-package
-# Build lib and (maybe) frontend assets, and then run 'conda-distribution'.
-conda-package: build-deps
-	if [ "${SNOWPARK_CONDA_BUILD}" = "1" ] ; then\
-		echo "Creating Snowpark conda build, so skipping building frontend assets."; \
-	else \
-		make frontend; \
-	fi
-	make conda-distribution;
 
 .PHONY: clean
 # Remove all generated files.
 clean:
 	cd lib; rm -rf build dist  .eggs *.egg-info
-	rm -rf lib/conda-recipe/dist
 	find . -name '*.pyc' -type f -delete || true
 	find . -name __pycache__ -type d -delete || true
 	find . -name .pytest_cache -exec rm -rfv {} \; || true
@@ -214,21 +88,19 @@ clean:
 	rm -rf lib/streamlit/static
 	rm -f lib/Pipfile.lock
 	rm -rf frontend/app/build
-	rm -rf frontend/node_modules
+	find . -name node_modules -type d -prune -exec rm -rf {} \; || true
 	rm -rf frontend/app/performance/lighthouse/reports
-	rm -rf frontend/app/node_modules
-	rm -rf frontend/lib/node_modules
-	rm -rf frontend/connection/node_modules
 	rm -rf frontend/test_results
-	rm -f frontend/protobuf/src/proto.js
-	rm -f frontend/protobuf/src/proto.d.ts
+	rm -f frontend/protobuf/proto.js
+	rm -f frontend/protobuf/proto.d.ts
 	rm -rf frontend/public/reports
 	rm -rf frontend/lib/dist
 	rm -rf frontend/connection/dist
+	rm -rf frontend/component-v2-lib/dist
 	rm -rf ~/.cache/pre-commit
 	rm -rf e2e_playwright/test-results
 	rm -rf e2e_playwright/performance-results
-	find . -name .streamlit -not -path './e2e_playwright/.streamlit' -type d -exec rm -rfv {} \; || true
+	find . -name .streamlit -not \( -path './e2e_playwright/.streamlit' -o -path './e2e_playwright/config/.streamlit' \) -type d -exec rm -rfv {} \; || true
 	cd lib; rm -rf .coverage .coverage\.*
 
 .PHONY: protobuf
@@ -248,202 +120,725 @@ protobuf:
 	else \
 		echo "protoc version $${PROTOC_VERSION} is >= than $(MIN_PROTOC_VERSION)"; \
 	fi; \
-	protoc \
+	uv run protoc \
 		--proto_path=proto \
 		--python_out=lib \
 		--mypy_out=lib \
 		proto/streamlit/proto/*.proto
 
 	@# JS/TS protobuf generation
+	@if [ ! -d "frontend/node_modules" ]; then \
+		echo "frontend/node_modules not found. Running 'make frontend-init' first..."; \
+		$(MAKE) frontend-init; \
+	fi
 	cd frontend/ ; yarn workspace @streamlit/protobuf run generate-protobuf
 
-.PHONY: react-init
+.PHONY: protobuf-lint
+# Lint and check formatting of protobuf files (buf).
+protobuf-lint:
+	cd frontend && yarn buf format ../proto --diff --exit-code
+	cd frontend && yarn buf lint ../proto
+
+.PHONY: protobuf-format
+# Format protobuf files (buf).
+protobuf-format:
+	cd frontend && yarn buf format ../proto -w
+
+.PHONY: python-init
+# Install Python dependencies and Streamlit in editable mode.
+python-init:
+	@case "${PYTHON_DEPENDENCY_GROUP}" in \
+		runtime|test|dev|integration) ;; \
+		*) \
+			echo "Unsupported PYTHON_DEPENDENCY_GROUP='${PYTHON_DEPENDENCY_GROUP}'. Expected one of: runtime, test, dev, integration."; \
+			exit 1; \
+		;; \
+	esac
+	@# Check if uv is installed
+	@if ! command -v uv > /dev/null 2>&1; then \
+		echo "Installing uv..."; \
+		pip install uv; \
+	fi
+	@# Sync exactly one final dependency selection. uv otherwise includes dev by default.
+	@if [ "${PYTHON_DEPENDENCY_GROUP}" = "runtime" ]; then \
+		echo "Installing runtime dependencies..."; \
+		uv sync ${PYTHON_SYNC_LOCK_FLAG} --no-default-groups; \
+	else \
+		echo "Installing ${PYTHON_DEPENDENCY_GROUP} dependencies..."; \
+		uv sync ${PYTHON_SYNC_LOCK_FLAG} --no-default-groups --group "${PYTHON_DEPENDENCY_GROUP}"; \
+	fi
+	@# Install playwright if requested
+	@if [ "${PYTHON_DEPENDENCY_GROUP}" != "runtime" ] && [ "${INSTALL_PLAYWRIGHT}" = "true" ]; then \
+		if [ "${INSTALL_PLAYWRIGHT_DEPS}" = "false" ]; then \
+			uv run --no-sync python -m playwright install; \
+		elif [ "${INSTALL_PLAYWRIGHT_DEPS}" = "true" ] || [ -f /etc/debian_version ] || [ "$$(uname)" = "Darwin" ]; then \
+			uv run --no-sync python -m playwright install --with-deps; \
+		else \
+			echo "Skipping 'playwright install --with-deps': not officially supported on this OS."; \
+			echo "Browsers will be downloaded. Install browser system libraries through your distro's package manager (see CONTRIBUTING.md)."; \
+			uv run --no-sync python -m playwright install; \
+		fi; \
+	fi
+
+.PHONY: python-lint
+# Lint and check formatting of Python files.
+python-lint:
+	# Checks if the formatting is correct:
+	uv run ruff format --check
+	# Run linter:
+	uv run ruff check
+
+.PHONY: python-format
+# Format Python files.
+python-format:
+	# Sort imports ( see https://docs.astral.sh/ruff/formatter/#sorting-imports )
+	uv run ruff check --select I --fix
+	# Run code formatter
+	uv run ruff format
+
+.PHONY: python-tests
+# Run Python unit tests.
+python-tests:
+	@# MPLBACKEND=Agg avoids matplotlib crashing the interpreter on macOS (its default 'macosx' backend must run on the main thread).
+	MPLBACKEND=Agg uv run pytest -c lib/pyproject.toml -v -l \
+		-m "not performance" \
+		lib/tests/
+
+.PHONY: python-performance-tests
+# Run Python performance tests.
+python-performance-tests:
+	@# MPLBACKEND=Agg avoids matplotlib crashing the interpreter on macOS (its default 'macosx' backend must run on the main thread).
+	MPLBACKEND=Agg uv run pytest -c lib/pyproject.toml -v -l \
+		-m "performance" \
+		--benchmark-autosave \
+		--benchmark-storage file://.benchmarks/pytest \
+		lib/tests/
+
+.PHONY: python-integration-tests
+# Run Python integration tests. Requires `PYTHON_DEPENDENCY_GROUP=integration make python-init` first.
+python-integration-tests:
+	@# MPLBACKEND=Agg avoids matplotlib crashing the interpreter on macOS (its default 'macosx' backend must run on the main thread).
+	@# --no-sync keeps the integration group installed by `PYTHON_DEPENDENCY_GROUP=integration make python-init`; a bare `uv run` re-syncs to the default `dev` group and drops integration-only deps.
+	MPLBACKEND=Agg uv run --no-sync pytest -c lib/pyproject.toml -v -l \
+		--require-integration \
+		lib/tests/
+
+.PHONY: python-types
+# Run the Python type checker.
+python-types:
+	# Run ty type checker:
+	uv run ty check
+	# Run mypy type checker (reads config from pyproject.toml):
+	uv run mypy
+	# Template apps under lib/streamlit/.agents/ are skipped by the bare mypy
+	# run above (no __init__.py chain + dot-prefix directory). Run mypy per-
+	# template with MYPYPATH=lib so each file is checked against the real
+	# streamlit package. Per-file (not batched) because templates share the
+	# module name `streamlit_app`.
+	@for tpl in lib/streamlit/.agents/skills/developing-with-streamlit/assets/templates/apps/*/streamlit_app.py; do \
+		echo "# mypy: $$tpl" && \
+		MYPYPATH=lib uv run mypy "$$tpl" || exit 1; \
+	done
+
+.PHONY: frontend-init
 # Install all frontend dependencies.
-react-init:
-	cd frontend/ ; \
-	if command -v "corepack" > /dev/null; then \
-		corepack install ; \
-	fi;\
-	yarn install --immutable
+frontend-init:
+	@cd frontend/ && { \
+		EXPECTED_NODE_MAJOR=$$(sed -E 's/^v?([0-9]+).*/\1/' ../.nvmrc); \
+		CURRENT_NODE_MAJOR=$$(node -p "process.versions.node.split('.')[0]"); \
+		CURRENT_NODE_VERSION=$$(node -p "process.versions.node"); \
+		if [ "$$CURRENT_NODE_MAJOR" != "$$EXPECTED_NODE_MAJOR" ]; then \
+			echo "Error: Unsupported Node.js version v$$CURRENT_NODE_VERSION."; \
+			echo "Expected Node.js major version v$$EXPECTED_NODE_MAJOR from .nvmrc."; \
+			echo "Please switch Node versions (e.g. via 'nvm use')."; \
+			exit 1; \
+		fi; \
+		corepack enable yarn; \
+		if [ $$? -ne 0 ]; then \
+			echo "Error: 'corepack' command not found or failed to enable."; \
+			echo "Please ensure you are running the expected version of Node.js as defined in '.nvmrc'."; \
+			exit 1; \
+		fi; \
+		corepack install && yarn install --immutable; \
+	}
 
 .PHONY: frontend
-# Build frontend into static files.
+# Build the frontend.
 frontend:
-	cd frontend/ ; yarn workspaces foreach --all --topological run build
+	cd frontend/ ; yarn workspaces foreach --all --topological --parallel run build
 	rsync -av --delete --delete-excluded --exclude=reports \
 		frontend/app/build/ lib/streamlit/static/
-	# Move manifest.json to a location that can actually be served by the Tornado
+	# Move manifest.json to a location that can actually be served by the
 	# server's static asset handler.
 	mv lib/streamlit/static/.vite/manifest.json lib/streamlit/static
 
-.PHONY: frontend-dependencies
-# Build frontend dependent libraries (excluding app and lib)
-frontend-dependencies:
-	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/app --exclude @streamlit/lib --topological run build
-
-.PHONY: frontend-build-with-profiler
+.PHONY: frontend-with-profiler
 # Build the frontend with the profiler enabled.
-frontend-build-with-profiler: frontend-dependencies
+frontend-with-profiler:
+	# Build frontend dependent libraries (excluding app and lib):
+	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/app --exclude @streamlit/lib --topological --parallel run build
+	# Build the app with the profiler enabled:
 	cd frontend/ ; yarn workspace @streamlit/app buildWithProfiler
 	rsync -av --delete --delete-excluded --exclude=reports \
 		frontend/app/build/ lib/streamlit/static/
 
 .PHONY: frontend-fast
-# Build the frontend (as fast as possible)
+# Build the frontend (as fast as possible).
 frontend-fast:
-	cd frontend/ ; yarn workspaces foreach --recursive --topological --from @streamlit/app --exclude @streamlit/lib run build
+	cd frontend/ ; yarn workspaces foreach --recursive --topological --parallel --from @streamlit/app --exclude @streamlit/lib run build
 	rsync -av --delete --delete-excluded --exclude=reports \
 		frontend/app/build/ lib/streamlit/static/
 
 .PHONY: frontend-dev
-# Build frontend dependencies and start the dev server.
-frontend-dev: frontend-dependencies
-	cd frontend/ ; yarn dev
+# Start the frontend development server.
+frontend-dev:
+	cd frontend/ ; yarn start
 
-.PHONY: frontend-lib
-# Build the frontend library.
-frontend-lib:
-	cd frontend/ ; yarn workspaces foreach --recursive --topological --from @streamlit/lib run build;
+# The backend startup loop detects the last numeric port from either the INFO
+# "server started on" or DEBUG "Starting uvicorn runner on" log line,
+# keeping the last match because dev mode may retry ports.
+# Keep comments outside the backslash-continued recipe so Bash parses one command.
+.PHONY: debug
+# Start Streamlit and Vite dev server for debugging. Use via `make debug my-script.py`.
+debug:
+	@SCRIPT=$$(echo $(filter-out $@,$(MAKECMDGOALS))); \
+	if [[ -z "$$SCRIPT" ]]; then \
+		echo "Error: Please specify a Streamlit script"; \
+		echo "Usage: make debug <script.py>"; \
+		exit 1; \
+	fi; \
+	if [[ ! -f "$$SCRIPT" ]]; then \
+		echo "Error: Script '$$SCRIPT' not found"; \
+		exit 1; \
+	fi; \
+	if [[ ! -f "frontend/utils/dist/streamlit-utils.es.js" ]]; then \
+		echo "Frontend workspace build artifacts are missing. Building required frontend packages..."; \
+		( \
+			cd frontend && \
+			yarn workspaces foreach --all --exclude @streamlit/app --exclude @streamlit/lib --topological --parallel run build \
+		) || exit 1; \
+	fi; \
+	DEBUG_ROOT="$$(pwd)/work-tmp/debug"; \
+	mkdir -p "$$DEBUG_ROOT"; \
+	SCRIPT_SAFE_NAME="$$(basename "$$SCRIPT" | sed 's/[^[:alnum:]._-]/_/g')"; \
+	SESSION_STAMP="$$(date +%Y%m%d-%H%M%S)-$$SCRIPT_SAFE_NAME-$$$$"; \
+	DEBUG_DIR="$$DEBUG_ROOT/$$SESSION_STAMP"; \
+	mkdir -p "$$DEBUG_DIR"; \
+	ln -sfn "$$DEBUG_DIR" "$$DEBUG_ROOT/latest"; \
+	> "$$DEBUG_DIR/backend.log"; \
+	> "$$DEBUG_DIR/frontend.log"; \
+	BACKEND_PID=""; \
+	FRONTEND_PID=""; \
+	BACKEND_PORT=""; \
+	FRONTEND_PORT=""; \
+	REQUESTED_BACKEND_PORT="$${STREAMLIT_SERVER_PORT:-}"; \
+	if [[ -n "$$REQUESTED_BACKEND_PORT" ]]; then \
+		echo "Error: STREAMLIT_SERVER_PORT is not supported by make debug."; \
+		echo "Reason: global.developmentMode=true forbids manual server.port overrides."; \
+		echo "Unset STREAMLIT_SERVER_PORT and rerun make debug."; \
+		exit 1; \
+	fi; \
+	if [[ -n "$$VITE_PORT" ]]; then \
+		if [[ ! "$$VITE_PORT" =~ ^[0-9]+$$ ]] || (( $$VITE_PORT < 1 || $$VITE_PORT > 65535 )); then \
+			echo "Error: VITE_PORT must be an integer between 1 and 65535."; \
+			exit 1; \
+		fi; \
+		FRONTEND_PORT=$$VITE_PORT; \
+		if lsof -nP -iTCP:$$FRONTEND_PORT -sTCP:LISTEN > /dev/null 2>&1; then \
+			echo "Error: Requested VITE_PORT=$$FRONTEND_PORT is already in use."; \
+			exit 1; \
+		fi; \
+	else \
+		for candidate_port in $$(seq 3001 3100); do \
+			if ! lsof -nP -iTCP:$$candidate_port -sTCP:LISTEN > /dev/null 2>&1; then \
+				FRONTEND_PORT=$$candidate_port; \
+				break; \
+			fi; \
+		done; \
+	fi; \
+	if [[ -z "$$FRONTEND_PORT" ]]; then \
+		echo "Error: Could not find a free frontend port in range 3001-3100."; \
+		exit 1; \
+	fi; \
+	cleanup() { \
+		echo ""; \
+		echo "Stopping servers... logs saved to $$DEBUG_DIR/"; \
+		if [[ -n "$$FRONTEND_PID" ]]; then \
+			pkill -P "$$FRONTEND_PID" 2>/dev/null || true; \
+			kill "$$FRONTEND_PID" 2>/dev/null || true; \
+			wait "$$FRONTEND_PID" 2>/dev/null || true; \
+		fi; \
+		if [[ -n "$$BACKEND_PID" ]]; then \
+			pkill -P "$$BACKEND_PID" 2>/dev/null || true; \
+			kill "$$BACKEND_PID" 2>/dev/null || true; \
+			wait "$$BACKEND_PID" 2>/dev/null || true; \
+		fi; \
+	}; \
+	trap cleanup EXIT; \
+	VITE_PORT="$$FRONTEND_PORT" uv run streamlit run "$$SCRIPT" \
+		--server.headless=true \
+		--server.runOnSave=true \
+		--browser.gatherUsageStats=false \
+		--global.developmentMode=true \
+		>> "$$DEBUG_DIR/backend.log" 2>&1 & \
+	BACKEND_PID=$$!; \
+	echo ""; \
+	echo "Starting debug session: $$SCRIPT"; \
+	BACKEND_READY=false; \
+	for i in $$(seq 1 60); do \
+		if ! kill -0 "$$BACKEND_PID" > /dev/null 2>&1; then \
+			echo "Error: Streamlit backend exited before startup completed. Check $$DEBUG_DIR/backend.log"; \
+			exit 1; \
+		fi; \
+		DETECTED_BACKEND_PORT=$$(awk '/[Ss]erver started on|Starting uvicorn runner on/ { n=split($$NF, a, ":"); port=a[n] } END { if (port ~ /^[0-9]+$$/) print port }' "$$DEBUG_DIR/backend.log"); \
+		if [[ -n "$$DETECTED_BACKEND_PORT" ]]; then \
+			BACKEND_PORT=$$DETECTED_BACKEND_PORT; \
+		fi; \
+		if [[ -n "$$BACKEND_PORT" ]] && curl -fsS "http://localhost:$$BACKEND_PORT/_stcore/health" > /dev/null 2>&1; then \
+			BACKEND_READY=true; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [[ -z "$$BACKEND_PORT" ]]; then \
+		echo "Error: Could not determine backend port for debug session. Check $$DEBUG_DIR/backend.log"; \
+		exit 1; \
+	fi; \
+	if [[ "$$BACKEND_READY" == "false" ]]; then \
+		echo "Error: Streamlit backend did not become healthy on port $$BACKEND_PORT. Check $$DEBUG_DIR/backend.log"; \
+		exit 1; \
+	fi; \
+	if lsof -nP -iTCP:$$FRONTEND_PORT -sTCP:LISTEN > /dev/null 2>&1; then \
+		if [[ -n "$$VITE_PORT" ]]; then \
+			echo "Error: Requested VITE_PORT=$$FRONTEND_PORT became unavailable before frontend startup."; \
+		else \
+			echo "Error: Selected frontend port $$FRONTEND_PORT became unavailable before frontend startup."; \
+		fi; \
+		echo "Please rerun make debug."; \
+		exit 1; \
+	fi; \
+	( \
+		cd frontend && \
+		DEBUG_TO_CONSOLE=1 \
+		DEV_SERVER_BACKEND_URL="http://localhost:$$BACKEND_PORT" \
+		VITE_PORT="$$FRONTEND_PORT" yarn start -- --strictPort \
+	) >> "$$DEBUG_DIR/frontend.log" 2>&1 & \
+	FRONTEND_PID=$$!; \
+	BACKEND_READY=true; \
+	FRONTEND_READY=false; \
+	PROXY_READY=false; \
+	for i in $$(seq 1 60); do \
+		if ! kill -0 "$$BACKEND_PID" > /dev/null 2>&1; then \
+			echo "Error: Streamlit backend exited before startup completed. Check $$DEBUG_DIR/backend.log"; \
+			exit 1; \
+		fi; \
+		if [[ "$$FRONTEND_READY" == "false" ]] && ! kill -0 "$$FRONTEND_PID" > /dev/null 2>&1; then \
+			echo "Error: Frontend dev server exited before startup completed. Check $$DEBUG_DIR/frontend.log"; \
+			exit 1; \
+		fi; \
+		if [[ "$$BACKEND_READY" == "false" ]] && curl -fsS "http://localhost:$$BACKEND_PORT/_stcore/health" > /dev/null 2>&1; then \
+			BACKEND_READY=true; \
+		fi; \
+		if [[ "$$FRONTEND_READY" == "false" ]] && curl -fsS "http://localhost:$$FRONTEND_PORT" > /dev/null 2>&1; then \
+			FRONTEND_READY=true; \
+		fi; \
+		if [[ "$$PROXY_READY" == "false" ]] && curl -fsS "http://localhost:$$FRONTEND_PORT/_stcore/health" > /dev/null 2>&1; then \
+			PROXY_READY=true; \
+		fi; \
+		if [[ "$$BACKEND_READY" == "true" ]] && [[ "$$FRONTEND_READY" == "true" ]] && [[ "$$PROXY_READY" == "true" ]]; then \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo ""; \
+	if [[ "$$BACKEND_READY" == "false" ]] || [[ "$$FRONTEND_READY" == "false" ]] || [[ "$$PROXY_READY" == "false" ]]; then \
+		echo "Warning: Servers may not have started correctly. Check log files."; \
+		echo ""; \
+	fi; \
+	echo "  App URL:      http://localhost:$$FRONTEND_PORT"; \
+	echo "  Backend URL:  http://localhost:$$BACKEND_PORT"; \
+	echo "  Proxy target: http://localhost:$$FRONTEND_PORT -> http://localhost:$$BACKEND_PORT"; \
+	echo ""; \
+	echo "  Log files:"; \
+	echo "    $$DEBUG_DIR/backend.log  - Streamlit/Python output"; \
+	echo "    $$DEBUG_DIR/frontend.log - Vite/browser console output"; \
+	echo "    $$DEBUG_ROOT/latest      - Symlink to latest debug session"; \
+	echo ""; \
+	echo "Press Ctrl+C to stop."; \
+	echo ""; \
+	wait
 
-.PHONY: jslint
-# Verify that our JS/TS code is formatted and that there are no lint errors.
-jslint: frontend-dependencies
-	cd frontend/ ; yarn workspaces foreach --all run formatCheck
-	cd frontend/ ; yarn workspaces foreach --all run lint
+.PHONY: frontend-lint
+# Lint and check formatting of frontend files.
+frontend-lint:
+	cd frontend/ ; yarn formatCheck
+	cd frontend/ ; yarn lint
 
-.PHONY: tstypecheck
-# Typecheck the JS/TS code.
-tstypecheck: frontend-dependencies
-	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/lib --exclude @streamlit/app run typecheck
-	cd frontend/ ; yarn workspaces foreach --all run typecheck
+.PHONY: frontend-types
+# Run the frontend type checker.
+frontend-types:
+	cd frontend/ ; yarn workspaces foreach --all --parallel run typecheck
 
-.PHONY: jsformat
-# Fix formatting issues in our JavaScript & TypeScript files.
-jsformat:
-	cd frontend/ ; yarn workspaces foreach --all run format
+.PHONY: frontend-format
+# Format frontend files.
+frontend-format:
+	cd frontend/ ; yarn format
 
-.PHONY: jstest
-# Run JS unit tests.
-jstest: frontend-dependencies
-	cd frontend; TESTPATH=$(TESTPATH) yarn test
-
-.PHONY: jstestcoverage
-# Run JS unit tests and generate a coverage report.
-jstestcoverage: frontend-dependencies
+.PHONY: frontend-tests
+# Run frontend unit tests and generate coverage report.
+frontend-tests:
 	cd frontend; TESTPATH=$(TESTPATH) yarn testCoverage
+
+.PHONY: frontend-knip
+# Run Knip unused-export and unused-dependency analysis.
+frontend-knip:
+	cd frontend/ ; yarn knip
+
+.PHONY: frontend-typesync
+# Check for unsynced frontend types.
+frontend-typesync:
+	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/typescript-config run typesync:ci --dry=fail || (\
+		echo -e "\033[0;31mTypesync check failed. Run 'make update-frontend-typesync' to fix.\033[0m"; \
+		exit 1 \
+	)
+
+.PHONY: update-frontend-typesync
+# Installs missing typescript typings for dependencies.
+update-frontend-typesync:
+	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/typescript-config run typesync
+	cd frontend/ ; yarn
 
 .PHONY: update-snapshots
 # Update e2e playwright snapshots based on the latest completed CI run.
 update-snapshots:
-	python ./scripts/update_e2e_snapshots.py
+	uv run python ./scripts/update_e2e_snapshots.py
 
 .PHONY: update-snapshots-changed
-# Update e2e playwright snapshots of changed files based on the latest completed CI run.
+# Update e2e playwright snapshots of changed e2e files based on the latest completed CI run.
 update-snapshots-changed:
-	python ./scripts/update_e2e_snapshots.py --changed
+	uv run python ./scripts/update_e2e_snapshots.py --changed
 
 .PHONY: update-material-icons
-# Update material icon names and font file based on latest google material symbol rounded font version.
+# Update material icons based on latest Google material symbol version.
 update-material-icons:
-	python ./scripts/update_material_icon_font_and_names.py
+	uv run python ./scripts/update_material_icon_font_and_names.py
 
+.PHONY: update-emojis
+# Update emojis from Unicode's latest emoji-test.txt.
+update-emojis:
+	uv run python ./scripts/update_emojis.py
 
-.PHONY: notices
-# Rebuild the NOTICES file.
-notices:
+.PHONY: update-notices
+# Update the notices file (licenses of frontend assets and dependencies).
+update-notices:
 	cd frontend; \
 		yarn licenses generate-disclaimer --production --recursive > ../NOTICES
+	# Normalize line endings to LF (yarn output may contain CRLF from some packages)
+	perl -i -pe 's/\r$$//' NOTICES
 
-	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Code_Pro/Source-Code-Pro.LICENSE
-	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Sans_Pro/Source-Sans-Pro.LICENSE
-	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Serif_Pro/Source-Serif-Pro.LICENSE
+	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Code/Source-Code.LICENSE
+	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Sans/Source-Sans.LICENSE
+	./scripts/append_license.sh frontend/app/src/assets/fonts/Source_Serif/Source-Serif.LICENSE
 	./scripts/append_license.sh frontend/app/src/assets/img/Material-Icons.LICENSE
 	./scripts/append_license.sh frontend/app/src/assets/img/Open-Iconic.LICENSE
-	./scripts/append_license.sh frontend/lib/src/vendor/bokeh/bokeh-LICENSE.txt
 	./scripts/append_license.sh frontend/lib/src/vendor/react-bootstrap-LICENSE.txt
 	./scripts/append_license.sh frontend/lib/src/vendor/fzy.js/fzyjs-LICENSE.txt
+	./scripts/append_license.sh frontend/lib/src/vendor/sprintf.js/sprintfjs-LICENSE.txt
+	./scripts/append_license.sh frontend/lib/src/vendor/decamelize/decamelize-LICENSE.txt
 
-.PHONY: headers
-# Update the license header on all source files.
-headers:
-	pre-commit run insert-license --all-files --hook-stage manual
-	pre-commit run license-headers --all-files --hook-stage manual
+.PHONY: update-headers
+# Update all license headers.
+update-headers:
+	uv run pre-commit run insert-license --all-files --hook-stage manual
+	uv run pre-commit run license-headers --all-files --hook-stage manual
 
-.PHONY: gen-min-dep-constraints
-# Write the minimum versions of our dependencies to a constraints file.
-gen-min-dep-constraints:
-	make develop >/dev/null
-	python scripts/get_min_versions.py >scripts/assets/min-constraints-gen.txt
-
-.PHONY: pre-commit-install
-# Pre-commit install.
-pre-commit-install:
-	pre-commit install
-
-.PHONY: performance-lighthouse
-# Run Lighthouse performance tests
-performance-lighthouse:
-	cd frontend/app; \
-	yarn run lighthouse:run
+.PHONY: update-min-deps
+# Update minimum dependency constraints file.
+update-min-deps:
+	INSTALL_PLAYWRIGHT=false PYTHON_DEPENDENCY_GROUP=dev $(MAKE) python-init >/dev/null
+	uv run --no-sync python scripts/get_min_versions.py >scripts/assets/min-constraints-gen.txt
 
 .PHONY: debug-e2e-test
-# Run an e2e playwright test in debug mode with Playwright Inspector. Use it via make debug-e2e-test st_command_test.py
+# Run a playwright e2e test in debug mode. Use it via `make debug-e2e-test st_command_test.py`.
 debug-e2e-test:
 	@if [[ ! "$(filter-out $@,$(MAKECMDGOALS))" == *"_test"* ]]; then \
 		echo "Error: Test script name must contain '_test' in the filename"; \
 		exit 1; \
 	fi
 	@echo "Running test: $(filter-out $@,$(MAKECMDGOALS)) in debug mode."
+	@if [[ -n "$$PYTEST_ADDOPTS" ]]; then \
+		echo "Using PYTEST_ADDOPTS=$$PYTEST_ADDOPTS"; \
+	fi
 	@TEST_SCRIPT=$$(echo $(filter-out $@,$(MAKECMDGOALS)) | sed 's|^e2e_playwright/||'); \
-	cd e2e_playwright && PWDEBUG=1 pytest $$TEST_SCRIPT --tracing on || ( \
+	cd e2e_playwright && PWDEBUG=1 uv run pytest $$TEST_SCRIPT --tracing on || ( \
 		echo "If you implemented changes in the frontend, make sure to call \`make frontend-fast\` to use the up-to-date frontend build in the test."; \
 		echo "You can find test-results in ./e2e_playwright/test-results"; \
 		exit 1 \
 	)
 
 .PHONY: run-e2e-test
-# Run an e2e playwright test. Use it via make run-e2e-test st_command_test.py
+# Run a playwright e2e test. Use it via `make run-e2e-test st_command_test.py`.
 run-e2e-test:
 	@if [[ ! "$(filter-out $@,$(MAKECMDGOALS))" == *"_test"* ]]; then \
 		echo "Error: Test script name must contain '_test' in the filename"; \
 		exit 1; \
 	fi
 	@echo "Running test: $(filter-out $@,$(MAKECMDGOALS))"
+	@if [[ -n "$$PYTEST_ADDOPTS" ]]; then \
+		echo "Using PYTEST_ADDOPTS=$$PYTEST_ADDOPTS"; \
+	fi
 	@TEST_SCRIPT=$$(echo $(filter-out $@,$(MAKECMDGOALS)) | sed 's|^e2e_playwright/||'); \
-	cd e2e_playwright && pytest $$TEST_SCRIPT --tracing retain-on-failure --reruns 0 || ( \
+	cd e2e_playwright && uv run pytest $$TEST_SCRIPT --tracing retain-on-failure --reruns 0 || ( \
 		echo "If you implemented changes in the frontend, make sure to call \`make frontend-fast\` to use the up-to-date frontend build in the test."; \
 		echo "You can find test-results in ./e2e_playwright/test-results"; \
 		exit 1 \
 	)
 
+.PHONY: trace-e2e-test
+# Run e2e test with tracing and view it. Use via `make trace-e2e-test <test_file.py>::<test_func>`.
+trace-e2e-test:
+	@if [[ -z "$(filter-out $@,$(MAKECMDGOALS))" ]]; then \
+		echo "Error: Please specify a single test to run"; \
+		echo "Usage: make trace-e2e-test <test_file.py>::<test_function>"; \
+		echo "Example: make trace-e2e-test st_audio_input_test.py::test_audio_input_renders"; \
+		exit 1; \
+	fi
+	@TEST_ARG=$$(echo $(filter-out $@,$(MAKECMDGOALS)) | sed 's|^e2e_playwright/||'); \
+	if [[ ! "$$TEST_ARG" == *"::"* ]]; then \
+		echo "Error: You must specify a single test function, not an entire test file"; \
+		echo "Usage: make trace-e2e-test <test_file.py>::<test_function>"; \
+		echo "Example: make trace-e2e-test st_audio_input_test.py::test_audio_input_renders"; \
+		exit 1; \
+	fi; \
+	echo "Clearing previous traces..."; \
+	rm -rf e2e_playwright/test-results/traces; \
+	mkdir -p e2e_playwright/test-results/traces; \
+	echo "Running test with tracing: $$TEST_ARG"; \
+	(cd e2e_playwright && uv run pytest $$TEST_ARG --tracing=on --output=test-results/traces || true); \
+	echo ""; \
+	echo "Launching trace viewer..."; \
+	TRACE_FILE=$$(find e2e_playwright/test-results/traces -name "trace.zip" -type f 2>/dev/null | head -n 1); \
+	if [[ -n "$$TRACE_FILE" ]]; then \
+		uv run python -m playwright show-trace "$$TRACE_FILE"; \
+	else \
+		echo "No trace file found. Check e2e_playwright/test-results/traces/ directory."; \
+	fi
+
+.PHONY: lighthouse-tests
+# Run Lighthouse performance tests.
+lighthouse-tests:
+	cd frontend/app; \
+	yarn run lighthouse:run
+
+.PHONY: bare-execution-tests
+# Run all e2e tests in bare mode.
+bare-execution-tests:
+	PYTHONPATH=. \
+	uv run python scripts/run_bare_execution_tests.py
+
+.PHONY: cli-smoke-tests
+# Run CLI smoke tests.
+cli-smoke-tests:
+	uv run python scripts/cli_smoke_tests.py
+
+# Template apps under lib/streamlit/.agents/ need per-template mypy invocation:
+# (a) they all use the module name `streamlit_app`, so batching triggers a
+#     "duplicate module" error;
+# (b) they live under a dot-prefixed directory (`.agents/`), which confuses
+#     mypy's package-root resolution and prevents `import streamlit` from
+#     resolving — `MYPYPATH=lib` points at the real streamlit package.
+# `make python-types` applies the same per-template treatment to the full set.
+.PHONY: check
+# Run all checks (format, lint, types, unit tests) on changed files only. Useful to verify the current state of the codebase before committing.
+check:
+	@echo "=== Checking changed files ==="
+	@CHANGED=$$(uv run python scripts/get_changed_files.py --all); \
+	if [ -z "$$CHANGED" ]; then \
+		echo "No changed files found."; \
+		exit 0; \
+	fi; \
+	echo "Changed files:"; \
+	echo "$$CHANGED" | tr ' ' '\n' | sed 's/^/  /'; \
+	echo ""
+	@# Start frontend (format, lint, knip, types, tests) in background, run Python + pre-commit + Python tests in foreground
+	@# Set FAST_CHECK=true to skip mypy, frontend-types, and unit tests
+	@# Set E2E_CHECK=true to also run changed e2e tests (in background, parallel to frontend)
+	@# Note: ty runs on all files (not just changed) because include/exclude config is ignored for single files, and ty is fast
+	@FE_OUT=$$(mktemp) || { echo "Failed to create temp file"; exit 1; }; \
+	E2E_OUT=""; \
+	FE_FILES=$$(uv run python scripts/get_changed_files.py --frontend --strip-prefix frontend/); \
+	FE_CHECK=$$(uv run python scripts/get_changed_files.py --frontend); \
+	FE_TESTS=$$(uv run python scripts/get_changed_files.py --frontend-tests --strip-prefix frontend/); \
+	( \
+		if [ -n "$$FE_FILES" ]; then \
+			echo "=== Frontend: format (oxfmt) ===" && \
+			cd frontend && yarn exec oxfmt --config ./.oxfmtrc.json $$FE_FILES && \
+			cd .. && \
+			echo "" && \
+			echo "=== Frontend: lint (oxlint) ===" && \
+			cd frontend && yarn exec oxlint --config ./.oxlintrc.json --fix --deny-warnings $$FE_FILES && \
+			cd .. && \
+			echo "" && \
+			echo "=== Frontend: lint (eslint) ===" && \
+			cd frontend && yarn exec eslint --fix $$FE_FILES && \
+			cd .. && \
+			echo ""; \
+		else \
+			echo "No frontend files changed." && \
+			echo ""; \
+		fi && \
+		if [ -n "$$FE_CHECK" ]; then \
+			echo "=== Frontend: dependency check (knip) ===" && \
+			$(MAKE) frontend-knip && \
+			echo ""; \
+		fi && \
+		if [ -n "$$FE_CHECK" ] && [ "$$FAST_CHECK" != "true" ]; then \
+			echo "=== Frontend: type check (tsc) ===" && \
+			$(MAKE) frontend-types && \
+			echo ""; \
+		fi && \
+		if [ -n "$$FE_TESTS" ] && [ "$$FAST_CHECK" != "true" ]; then \
+			echo "=== Frontend: tests (vitest) ===" && \
+			echo "Running: $$FE_TESTS" && \
+			cd frontend && yarn vitest run $$FE_TESTS; \
+		fi \
+	) > "$$FE_OUT" 2>&1 & FE_PID=$$!; \
+	E2E_PID=""; \
+	if [ "$$E2E_CHECK" = "true" ]; then \
+		E2E_OUT=$$(mktemp) || { echo "Failed to create E2E temp file"; exit 1; }; \
+		E2E_TESTS=$$(uv run python scripts/get_changed_files.py --e2e --strip-prefix e2e_playwright/); \
+		if [ -n "$$E2E_TESTS" ]; then \
+			( \
+				echo "=== E2E: tests (playwright) ===" && \
+				echo "Running: $$E2E_TESTS" && \
+				cd e2e_playwright && uv run pytest $$E2E_TESTS --tracing retain-on-failure --reruns 0 \
+			) > "$$E2E_OUT" 2>&1 & E2E_PID=$$!; \
+		fi; \
+	fi; \
+	PY_FILES=$$(uv run python scripts/get_changed_files.py --python); \
+	PY_EXIT=0; \
+	if [ -n "$$PY_FILES" ]; then \
+		echo "=== Python: lint (ruff) ===" && \
+		uv run ruff check --fix $$PY_FILES && \
+		echo "" && \
+		echo "=== Python: format (ruff) ===" && \
+		uv run ruff format $$PY_FILES && \
+		echo "" && \
+		echo "=== Python: type check (ty) ===" && \
+		uv run ty check && \
+		echo "" || PY_EXIT=1; \
+		if [ $$PY_EXIT -eq 0 ] && [ "$$FAST_CHECK" != "true" ]; then \
+			echo "=== Python: type check (mypy) ===" && \
+			PY_MYPY_NON_TEMPLATE=$$(echo "$$PY_FILES" | tr ' ' '\n' | grep -v '^lib/streamlit/\.agents/' | tr '\n' ' '); \
+			PY_MYPY_TEMPLATES=$$(echo "$$PY_FILES" | tr ' ' '\n' | grep '^lib/streamlit/\.agents/' | tr '\n' ' '); \
+			if [ -n "$$(echo "$$PY_MYPY_NON_TEMPLATE" | tr -d ' ')" ]; then \
+				uv run mypy $$PY_MYPY_NON_TEMPLATE && \
+				echo "" || PY_EXIT=1; \
+			fi; \
+			if [ $$PY_EXIT -eq 0 ] && [ -n "$$(echo "$$PY_MYPY_TEMPLATES" | tr -d ' ')" ]; then \
+				echo "# Per-template mypy with MYPYPATH=lib (see 'make check' docstring for why)" && \
+				for tpl in $$PY_MYPY_TEMPLATES; do \
+					MYPYPATH=lib uv run mypy "$$tpl" || PY_EXIT=1; \
+				done; \
+				echo ""; \
+			fi; \
+		fi; \
+	else \
+		echo "No Python files changed."; \
+		echo ""; \
+	fi; \
+	if [ $$PY_EXIT -ne 0 ]; then \
+		kill $$FE_PID 2>/dev/null; \
+		[ -n "$$E2E_PID" ] && kill $$E2E_PID 2>/dev/null; \
+		rm -f "$$FE_OUT" "$$E2E_OUT"; \
+		echo "=== Python checks failed! ==="; \
+		exit 1; \
+	fi; \
+	CHANGED=$$(uv run python scripts/get_changed_files.py --all); \
+	if [ -n "$$CHANGED" ]; then \
+		echo "=== Pre-commit hooks ===" && \
+		SKIP=oxlint-frontend,oxfmt-frontend uv run pre-commit run --files $$CHANGED && \
+		echo "" || { \
+			kill $$FE_PID 2>/dev/null; \
+			[ -n "$$E2E_PID" ] && kill $$E2E_PID 2>/dev/null; \
+			rm -f "$$FE_OUT" "$$E2E_OUT"; \
+			echo "=== Pre-commit hooks failed! ==="; \
+			exit 1; \
+		}; \
+	fi; \
+	PY_TESTS=$$(uv run python scripts/get_changed_files.py --python-tests); \
+	if [ -n "$$PY_TESTS" ] && [ "$$FAST_CHECK" != "true" ]; then \
+		echo "=== Python: tests (pytest) ===" && \
+		echo "Running: $$PY_TESTS" && \
+		MPLBACKEND=Agg uv run pytest -c lib/pyproject.toml -v $$PY_TESTS && \
+		echo "" || { \
+			kill $$FE_PID 2>/dev/null; \
+			[ -n "$$E2E_PID" ] && kill $$E2E_PID 2>/dev/null; \
+			rm -f "$$FE_OUT" "$$E2E_OUT"; \
+			echo "=== Python tests failed! ==="; \
+			exit 1; \
+		}; \
+	fi; \
+	FE_EXIT=0; \
+	wait $$FE_PID || FE_EXIT=1; \
+	cat "$$FE_OUT"; \
+	rm -f "$$FE_OUT"; \
+	E2E_EXIT=0; \
+	if [ -n "$$E2E_PID" ]; then \
+		wait $$E2E_PID || E2E_EXIT=1; \
+		cat "$$E2E_OUT"; \
+	fi; \
+	rm -f "$$E2E_OUT"; \
+	if [ $$FE_EXIT -ne 0 ]; then \
+		echo "=== Frontend checks failed! ==="; \
+		exit 1; \
+	fi; \
+	if [ $$E2E_EXIT -ne 0 ]; then \
+		echo "=== E2E tests failed! ==="; \
+		echo "If you implemented changes in the frontend, make sure to call 'make frontend-fast' to use the up-to-date frontend build in the test."; \
+		echo "You can find test-results in ./e2e_playwright/test-results"; \
+		exit 1; \
+	fi
+	@echo "=== All checks passed! ==="
+
 .PHONY: autofix
 # Autofix linting and formatting errors.
 autofix:
-	# Python fixes:
-	make pyformat
-	ruff check --fix
+	# Python fixes (continue on unfixable errors):
+	uv run ruff check --fix || true
+	make python-format
 	# JS fixes:
-	make react-init
-	make jsformat
-	cd frontend/ ; yarn workspaces foreach --all run lint --fix
+	make frontend-init
+	make frontend-format
+	cd frontend/ ; yarn lint:fix || true  # Continue on unfixable errors
+	cd frontend/ ; yarn knip --fix --allow-remove-files || true  # Continue on unfixable errors
+	# Dedupe yarn.lock
+	cd frontend ; yarn dedupe
 	# Other fixes:
-	make notices
+	make update-notices
 	# Run all pre-commit fixes but not fail if any of them don't work.
-	pre-commit run --all-files --hook-stage manual || true
+	uv run pre-commit run --all-files --hook-stage manual || true
 
-.PHONY: frontend-typesync
-# Run typesync in each frontend workspace to check for unsynced types.
-# If types are unsynced, print a message and exit with a non-zero exit code.
-frontend-typesync:
-	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/typescript-config run typesync:ci --dry=fail || (\
-		echo -e "\033[0;31mTypesync check failed. Run 'make frontend-typesync-update' to fix.\033[0m"; \
-		exit 1 \
-	)
+.PHONY: package
+# Create Python wheel files in `dist/`.
+package: init frontend
+	# Get rid of the old build and dist folders to make sure that we clean old js and css.
+	rm -rfv lib/build lib/dist
+	# Copy README.md to lib/ for the package build (pyproject.toml expects it there)
+	cp README.md lib/README.md
+	cd lib && uv build
+	# Clean up the copied README.md
+	rm -f lib/README.md
 
-.PHONY: frontend-typesync-update
-# Run typesync in each frontend workspace to update types.
-frontend-typesync-update:
-	cd frontend/ ; yarn workspaces foreach --all --exclude @streamlit/typescript-config run typesync
-	cd frontend/ ; yarn
-	cd component-lib/ ; yarn typesync
-	cd component-lib/ ; yarn
+# Targets that accept positional arguments (e.g., `make debug my-script.py`)
+TARGETS_WITH_ARGS := debug debug-e2e-test run-e2e-test trace-e2e-test
+
+# Catch-all target to allow passing arguments to the above targets.
+# Without this, Make interprets arguments as targets and exits with error code 2.
+# Only silently succeeds if invoked as an argument to a known target; otherwise fails
+# to catch typos like `make fronted-dev`.
+%:
+	@if ! echo "$(TARGETS_WITH_ARGS)" | grep -qw "$(firstword $(MAKECMDGOALS))"; then \
+		echo "Error: Unknown target '$@'. Run 'make help' to see available targets."; \
+		exit 1; \
+	fi

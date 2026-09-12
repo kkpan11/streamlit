@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 
 import { Dispatch, SetStateAction, useCallback } from "react"
 
-import { isInForm } from "~lib/util/utils"
 import { ValueWithSource } from "~lib/hooks/useBasicWidgetState"
+import { isInForm } from "~lib/util/utils"
 
 type OnInputChangeEventType = {
   target: {
@@ -33,18 +33,23 @@ interface OnInputChangeProps {
   setValueWithSource: Dispatch<
     SetStateAction<ValueWithSource<string | null> | null>
   >
+  /** Called after an input change that passed the max_chars gate.
+   * Receives the new value. Keep this callback stable with useCallback.
+   */
+  additionalAction?: (newValue: string) => void
 }
 
 /**
- * Will return a memoized function that accepts an HTMLInputElement and will call
- * commitWidgetValue and setDirty with its value, unless the value is longer than
- * maxChars. Will also call the setValueWithSource callback if the input is in a form.
+ * Returns a memoized change handler that applies `maxChars`, marks the input
+ * dirty, updates the UI value, and optionally runs `additionalAction`.
+ * If the input is in a form, it also calls setValueWithSource.
  *
  * @param formId if is in a form
  * @param maxChars if the input element's value length is greater than this, nothing will be called. Set to 0 to disable.
  * @param setDirty calls setDirty with true
  * @param setUiValue calls setUiValue with the input element's value
  * @param setValueWithSource calls setValueWithSource with the input element's value
+ * @param additionalAction optional function called with the new value after the main input change logic
  * @return memoized callback
  */
 export default function useOnInputChange({
@@ -53,6 +58,7 @@ export default function useOnInputChange({
   setDirty,
   setUiValue,
   setValueWithSource,
+  additionalAction,
 }: OnInputChangeProps): (e: OnInputChangeEventType) => void {
   return useCallback(
     (e: OnInputChangeEventType): void => {
@@ -71,12 +77,24 @@ export default function useOnInputChange({
       // is submitted, so this won't cause the script to re-run.
       if (isInForm({ formId })) {
         // Make sure dirty is true so that enter to submit form text shows
-        setValueWithSource({ value: newValue, fromUi: true })
+        setValueWithSource({ value: newValue, fromUser: true })
       }
       // If the TextInput is *not* part of a form, we mark it dirty but don't
       // update its value in the WidgetMgr. This means that individual keypresses
       // won't trigger a script re-run.
+
+      // Run additional action after the main logic
+      if (additionalAction) {
+        additionalAction(newValue)
+      }
     },
-    [formId, maxChars, setDirty, setUiValue, setValueWithSource]
+    [
+      formId,
+      maxChars,
+      setDirty,
+      setUiValue,
+      setValueWithSource,
+      additionalAction,
+    ]
   )
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,23 +14,23 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, ReactNode } from "react"
+import { memo, ReactElement, ReactNode } from "react"
 
 import { EmotionIcon } from "@emotion-icons/emotion-icon"
 
-import { IconSize } from "~lib/theme"
+import type { IconSizeProp } from "~lib/theme/types"
 
 import { StyledEmojiIcon, StyledIcon } from "./styled-components"
 
 interface GetDefaultPropsArgs {
-  size?: IconSize
+  size?: IconSizeProp
   margin?: string
   padding?: string
   color?: string
 }
 
 interface DefaultProps {
-  size: IconSize
+  size: IconSizeProp
   margin: string
   padding: string
   color: string | undefined
@@ -50,31 +50,33 @@ const getDefaultProps = ({
 
 interface IconProps {
   content: EmotionIcon
-  size?: IconSize
+  size?: IconSizeProp
   color?: string
   margin?: string
   padding?: string
   testid?: string
 }
 
-const Icon = ({
+const Icon = memo(function Icon({
   content,
   color,
   size,
   margin,
   padding,
   testid,
-}: IconProps): ReactElement => (
-  <StyledIcon
-    as={content}
-    aria-hidden="true"
-    data-testid={testid}
-    {...getDefaultProps({ size, margin, padding, color })}
-  />
-)
+}: IconProps): ReactElement {
+  return (
+    <StyledIcon
+      as={content}
+      aria-hidden="true"
+      data-testid={testid}
+      {...getDefaultProps({ size, margin, padding, color })}
+    />
+  )
+})
 
 interface EmojiIconProps {
-  size?: IconSize
+  size?: IconSizeProp
   margin?: string
   padding?: string
   children: ReactNode
@@ -82,14 +84,14 @@ interface EmojiIconProps {
   color?: string
 }
 
-export const EmojiIcon = ({
+export const EmojiIcon = memo(function EmojiIcon({
   size,
   margin,
   padding,
   children,
   color,
   testid,
-}: EmojiIconProps): ReactElement => {
+}: EmojiIconProps): ReactElement {
   // Handle the case where the emoji is prefixed with emoji:
   if (typeof children === "string") {
     children = children.replace(/^emoji:/, "")
@@ -104,6 +106,6 @@ export const EmojiIcon = ({
       {children}
     </StyledEmojiIcon>
   )
-}
+})
 
 export default Icon

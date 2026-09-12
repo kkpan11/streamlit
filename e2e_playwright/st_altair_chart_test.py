@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,38 +12,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pathlib
+import struct
+
+import pytest
 from playwright.sync_api import Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction
-from e2e_playwright.shared.app_utils import check_top_level_class
+from e2e_playwright.shared.app_utils import check_top_level_class, get_element_by_key
+from e2e_playwright.shared.react18_utils import wait_for_react_stability
+from e2e_playwright.shared.vega_utils import get_vega_graphics_document
+
+BASELINE_CHARTS = 9
+REGRESSION_CHART_INDEX = 9
+ISSUE_14050_CHART_INDEX = 10
+NUM_CHARTS = 14
 
 
 def test_altair_chart_displays_correctly(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    expect(
-        themed_app.get_by_test_id("stVegaLiteChart").locator("canvas")
-    ).to_have_count(11)
     charts = themed_app.get_by_test_id("stVegaLiteChart")
-    expect(charts).to_have_count(11)
-    snapshot_names = [
-        "st_altair_chart-scatter_chart_default_theme",
-        "st_altair_chart-scatter_chart_streamlit_theme",
-        "st_altair_chart-scatter_chart_overwritten_theme",
-        "st_altair_chart-bar_chart_overwritten_theme",
-        "st_altair_chart-pie_chart_large_legend_items",
-        "st_altair_chart-grouped_bar_chart_default_theme",
-        "st_altair_chart-grouped_bar_chart_streamlit_theme",
-        "st_altair_chart-grouped_use_container_width_default_theme",
-        "st_altair_chart-grouped_layered_line_chart_streamlit_theme",
-        "st_altair_chart-vconcat_width",
-        "st_altair_chart-altair_chart_cut_off_legend_title_none",
-    ]
-    for i, name in enumerate(snapshot_names):
-        # We use a higher threshold here to prevent some flakiness
-        # We should probably remove this once we have refactored the
-        # altair frontend component.
-        assert_snapshot(charts.nth(i), name=name, image_threshold=0.6)
+    expect(charts).to_have_count(NUM_CHARTS)
+    # Vega always mounts an empty bindings form; hide it so charts without
+    # parameter widgets do not pick up extra padding.
+    expect(charts.nth(0).locator("form.vega-bindings")).to_be_hidden()
+
+    # Each chart container carries the Vega "graphics-document" ARIA role once
+    # it has rendered. Verify every baseline chart is a visible graphics
+    # document before snapshotting.
+    for idx in range(BASELINE_CHARTS):
+        expect(get_vega_graphics_document(charts.nth(idx))).to_be_visible()
+
+    assert_snapshot(charts.nth(0), name="st_altair_chart-pie_chart_large_legend_items")
+    assert_snapshot(charts.nth(1), name="st_altair_chart-scatter_chart_default_theme")
+    assert_snapshot(charts.nth(2), name="st_altair_chart-scatter_chart_streamlit_theme")
+    assert_snapshot(
+        charts.nth(3), name="st_altair_chart-scatter_chart_overwritten_theme"
+    )
+    assert_snapshot(charts.nth(4), name="st_altair_chart-bar_chart_overwritten_theme")
+    # TODO(lukasmasuch): Temporarily disabled because of flickering in webkit & chromium.
+    # assert_snapshot(charts.nth(5), name="st_altair_chart-grouped_bar_chart_default_theme")  # noqa: ERA001
+    # assert_snapshot(charts.nth(5), name="st_altair_chart-grouped_bar_chart_streamlit_theme")  # noqa: ERA001
+    # assert_snapshot(charts.nth(5), name="st_altair_chart-grouped_use_container_width_default_theme")  # noqa: ERA001
+    assert_snapshot(
+        charts.nth(5), name="st_altair_chart-grouped_layered_line_chart_streamlit_theme"
+    )
+    assert_snapshot(charts.nth(6), name="st_altair_chart-vconcat_width")
+    assert_snapshot(
+        charts.nth(7), name="st_altair_chart-altair_chart_cut_off_legend_title_none"
+    )
+    assert_snapshot(charts.nth(8), name="st_altair_chart-marginal_histogram")
+
+
+def test_layered_vconcat_fit_x_regression_renders(app: Page):
+    """Guard against regression from https://github.com/streamlit/streamlit/issues/13974."""
+    charts = app.get_by_test_id("stVegaLiteChart")
+    expect(charts).to_have_count(NUM_CHARTS)
+
+    regression_chart = charts.nth(REGRESSION_CHART_INDEX)
+    expect(regression_chart).to_be_visible()
+    expect(get_vega_graphics_document(regression_chart)).to_have_count(1)
+
+    # Issue #13974 regression signal: hidden SVG with width=0.
+    rendered_chart = regression_chart.locator("canvas, svg").first
+    expect(rendered_chart).to_be_visible()
+
+
+def test_vconcat_layered_facet_regression_renders(app: Page):
+    """Guard against regression from https://github.com/streamlit/streamlit/issues/14050."""
+    charts = app.get_by_test_id("stVegaLiteChart")
+    expect(charts).to_have_count(NUM_CHARTS)
+
+    regression_chart = charts.nth(ISSUE_14050_CHART_INDEX)
+    expect(regression_chart).to_be_visible()
+    expect(get_vega_graphics_document(regression_chart)).to_have_count(1)
+
+    # This issue rendered an empty chart with repeated "Infinite extent" console errors.
+    # Assert the chart graphic is actually rendered.
+    expect(regression_chart.locator("canvas, svg").first).to_be_visible()
 
 
 def test_check_top_level_class(app: Page):
@@ -51,21 +98,185 @@ def test_check_top_level_class(app: Page):
     check_top_level_class(app, "stVegaLiteChart")
 
 
+# Webkit is quite flaky, potentially pointing to a bug
+# see the other comments in the test script
+@pytest.mark.skip_browser("webkit")
 def test_chart_tooltip_styling(app: Page, assert_snapshot: ImageCompareFunction):
     """Check that the chart tooltip styling is correct."""
-    pie_chart = app.get_by_test_id("stVegaLiteChart").nth(4)
+
+    charts = app.get_by_test_id("stVegaLiteChart")
+    expect(charts).to_have_count(NUM_CHARTS)
+
+    pie_chart = charts.nth(0)
+    expect(pie_chart).to_be_visible()
+    wait_for_react_stability(app)
     pie_chart.scroll_into_view_if_needed()
-    pie_chart.locator("canvas").hover(position={"x": 60, "y": 60}, force=True)
+    wait_for_react_stability(app)
+    get_vega_graphics_document(pie_chart).hover(position={"x": 60, "y": 60}, force=True)
     tooltip = app.locator("#vg-tooltip-element")
     expect(tooltip).to_be_visible()
 
     assert_snapshot(tooltip, name="st_altair_chart-tooltip_styling")
 
 
-def test_chart_menu_styling(themed_app: Page, assert_snapshot: ImageCompareFunction):
-    """Check that the chart menu styling is correct."""
-    chart = themed_app.get_by_test_id("stVegaLiteChart").first
-    chart.locator("summary").click()
-    chart_menu = chart.locator(".vega-actions")
-    expect(chart_menu).to_be_visible()
-    assert_snapshot(chart_menu, name="st_altair_chart-menu_styling")
+@pytest.mark.only_browser("chromium")
+def test_download_chart_as_png(app: Page):
+    """The 'Download as PNG' toolbar action triggers a PNG download.
+
+    This replaces the built-in vega-embed actions menu, whose action links are
+    disabled so that a chart spec cannot use them to open same-origin pages with
+    serialized spec contents.
+    """
+    chart = app.get_by_test_id("stFullScreenFrame").first
+    expect(chart).to_be_visible()
+    chart.hover(force=True)
+
+    toolbar = chart.get_by_test_id("stElementToolbar")
+    expect(toolbar).to_be_visible()
+    download_button = toolbar.get_by_test_id("stElementToolbarButton").get_by_label(
+        "Download as PNG"
+    )
+    expect(download_button).to_be_visible()
+
+    # The built-in vega-embed actions menu must not be rendered at all: no
+    # menu button (summary) and no actions container (.vega-actions), which
+    # is where the action links would otherwise live.
+    expect(chart.locator("summary")).to_have_count(0)
+    expect(chart.locator(".vega-actions")).to_have_count(0)
+
+    with app.expect_download() as download_info:
+        download_button.click()
+
+    download = download_info.value
+    assert download.suggested_filename.endswith("_chart.png")
+
+    # Assert the exported PNG's dimensions correspond to ~2x the on-screen
+    # chart size so a regression in `toImageURL`'s scaleFactor semantics can't
+    # slip through. Playwright's headless Chromium reports
+    # `devicePixelRatio == 1`, so the `Math.max(2, dpr || 1)` floor in
+    # `useVegaEmbed` deterministically applies a 2x scale here.
+    graphics_doc = get_vega_graphics_document(chart)
+    expect(graphics_doc).to_be_visible()
+    gd_bbox = graphics_doc.bounding_box()
+    assert gd_bbox is not None
+    png_bytes = pathlib.Path(download.path()).read_bytes()
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n", "downloaded file is not a PNG"
+    # PNG IHDR: 8-byte signature + 4-byte length + 4-byte type ("IHDR"), then
+    # width (u32 big-endian) and height (u32 big-endian) at bytes 16..24.
+    png_width, png_height = struct.unpack(">II", png_bytes[16:24])
+    # Vega's `toImageURL` scales the view's width/height by scaleFactor; on-
+    # screen the same view is laid out inside the graphics-document. A tight
+    # tolerance handles Vega's internal padding differing by a few pixels from
+    # the CSS bounding box. A 1x export would fall far outside this window.
+    tolerance = 8
+    expected_width = round(gd_bbox["width"] * 2)
+    expected_height = round(gd_bbox["height"] * 2)
+    assert abs(png_width - expected_width) <= tolerance, (
+        f"PNG width {png_width} is not ~2x graphics-document width "
+        f"{gd_bbox['width']:.1f} (expected ~{expected_width}, tolerance "
+        f"{tolerance})"
+    )
+    assert abs(png_height - expected_height) <= tolerance, (
+        f"PNG height {png_height} is not ~2x graphics-document height "
+        f"{gd_bbox['height']:.1f} (expected ~{expected_height}, tolerance "
+        f"{tolerance})"
+    )
+
+
+def test_show_chart_data_button(app: Page, assert_snapshot: ImageCompareFunction):
+    """Check that the show chart data feature works correctly."""
+    # The first fullscreen frame of a chart:
+    chart = app.get_by_test_id("stFullScreenFrame").first
+    expect(chart).to_be_visible()
+    chart.hover(force=True)
+
+    toolbar = chart.get_by_test_id("stElementToolbar")
+    expect(toolbar).to_be_visible()
+    toolbar_buttons = toolbar.get_by_test_id("stElementToolbarButton")
+    # Show Data + Download as PNG + Copy Vega-Lite spec (localhost) + Fullscreen.
+    expect(toolbar_buttons).to_have_count(4)
+    expect(toolbar_buttons.get_by_label("Download as PNG")).to_be_visible()
+    expect(toolbar_buttons.get_by_label("Copy Vega-Lite spec")).to_be_visible()
+
+    expect(toolbar_buttons.get_by_label("Show Data")).to_be_visible()
+    toolbar_buttons.get_by_label("Show Data").click()
+
+    dataframe = app.get_by_test_id("stDataFrame")
+
+    expect(dataframe).to_be_visible()
+
+    assert_snapshot(dataframe, name="st_altair_chart-show_chart_data")
+
+    # Check that switching back to the chart works:
+    dataframe.hover(force=True)
+
+    toolbar = dataframe.get_by_test_id("stElementToolbar")
+    expect(toolbar).to_be_visible()
+    toolbar_buttons = toolbar.get_by_test_id("stElementToolbarButton")
+    expect(toolbar_buttons.get_by_label("Show Chart")).to_be_visible()
+    toolbar_buttons.get_by_label("Show Chart").click()
+
+    expect(dataframe).not_to_be_attached()
+
+
+def test_altair_chart_binding_widget_styling(
+    themed_app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Altair parameter bindings (sliders, selects, radios, etc.) follow the theme."""
+    chart = get_element_by_key(themed_app, "altair_chart_bindings").get_by_test_id(
+        "stVegaLiteChart"
+    )
+    expect(chart).to_be_visible()
+    expect(get_vega_graphics_document(chart)).to_be_visible()
+
+    bindings = chart.locator("form.vega-bindings")
+    expect(bindings).to_be_visible()
+    expect(bindings.locator(".vega-bind")).to_have_count(5)
+    expect(bindings.locator("input[type='range']")).to_be_visible()
+    expect(bindings.locator("select")).to_be_visible()
+    expect(bindings.locator("input[type='radio']")).to_have_count(3)
+    expect(bindings.locator("input[type='checkbox']")).to_be_visible()
+    expect(bindings.locator("input[type='text']")).to_be_visible()
+
+    wait_for_react_stability(themed_app)
+    assert_snapshot(chart, name="st_altair_chart-binding_widgets")
+
+    # Vega's native binding controls stay interactive (they are not Streamlit
+    # widgets). Changing them must not surface an exception.
+    select = bindings.get_by_role("combobox")
+    expect(select).to_have_value("USA")
+    select.select_option("Europe")
+    expect(select).to_have_value("Europe")
+    checkbox = bindings.get_by_role("checkbox")
+    expect(checkbox).to_be_checked()
+    checkbox.uncheck()
+    expect(checkbox).not_to_be_checked()
+    expect(themed_app.get_by_test_id("stException")).to_have_count(0)
+
+
+def test_geoshape_lookup_and_inline_featurecollection_render(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Geoshape lookup and inline FeatureCollection charts render filled polygons."""
+    charts = app.get_by_test_id("stVegaLiteChart")
+    expect(charts).to_have_count(NUM_CHARTS)
+
+    lookup_chart = get_element_by_key(app, "altair_geoshape_lookup").get_by_test_id(
+        "stVegaLiteChart"
+    )
+    inline_chart = get_element_by_key(app, "altair_geoshape_inline").get_by_test_id(
+        "stVegaLiteChart"
+    )
+
+    for chart in (lookup_chart, inline_chart):
+        expect(get_vega_graphics_document(chart)).to_be_visible()
+
+    # URL GeoJSON is fetched asynchronously; wait for lookup output before
+    # snapshotting so an empty first paint cannot pass as a rendered map.
+    expect(lookup_chart.get_by_text("population")).to_be_visible()
+    wait_for_react_stability(app)
+
+    expect(app.get_by_test_id("stException")).to_have_count(0)
+
+    assert_snapshot(lookup_chart, name="st_altair_chart-geoshape_lookup")
+    assert_snapshot(inline_chart, name="st_altair_chart-geoshape_inline_geojson")

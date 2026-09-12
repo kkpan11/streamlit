@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,12 @@
 
 import styled from "@emotion/styled"
 
-export interface StyledResizableContainerProps {
-  hasCustomizedScrollbars: boolean
+import { getPopoverContainerStyle } from "~lib/components/shared/Base/styled-components"
+
+interface StyledResizableContainerProps {
+  isInHorizontalLayout: boolean
+  minHeight: number
+  disableResize: boolean
 }
 
 /**
@@ -25,27 +29,26 @@ export interface StyledResizableContainerProps {
  */
 export const StyledResizableContainer =
   styled.div<StyledResizableContainerProps>(
-    ({ hasCustomizedScrollbars, theme }) => ({
+    ({ theme, disableResize, minHeight }) => ({
       position: "relative",
-      display: "inline-block",
+      display: disableResize ? "flex" : "inline-block",
+      height: "100%",
 
       "& .stDataFrameGlideDataEditor": {
         height: "100%",
         minWidth: "100%",
+        minHeight: minHeight,
         borderRadius: theme.radii.default,
       },
 
       "& .dvn-scroller": {
-        // We only want to configure scrollbar aspects for browsers that
-        // don't support custom scrollbars (e.g. Firefox). Also, applying this
-        // in Chrome causes the scrollbar to change to the default scrollbar style.
-        ...(!hasCustomizedScrollbars && { scrollbarWidth: "thin" }),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-        ["overflowX" as any]: "auto !important",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-        ["overflowY" as any]: "auto !important",
+        ["overflowX" as unknown as string]: "auto !important",
+        ["overflowY" as unknown as string]: "auto !important",
+        // This prevents accidental overscrolling that triggers the browser's Back button.
+        overscrollBehaviorX: "contain",
       },
-      "& .gdg-seveqep": {
+      "& .gdg-search-bar": {
+        ...getPopoverContainerStyle(theme),
         // Make the search field more responsive to the grid width and use
         // rem units for everything.
         // 19rem is the closest rem without decimals to the original size:
@@ -56,7 +59,6 @@ export const StyledResizableContainer =
         top: theme.spacing.sm,
         right: theme.spacing.sm,
         padding: theme.spacing.sm,
-        borderRadius: theme.radii.default,
         "& .gdg-search-status": {
           paddingTop: theme.spacing.twoXS,
           fontSize: theme.fontSizes.twoSm,

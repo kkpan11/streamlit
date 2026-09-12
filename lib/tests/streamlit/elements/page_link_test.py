@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,9 +17,16 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitMissingRequiredParameterError,
+)
+from streamlit.proto.ButtonLikeIconPosition_pb2 import (
+    ButtonLikeIconPosition as ProtoButtonLikeIconPosition,
+)
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
 
@@ -49,8 +56,8 @@ class PageLinkTest(DeltaGeneratorTestCase):
         assert not c.disabled
 
     def test_external_no_label(self):
-        """Test that page_link throws an StreamlitAPIException on external link, no label."""
-        with pytest.raises(StreamlitAPIException):
+        """Test that page_link throws on external link with no label."""
+        with pytest.raises(StreamlitMissingRequiredParameterError):
             st.page_link(page="http://example.com")
 
     def test_icon(self):
@@ -62,6 +69,19 @@ class PageLinkTest(DeltaGeneratorTestCase):
         assert c.page == "https://streamlit.io"
         assert c.external
         assert c.icon == "🐶"
+        assert c.icon_position == ProtoButtonLikeIconPosition.LEFT
+
+    def test_icon_position(self):
+        """Test that custom icon positions are serialized."""
+        st.page_link(
+            page="https://streamlit.io",
+            label="the label",
+            icon="🐶",
+            icon_position="right",
+        )
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.icon_position == ProtoButtonLikeIconPosition.RIGHT
 
     def test_disabled(self):
         """Test that it can be called with disabled param."""
@@ -85,29 +105,27 @@ class PageLinkTest(DeltaGeneratorTestCase):
         assert c.external
         assert c.help == "Some help text"
 
-    def test_use_container_width_can_be_set_to_true(self):
-        """Test use_container_width can be set to true."""
+    def test_query_params(self):
+        """Test that it can be called with query_params param."""
         st.page_link(
-            page="https://streamlit.io", label="the label", use_container_width=True
+            page="https://streamlit.io",
+            label="the label",
+            query_params={"foo": "bar", "baz": [1, 2]},
         )
 
         c = self.get_delta_from_queue().new_element.page_link
-        assert c.label == "the label"
-        assert c.page == "https://streamlit.io"
-        assert c.external
-        assert c.use_container_width is True
+        assert c.query_string == "foo=bar&baz=1&baz=2"
 
-    def test_use_container_width_can_be_set_to_false(self):
-        """Test use_container_width can be set to false."""
+    def test_query_params_list_of_tuples(self):
+        """Test that it can be called with query_params as list of tuples."""
         st.page_link(
-            page="https://streamlit.io", label="the label", use_container_width=False
+            page="https://streamlit.io",
+            label="the label",
+            query_params=[("foo", "bar"), ("baz", "1"), ("baz", "2")],
         )
 
         c = self.get_delta_from_queue().new_element.page_link
-        assert c.label == "the label"
-        assert c.page == "https://streamlit.io"
-        assert c.external
-        assert c.use_container_width is False
+        assert c.query_string == "foo=bar&baz=1&baz=2"
 
     @patch("pathlib.Path.is_file", MagicMock(return_value=True))
     def test_st_page_with_label(self):
@@ -153,3 +171,141 @@ class PageLinkTest(DeltaGeneratorTestCase):
         assert not c.disabled
         assert c.icon == ""
         assert c.help == ""
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_icon_passed_to_page_link_takes_precedence(self):
+        """Test that st.page_link icon param overrides page icon"""
+        page = st.Page("foo.py", title="Bar Test", icon="🎈")
+        st.page_link(page=page, icon="🌟")
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.label == "Bar Test"
+        assert c.page_script_hash == page._script_hash
+        assert c.page == "foo"
+        assert not c.external
+        assert not c.disabled
+        assert c.icon == "🌟"  # Icon parameter of st.page_link takes precedence
+        assert c.help == ""
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_with_icon(self):
+        """Test that st.page_link accepts an st.Page, will use its icon"""
+        page = st.Page("foo.py", title="Bar Test", icon="🎈")
+        st.page_link(page=page)
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.label == "Bar Test"
+        assert c.page_script_hash == page._script_hash
+        assert c.page == "foo"
+        assert not c.external
+        assert not c.disabled
+        assert c.icon == "🎈"
+        assert c.help == ""
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_with_none_icon(self):
+        """Test that st.page_link handles None icon from Page correctly."""
+        # None icon defaults to empty string in Page
+        page = st.Page("foo.py", title="Bar Test", icon=None)
+        st.page_link(page=page)
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.label == "Bar Test"
+        assert c.page_script_hash == page._script_hash
+        assert c.page == "foo"
+        assert not c.external
+        assert not c.disabled
+        assert c.icon == ""  # None icon should become empty string (default st st.Page)
+        assert c.help == ""
+
+    def test_external_streamlit_page(self):
+        """Test that st.page_link works with an external Page object."""
+        page = st.Page("https://docs.streamlit.io", title="Docs", icon="📖")
+        st.page_link(page=page)
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.label == "Docs"
+        assert c.page == "https://docs.streamlit.io"
+        assert c.external
+        assert c.icon == "📖"
+        assert not c.disabled
+
+    def test_external_streamlit_page_with_label_override(self):
+        """Test that st.page_link label overrides an external Page title."""
+        page = st.Page("https://docs.streamlit.io", title="Docs")
+        st.page_link(page=page, label="Custom Label")
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.label == "Custom Label"
+        assert c.page == "https://docs.streamlit.io"
+        assert c.external
+
+    @parameterized.expand([("",), ("   ",)])
+    def test_empty_or_whitespace_icon_for_external_page_means_no_icon(
+        self, icon: str
+    ) -> None:
+        """st.page_link treats empty or whitespace-only icon as no icon."""
+        st.page_link(page="https://example.com", label="Test", icon=icon)
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.icon == ""
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_empty_icon_suppresses_page_icon(self) -> None:
+        """st.page_link(icon="") must not fall back to the Page icon."""
+        page = st.Page("foo.py", title="Bar Test", icon="🎈")
+        st.page_link(page=page, icon="")
+
+        c = self.get_delta_from_queue().new_element.page_link
+        assert c.icon == ""
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_with_mismatched_file_path_raises(self):
+        """Linking to an ``st.Page`` whose file path does not match the page
+        registered under the same ``url_path`` raises.
+
+        Regression coverage for https://github.com/streamlit/streamlit/issues/10572.
+        """
+        st.navigation([st.Page("page1.py", url_path="foo")])
+
+        bad_page = st.Page("other.py", url_path="foo")
+        with pytest.raises(StreamlitAPIException, match=r"different page is "):
+            st.page_link(bad_page)
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_with_inferred_url_path_mismatch_raises(self):
+        """Linking to ``st.Page("foo.py")`` (url_path inferred as ``foo``)
+        raises when a different file is registered under ``url_path="foo"``."""
+        st.navigation([st.Page("page1.py", url_path="foo")])
+
+        with pytest.raises(StreamlitAPIException, match=r"different page is "):
+            st.page_link(st.Page("foo.py"))
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_callable_with_file_registered_raises(self):
+        """Linking to a callable-based ``st.Page`` raises when the registered
+        page sharing its ``url_path`` is file-based."""
+        st.navigation([st.Page("page1.py", url_path="foo")])
+
+        def some_callable() -> None:
+            pass
+
+        with pytest.raises(StreamlitAPIException, match=r"is a callable"):
+            st.page_link(st.Page(some_callable, url_path="foo"))
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_matching_source_does_not_raise(self):
+        """An ``st.Page`` whose source matches the registered page is accepted
+        by validation."""
+        st.navigation([st.Page("page1.py", url_path="foo")])
+
+        matching = st.Page("page1.py", url_path="foo")
+        st.page_link(matching)
+
+    @patch("pathlib.Path.is_file", MagicMock(return_value=True))
+    def test_st_page_unregistered_url_path_does_not_raise(self):
+        """If no page with the given ``url_path`` is registered (no hash
+        collision), validation is skipped — preserving previous behavior for
+        apps that don't use ``st.navigation``."""
+        st.navigation([st.Page("page1.py", url_path="foo")])
+
+        st.page_link(st.Page("other.py", url_path="bar"))

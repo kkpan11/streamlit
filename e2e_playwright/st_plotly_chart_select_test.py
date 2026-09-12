@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,14 +13,27 @@
 # limitations under the License.
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run
 from e2e_playwright.shared.app_utils import (
     check_top_level_class,
     click_button,
     get_element_by_key,
+    reset_hovering,
 )
+
+
+def _check_toolbar_visibility(chart_element: Locator):
+    """Check that the toolbar is visible."""
+
+    fullscreen_button = chart_element.locator(
+        ".modebar-group:has([data-title='Fullscreen'])"
+    )
+    expect(fullscreen_button).to_be_visible()
+    expect(fullscreen_button).to_have_css("opacity", "1")
+    # plotly.js v4 adds a "Share chart…" modebar button by default.
+    expect(chart_element.locator("[data-title='Share chart...']")).to_have_count(0)
 
 
 def test_box_select_on_scatter_chart_displays_a_df(app: Page):
@@ -55,7 +68,6 @@ def test_lasso_select_on_line_chart_displays_a_df(app: Page):
 
 # This test could be flaky because https://github.com/plotly/plotly.js/issues/6898
 # Only run on chromium.
-@pytest.mark.flaky(reruns=3)
 @pytest.mark.only_browser("chromium")
 def test_click_on_bar_chart_displays_a_df_and_double_click_resets_properly(
     app: Page, assert_snapshot: ImageCompareFunction
@@ -81,6 +93,7 @@ def test_click_on_bar_chart_displays_a_df_and_double_click_resets_properly(
 
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-double_select")
     expect(app.get_by_text("Selected points: 2")).to_be_attached()
 
@@ -93,6 +106,7 @@ def test_click_on_bar_chart_displays_a_df_and_double_click_resets_properly(
     chart.scroll_into_view_if_needed()
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-bar_chart_reset")
 
 
@@ -110,7 +124,9 @@ def test_box_select_on_stacked_bar_chart_displays_a_df(app: Page):
     expect(app.get_by_test_id("stDataFrame")).to_have_count(1)
 
 
-@pytest.mark.skip_browser("webkit")  # Flaky on WebKit, but manually tested
+@pytest.mark.only_browser(
+    "chromium"
+)  # Flaky on WebKit and Firefox, but manually tested
 def test_lasso_select_on_histogram_chart_displays_a_df_and_resets_when_double_clicked(
     app: Page, assert_snapshot: ImageCompareFunction
 ):
@@ -142,6 +158,7 @@ def test_lasso_select_on_histogram_chart_displays_a_df_and_resets_when_double_cl
 
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-reset")
 
 
@@ -166,6 +183,7 @@ def test_double_click_select_mode_doesnt_reset_zoom(
     chart.scroll_into_view_if_needed()
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-zoomed_in_reset")
 
 
@@ -191,6 +209,7 @@ def test_double_click_pan_mode_resets_zoom_and_doesnt_rerun(
 
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-panned")
 
     # Hover to position the cursor for a more reliable double click
@@ -200,6 +219,7 @@ def test_double_click_pan_mode_resets_zoom_and_doesnt_rerun(
 
     # Hover chart to show toolbar:
     chart.hover()
+    _check_toolbar_visibility(chart)
     assert_snapshot(chart, name="st_plotly_chart-panned_reset")
 
 
@@ -228,8 +248,26 @@ def test_selection_state_remains_after_unmounting(
 
     chart = app.get_by_test_id("stPlotlyChart").nth(5)
     expect(chart).to_be_visible()
-    # Hover chart to show toolbar:
-    chart.hover()
+    # Clear hover so the modebar and plotly hoverlabels stay out of the
+    # snapshot; this test only asserts selection state after remount.
+    # Moving the mouse off-chart alone is not enough on WebKit — Plotly can
+    # keep the last hoverlabel — so also force an unhover and wait for it.
+    reset_hovering(app)
+    chart.locator(".js-plotly-plot").evaluate(
+        """el => {
+            if (window.Plotly?.Fx?.unhover) window.Plotly.Fx.unhover(el)
+            // After remount, Plotly intermittently leaves active-selection edge
+            // handles (`.outline-controllers`) drawn. This test only cares that
+            // the selection itself persisted — strip that inactive chrome from
+            // the DOM rather than calling private Plotly layout APIs.
+            el.querySelectorAll(".outline-controllers").forEach(node => node.remove())
+        }"""
+    )
+    expect(chart.locator(".modebar-group:has([data-title='Fullscreen'])")).to_have_css(
+        "opacity", "0"
+    )
+    expect(chart.locator(".hovertext")).to_have_count(0)
+    expect(chart.locator(".outline-controllers")).to_have_count(0)
     assert_snapshot(chart, name="st_plotly_chart-unmounted_still_has_selection")
 
 
@@ -262,3 +300,58 @@ def test_check_top_level_class(app: Page):
 def test_custom_css_class_via_key(app: Page):
     """Test that the element can have a custom css class via the key argument."""
     expect(get_element_by_key(app, "line_chart")).to_be_visible()
+
+
+def test_click_on_treemap_displays_selection_data(app: Page):
+    """Test that clicking on treemap segments emits selection data."""
+    chart = get_element_by_key(app, "treemap_chart")
+    chart.scroll_into_view_if_needed()
+    expect(chart).to_be_visible()
+
+    # Initially no selection
+    expect(app.get_by_text("No treemap selection")).to_be_attached()
+
+    # Click on a chart segment
+    chart.hover()
+    box = chart.bounding_box()
+    assert box is not None
+    app.mouse.click(
+        box["x"] + box["width"] * 0.25,
+        box["y"] + box["height"] * 0.4,
+    )
+    wait_for_app_run(app)
+
+    # Should now show selection data
+    expect(app.get_by_text("Treemap selection:")).to_be_attached()
+    expect(app.get_by_text("No treemap selection")).not_to_be_attached()
+    # Should display the selected segment info
+    expect(app.get_by_text("Selected:")).to_be_attached()
+    expect(app.get_by_text("ID:")).to_be_attached()
+    expect(app.get_by_text("Parent:")).to_be_attached()
+
+
+def test_click_on_sunburst_displays_selection_data(app: Page):
+    """Test that clicking on sunburst segments emits selection data."""
+    chart = get_element_by_key(app, "sunburst_chart")
+    chart.scroll_into_view_if_needed()
+    expect(chart).to_be_visible()
+
+    # Initially no selection
+    expect(app.get_by_text("No sunburst selection")).to_be_attached()
+
+    # Click on a chart segment
+    chart.hover()
+    box = chart.bounding_box()
+    assert box is not None
+    app.mouse.click(
+        box["x"] + box["width"] * 0.35,
+        box["y"] + box["height"] * 0.35,
+    )
+    wait_for_app_run(app)
+
+    # Should now show selection data
+    expect(app.get_by_text("Sunburst selection:")).to_be_attached()
+    expect(app.get_by_text("No sunburst selection")).not_to_be_attached()
+    # Should display the selected segment info
+    expect(app.get_by_text("Selected:")).to_be_attached()
+    expect(app.get_by_text("ID:")).to_be_attached()

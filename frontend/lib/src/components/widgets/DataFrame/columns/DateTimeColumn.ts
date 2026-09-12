@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,12 @@ import { DatePickerType } from "@glideapps/glide-data-grid-cells"
 import moment, { Moment } from "moment-timezone"
 
 import { getTimezone } from "~lib/dataframes/arrowTypeUtils"
+import { formatMoment } from "~lib/util/formatMoment"
 import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
-  formatMoment,
   getErrorCell,
   mergeColumnParameters,
   toSafeDate,
@@ -51,17 +51,29 @@ function applyTimezone(momentDate: Moment, timezone: string): Moment {
 }
 
 export interface DateTimeColumnParams {
-  // A momentJS formatting syntax to format the display value.
+  /**
+   * A momentJS formatting syntax to format the display value.
+   */
   readonly format?: string
-  // Specifies the granularity that the value must adhere.
-  // For time and datetime, this is the number of seconds between each allowed value.
-  // For date, this is the number of days between each allowed value.
+  /**
+   * Specifies the granularity that the value must adhere.
+   * For time and datetime, this is the number of seconds between each allowed value.
+   * For date, this is the number of days between each allowed value.
+   */
   readonly step?: number
-  // A timezone identifier, e.g. "America/New_York", "+05:00", or "UTC"
+  /**
+   * A timezone identifier, e.g. "America/New_York", "+05:00", or "UTC"
+   */
   readonly timezone?: string
-  // The minimum allowed value for editing. This needs to be an ISO formatted datetime/date/time string (UTC).
+  /**
+   * The minimum allowed value for editing. This needs to be an ISO formatted
+   * datetime/date/time string (UTC).
+   */
   readonly min_value?: string
-  // The maximum allowed value for editing. This needs to be an ISO formatted datetime/date/time string (UTC).
+  /**
+   * The maximum allowed value for editing. This needs to be an ISO formatted
+   * datetime/date/time string (UTC).
+   */
   readonly max_value?: string
 }
 
@@ -88,7 +100,7 @@ function BaseDateTimeColumn(
   toISOString: (date: Date) => string,
   timezone?: string
 ): BaseColumn {
-  const parameters = mergeColumnParameters(
+  const parameters = mergeColumnParameters<DateTimeColumnParams>(
     // Default parameters:
     {
       format: defaultFormat,
@@ -97,7 +109,7 @@ function BaseDateTimeColumn(
     },
     // User parameters:
     props.columnTypeOptions
-  ) as DateTimeColumnParams
+  )
 
   let defaultTimezoneOffset: number | undefined = undefined
   if (notNullOrUndefined(parameters.timezone)) {
@@ -108,8 +120,7 @@ function BaseDateTimeColumn(
     try {
       defaultTimezoneOffset =
         applyTimezone(moment(), parameters.timezone)?.utcOffset() || undefined
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    } catch (error) {
+    } catch {
       // Do nothing
     }
   }
@@ -143,8 +154,7 @@ function BaseDateTimeColumn(
     },
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  const validateInput = (data?: any): boolean | Date => {
+  const validateInput = (data?: unknown): boolean | Date => {
     const cellData: Date | null | undefined = toSafeDate(data)
     if (cellData === null) {
       if (props.isRequired) {
@@ -183,10 +193,15 @@ function BaseDateTimeColumn(
   return {
     ...props,
     kind,
+    typeIcon:
+      kind === "date"
+        ? ":material/calendar_month:"
+        : kind === "time"
+          ? ":material/access_time:"
+          : ":material/calendar_today:",
     sortMode: "default",
     validateInput,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any, validate?: boolean): GridCell {
+    getCell(data?: unknown, validate?: boolean): GridCell {
       if (validate === true) {
         const validationResult = validateInput(data)
         if (validationResult === false) {
@@ -221,7 +236,7 @@ function BaseDateTimeColumn(
           // The moment date should never be invalid here.
           return getErrorCell(
             toSafeString(cellData),
-            // eslint-disable-next-line @typescript-eslint/no-base-to-string
+
             `Invalid moment date. This should never happen. Please report this bug. \nError: ${momentDate.toString()}`
           )
         }
@@ -274,6 +289,18 @@ function BaseDateTimeColumn(
         ? null
         : toISOString(cell.data.date)
     },
+    valuesEqual(a: unknown, b: unknown): boolean {
+      // Equal if both parse to the same instant, so differing ISO
+      // representations of the same time are treated as equal.
+      const timeA = Date.parse(String(a))
+      const timeB = Date.parse(String(b))
+
+      if (!Number.isNaN(timeA) && !Number.isNaN(timeB)) {
+        return timeA === timeB
+      }
+
+      return Object.is(a, b)
+    },
   }
 }
 
@@ -287,9 +314,10 @@ function BaseDateTimeColumn(
 export default function DateTimeColumn(props: BaseColumnProps): BaseColumn {
   // Do a smart selection of the default format based on the step size
   let defaultFormat = "YYYY-MM-DD HH:mm:ss"
-  if (props.columnTypeOptions?.step >= 60) {
+  const step = props.columnTypeOptions?.step as number | undefined
+  if (step !== undefined && step >= 60) {
     defaultFormat = "YYYY-MM-DD HH:mm"
-  } else if (props.columnTypeOptions?.step < 1) {
+  } else if (step !== undefined && step < 1) {
     defaultFormat = "YYYY-MM-DD HH:mm:ss.SSS"
   }
 
@@ -327,9 +355,10 @@ DateTimeColumn.isEditableType = true
 export function TimeColumn(props: BaseColumnProps): BaseColumn {
   // Do a smart selection of the default format based on the step size
   let defaultFormat = "HH:mm:ss"
-  if (props.columnTypeOptions?.step >= 60) {
+  const step = props.columnTypeOptions?.step as number | undefined
+  if (step !== undefined && step >= 60) {
     defaultFormat = "HH:mm"
-  } else if (props.columnTypeOptions?.step < 1) {
+  } else if (step !== undefined && step < 1) {
     defaultFormat = "HH:mm:ss.SSS"
   }
 

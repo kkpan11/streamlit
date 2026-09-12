@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,20 @@
  * limitations under the License.
  */
 
-import zip from "lodash/zip"
+import { zip } from "lodash-es"
 
 import {
   FileUploaderState as FileUploaderStateProto,
-  IFileURLs,
+  type FileURLs,
   UploadedFileInfo as UploadedFileInfoProto,
 } from "@streamlit/protobuf"
 
 import { FileUploadClient } from "~lib/FileUploadClient"
-import { WidgetInfo, WidgetStateManager } from "~lib/WidgetStateManager"
 import { ensureError } from "~lib/util/ErrorHandling"
+import { WidgetInfo, WidgetStateManager } from "~lib/WidgetStateManager"
 
 type SuccessfulUpload = {
-  fileUrl: IFileURLs
+  fileUrl: FileURLs.$Properties
   file: File
 }
 
@@ -42,17 +42,19 @@ export const uploadFiles = async ({
   widgetMgr,
   widgetInfo,
   fragmentId,
+  signal,
 }: {
   files: File[]
   uploadClient: FileUploadClient
   widgetMgr: WidgetStateManager
   widgetInfo: WidgetInfo
   fragmentId?: string
+  signal?: AbortSignal
 }): Promise<{
   successfulUploads: SuccessfulUpload[]
   failedUploads: FailedUpload[]
 }> => {
-  let fileUrls: IFileURLs[] = []
+  let fileUrls: FileURLs.$Properties[]
 
   try {
     fileUrls = await uploadClient.fetchFileURLs(files)
@@ -70,41 +72,48 @@ export const uploadFiles = async ({
 
   await Promise.all(
     filesWithUrls.map(async ([file, fileUrl]) => {
-      if (!file || !fileUrl || !fileUrl.uploadUrl || !fileUrl.fileId) {
-        return { file, fileUrl, error: new Error("No upload URL found") }
+      if (!file || !fileUrl?.uploadUrl || !fileUrl.fileId) {
+        if (file) {
+          failedUploads.push({ file, error: new Error("No upload URL found") })
+        }
+        return undefined
       }
 
       try {
         await uploadClient.uploadFile(
           { id: fileUrl.fileId, formId: widgetInfo.formId || "" }, // TODO SEE IF DOWNSTREAM LOGIC CAN BE SIMPLIFIED
           fileUrl.uploadUrl,
-          file
+          file,
+          undefined, // onUploadProgress
+          signal
         )
         successfulUploads.push({ fileUrl, file })
       } catch (e) {
         const error = ensureError(e)
         failedUploads.push({ file, error })
       }
+      return undefined
     })
   )
 
   widgetMgr.setFileUploaderStateValue(
-    widgetInfo,
+    widgetInfo.id,
     new FileUploaderStateProto({
       uploadedFileInfo: successfulUploads.map(
         ({ file, fileUrl }) =>
           new UploadedFileInfoProto({
             fileId: fileUrl.fileId,
             fileUrls: fileUrl,
-            name: file.name,
+            name: file.webkitRelativePath || file.name,
             size: file.size,
           })
       ),
     }),
     {
-      fromUi: true,
-    },
-    fragmentId
+      formId: widgetInfo.formId,
+      fragmentId,
+      fromUser: true,
+    }
   )
 
   return { successfulUploads, failedUploads }

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 from playwright.sync_api import Page, expect
 
 from e2e_playwright.conftest import wait_until
-from e2e_playwright.shared.app_utils import get_checkbox
+from e2e_playwright.shared.app_utils import get_checkbox, reset_hovering
 from e2e_playwright.shared.react18_utils import wait_for_react_stability
 
 
@@ -26,6 +26,11 @@ def test_tooltip_does_not_overflow_on_the_left_side(app: Page):
         .locator("button")
         .first
     )
+    # Prime the interaction modality to 'pointer' before hovering.
+    # React Aria requires a document-level pointermove before pointerenter to
+    # register hover intent; Playwright teleports the cursor when starting
+    # from "off-page" state.
+    reset_hovering(app)
     sidebar_button.hover()
     tooltip = app.get_by_test_id("stTooltipContent")
     expect(tooltip).to_be_visible()
@@ -48,7 +53,7 @@ def test_tooltip_does_not_overflow_on_the_right_side(app: Page):
     popover_button = (
         app.get_by_test_id("stPopover")
         .filter(has_text="Popover with toggle")
-        .locator("button")
+        .get_by_test_id("stPopoverButton")
     )
 
     # Ensure popover button is visible and stable before clicking
@@ -70,7 +75,9 @@ def test_tooltip_does_not_overflow_on_the_right_side(app: Page):
     # Ensure UI is stable before hovering
     wait_for_react_stability(app)
 
-    # Hover over the tooltip target
+    # Hover over the tooltip target.
+    # reset_hovering ensures the pointer modality is primed for React Aria.
+    reset_hovering(app)
     hover_target.hover()
 
     # Wait for tooltip to appear and stabilize
@@ -85,6 +92,33 @@ def test_tooltip_does_not_overflow_on_the_right_side(app: Page):
     # Wait until the tooltip is positioned correctly
     wait_until(
         app,
-        lambda: (bbox := tooltip.bounding_box()) is not None
-        and bbox["x"] + bbox["width"] <= viewport_width,
+        lambda: (
+            (bbox := tooltip.bounding_box()) is not None
+            and bbox["x"] + bbox["width"] <= viewport_width
+        ),
     )
+
+
+def test_tooltip_with_code(app: Page):
+    """Test that a help tooltip with code displays correctly."""
+    # Get the number input widget
+    number_input = app.get_by_test_id("stNumberInput")
+    # Prime the interaction modality to 'pointer' before hovering.
+    reset_hovering(app)
+    hover_target = number_input.get_by_test_id("stTooltipHoverTarget")
+    hover_target.hover()
+
+    # Wait for tooltip to appear and stabilize
+    app.wait_for_timeout(200)
+
+    # Get the tooltip content
+    tooltip = app.get_by_test_id("stTooltipContent")
+    expect(tooltip).to_be_visible()
+    expect(tooltip).to_contain_text("Tooltip with some code in it")
+
+    # General tooltip text should have a size of 14px
+    expect(tooltip.get_by_text("Tooltip")).to_have_css("font-size", "14px")
+
+    # Inline code text should be set to 0.75em (which with tooltip font size
+    # of 14px translates to 10.5px)
+    expect(tooltip.get_by_role("code")).to_have_css("font-size", "10.5px")

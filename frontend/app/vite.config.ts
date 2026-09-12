@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,12 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite"
-import { version } from "./package.json"
+import { analyzer } from "vite-bundle-analyzer"
+import terminal from "vite-plugin-terminal"
+import appPackage from "./package.json" with { type: "json" }
 
 import react from "@vitejs/plugin-react-swc"
-import path from "path"
-import viteTsconfigPaths from "vite-tsconfig-paths"
+
+// Vite's native config loader requires the extension on relative imports.
+import { katexWoff2Only } from "./vite-plugins/katexWoff2Only.ts"
 
 const BASE = "./"
 const HASH = process.env.OMIT_HASH_FROM_MAIN_FILES ? "" : ".[hash]"
@@ -26,6 +31,44 @@ const HASH = process.env.OMIT_HASH_FROM_MAIN_FILES ? "" : ".[hash]"
 // This is a convenience for developers for debugging purposes
 const DEV_BUILD = Boolean(process.env.DEV_BUILD)
 const IS_PROFILER_BUILD = Boolean(process.env.IS_PROFILER_BUILD)
+const ANALYZE_BUNDLE = Boolean(process.env.ANALYZE_BUNDLE)
+// Enable terminal plugin to pipe browser console logs to terminal (for coding agents)
+const DEBUG_TO_CONSOLE = Boolean(process.env.DEBUG_TO_CONSOLE)
+// Default frontend dev server port for local development.
+const DEFAULT_DEV_SERVER_PORT = 3000
+// Valid TCP/UDP user port range.
+const MIN_PORT = 1
+const MAX_PORT = 65535
+
+/**
+ * Resolve the frontend dev-server port from environment variables.
+ *
+ * Precedence:
+ * 1) VITE_PORT
+ * 2) PORT
+ *
+ * If the value is missing, non-integer, or out of range, we safely fall back
+ * to `DEFAULT_DEV_SERVER_PORT` to avoid passing invalid values to Vite.
+ */
+const getDevServerPort = (): number => {
+  const rawPort = process.env.VITE_PORT ?? process.env.PORT
+  if (!rawPort) {
+    return DEFAULT_DEV_SERVER_PORT
+  }
+
+  const parsedPort = Number(rawPort)
+  if (
+    !Number.isInteger(parsedPort) ||
+    parsedPort < MIN_PORT ||
+    parsedPort > MAX_PORT
+  ) {
+    return DEFAULT_DEV_SERVER_PORT
+  }
+
+  return parsedPort
+}
+// Frontend dev server port used by Vite.
+const DEV_SERVER_PORT = getDevServerPort()
 // The URL of the backend server to proxy to:
 // Can be changed to run against a remote server or different port:
 const DEV_SERVER_BACKEND_URL =
@@ -51,30 +94,49 @@ const profilerAliases = IS_PROFILER_BUILD
   : []
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   base: BASE,
   define: {
     PACKAGE_METADATA: {
-      version,
+      version: appPackage.version,
     },
   },
   plugins: [
+    katexWoff2Only(),
     react({
       jsxImportSource: "@emotion/react",
       plugins: [["@swc/plugin-emotion", {}]],
     }),
-    viteTsconfigPaths(),
+    // Log browser console output to terminal for debugging by coding agents
+    // Enable with: DEBUG_TO_CONSOLE=1 make frontend-dev
+    ...(command === "serve" && DEBUG_TO_CONSOLE
+      ? [
+          terminal({
+            console: "terminal",
+            output: ["terminal", "console"],
+          }),
+        ]
+      : []),
+    ...(ANALYZE_BUNDLE
+      ? [
+          analyzer({
+            analyzerMode: "json",
+            // NOTE: fileName is relative to the build output directory (outDir: "build").
+            // "../bundle-analysis.json" will be created in the project root (frontend/app/bundle-analysis.json).
+            fileName: "../bundle-analysis.json",
+          }),
+          analyzer({
+            analyzerMode: "static",
+            // NOTE: fileName is relative to the build output directory (outDir: "build").
+            // "../bundle-analysis.html" will be created in the project root (frontend/app/bundle-analysis.html).
+            fileName: "../bundle-analysis.html",
+          }),
+        ]
+      : []),
   ],
   resolve: {
+    tsconfigPaths: true,
     alias: [
-      {
-        find: "~lib",
-        replacement: path.resolve(__dirname, "../lib/src"),
-      },
-      {
-        find: "@streamlit/lib",
-        replacement: path.resolve(__dirname, "../lib/src"),
-      },
       // Alias react-syntax-highlighter to the cjs version to avoid
       // issues with the esm version causing a bug in rendering
       // See https://github.com/react-syntax-highlighter/react-syntax-highlighter/issues/565
@@ -82,12 +144,20 @@ export default defineConfig({
         find: "react-syntax-highlighter",
         replacement: "react-syntax-highlighter/dist/cjs/index.js",
       },
+      // Redirect old lodash to lodash-es to avoid duplication.
+      // Use a regex that matches "lodash" only at the start of the import path,
+      // so it doesn't interfere with mermaid's bundled lodash (which uses internal
+      // paths like "lodash-es/hasIn" that should not be aliased).
+      {
+        find: /^lodash$/,
+        replacement: "lodash-es",
+      },
       ...profilerAliases,
     ],
   },
   server: {
     open: true,
-    port: 3000,
+    port: DEV_SERVER_PORT,
     host: true,
     proxy: {
       // These endpoints need to be kept in sync with the endpoints in
@@ -97,7 +167,9 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
-      "^.*/media/.*": {
+      // Use negative lookahead to avoid matching /static/media/* (Vite's font files)
+      // while still matching /media/* and /basepath/media/* (backend user uploads)
+      "^(?!.*/static/media).*/media/.*": {
         target: DEV_SERVER_BACKEND_URL,
         changeOrigin: true,
       },
@@ -109,23 +181,51 @@ export default defineConfig({
         target: DEV_SERVER_BACKEND_URL,
         changeOrigin: true,
       },
+      "^.*/auth/.*": {
+        target: DEV_SERVER_BACKEND_URL,
+        changeOrigin: true,
+      },
+      "^.*/oauth2callback": {
+        target: DEV_SERVER_BACKEND_URL,
+        changeOrigin: true,
+      },
     },
   },
   build: {
     outDir: "build",
     assetsDir: "static",
-    sourcemap: DEV_BUILD,
+    sourcemap: DEV_BUILD || ANALYZE_BUNDLE,
     manifest: true,
-    rollupOptions: {
+    reportCompressedSize: false,
+    rolldownOptions: {
       output: {
         // Customize the chunk file naming pattern to match static/js/[name].[hash].js
         chunkFileNames: `static/js/[name]${HASH}.js`,
         entryFileNames: `static/js/[name]${HASH}.js`,
         // Ensure assetFileNames is also configured if you're handling asset files
         assetFileNames: assetInfo => {
-          if (assetInfo.name?.endsWith(".css")) {
-            // For CSS files, place them in the /static/css/ directory
-            return `static/css/[name]${HASH}[extname]`
+          const assetNames = assetInfo.names || []
+          const hasAssetExtension = (extensions: string[]): boolean =>
+            assetNames.some(name =>
+              extensions.some(extension => name.endsWith(extension))
+            )
+
+          // For CSS files, place them in the /static/css/ directory
+          if (hasAssetExtension([".css"])) {
+            // If OMIT_HASH_FROM_MAIN_FILES is set, we don't want to include the
+            // hash in the filename of the entry file at the minimum. There could
+            // be other files with the same name that cause a conflict, which would
+            // increment the entry file to index2.css, etc. This ensures the entry
+            // file is named index.css in this case.
+            if (
+              assetInfo.names.includes("index.css") &&
+              assetInfo.originalFileNames.includes("index.html")
+            ) {
+              return `static/css/[name]${HASH}[extname]`
+            }
+
+            // For chunk css files, include the hash in the filename.
+            return `static/css/[name].[hash][extname]`
           }
 
           // For other assets, use the /static/media/ directory
@@ -141,6 +241,18 @@ export default defineConfig({
           runtime: `(window.__WEBPACK_PUBLIC_PATH_OVERRIDE || "/") + ${JSON.stringify(
             filename
           )}`,
+        }
+      }
+
+      // Keep CSS font URLs stable under Rolldown by ensuring they point to
+      // the media directory where font assets are emitted.
+      if (hostType === "css" && /\.(woff2?|ttf|otf|eot)$/i.test(filename)) {
+        if (filename.startsWith("static/media/")) {
+          return filename.replace("static/media/", "../media/")
+        }
+
+        if (!filename.includes("/")) {
+          return `../media/${filename}`
         }
       }
 
@@ -160,9 +272,5 @@ export default defineConfig({
         },
       },
     },
-    server: {
-      // Want a Non-Dev port for testing
-      port: 3001,
-    },
   },
-})
+}))

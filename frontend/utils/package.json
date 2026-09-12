@@ -1,17 +1,18 @@
 {
   "name": "@streamlit/utils",
-  "version": "1.45.1",
+  "version": "1.63.0",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "./dist/streamlit-utils.cjs.js",
   "module": "./dist/streamlit-utils.es.js",
   "browser": "./dist/streamlit-utils.umd.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
-      "require": "./dist/streamlit-utils.cjs.js",
+      "types": "./dist/src/index.d.ts",
       "import": "./dist/streamlit-utils.es.js",
+      "require": "./dist/streamlit-utils.cjs.js",
       "default": "./dist/streamlit-utils.umd.js"
     }
   },
@@ -20,22 +21,19 @@
     "buildWatch": "env DEV_WATCH=1 vite build --watch",
     "test": "vitest run",
     "testWatch": "vitest",
-    "lint": "eslint --max-warnings 0 src",
+    "lint": "yarn run -T eslint --cache --max-warnings 0 src",
+    "lint:fix": "yarn run -T eslint --cache --max-warnings 0 --fix src",
     "typecheck": "yarn run typecheck:all",
-    "format": "prettier --write --config ../.prettierrc --ignore-path ../.prettierignore './src/**/*.{js,ts,jsx,tsx}'",
-    "formatCheck": "prettier --check --config ../.prettierrc --ignore-path ../.prettierignore './src/**/*.{js,ts,jsx,tsx}'",
+    "format": "yarn run -T oxfmt --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
+    "formatCheck": "yarn run -T oxfmt --check --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
     "typesync": "typesync",
     "typesync:ci": "typesync --dry=fail"
   },
   "devDependencies": {
-    "@types/eslint": "^9.6.1",
-    "eslint": "^9.28.0",
-    "prettier": "^3.5.3",
     "typesync": "^0.14.3",
-    "vite": "^6.3.5",
-    "vite-plugin-dts": "^4.5.4",
-    "vite-tsconfig-paths": "^5.1.4",
-    "vitest": "^3.1.4"
+    "vite": "^8.2.2",
+    "vite-plugin-dts": "^5.1.0",
+    "vitest": "^5.0.0"
   },
   "browserslist": [
     ">0.2%",

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import {
   GridCellKind,
 } from "@glideapps/glide-data-grid"
 
+import type { EmotionTheme } from "~lib/theme/types"
+import { convertRemToPx } from "~lib/theme/utils"
 import { isNullOrUndefined } from "~lib/util/utils"
 
 import {
@@ -34,7 +36,10 @@ import {
  * A column type that supports optimized rendering and editing for boolean values
  * by using checkboxes.
  */
-function CheckboxColumn(props: BaseColumnProps): BaseColumn {
+function CheckboxColumn(
+  props: BaseColumnProps,
+  theme: EmotionTheme
+): BaseColumn {
   const cellTemplate: BooleanCell = {
     kind: GridCellKind.Boolean,
     data: false,
@@ -47,12 +52,21 @@ function CheckboxColumn(props: BaseColumnProps): BaseColumn {
   return {
     ...props,
     kind: "checkbox",
+    typeIcon: ":material/check_box:",
     sortMode: "default",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any): GridCell {
-      let cellData = null
-
-      cellData = toSafeBoolean(data)
+    themeOverride: {
+      // Apply the theme's rounding radius so that it applies the correct
+      // rounding radius to the checkbox based on the theme config.
+      roundingRadius: Math.round(
+        // Use theme value, but a maximum rounding of maxCheckbox:
+        Math.min(
+          convertRemToPx(theme.radii.sm),
+          convertRemToPx(theme.radii.maxCheckbox)
+        )
+      ),
+    },
+    getCell(data?: unknown): GridCell {
+      const cellData = toSafeBoolean(data)
       if (cellData === undefined) {
         return getErrorCell(
           toSafeString(data),

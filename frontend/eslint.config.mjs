@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,23 +16,21 @@
 
 import path from "path"
 import { fileURLToPath } from "url"
+import { createJiti } from "jiti"
+import { fixupPluginRules } from "@eslint/compat"
 
 // Core ESLint and plugins
 import eslint from "@eslint/js"
 import tseslint from "typescript-eslint"
-import react from "eslint-plugin-react"
-import * as reactHooks from "eslint-plugin-react-hooks"
+import reactHooks from "eslint-plugin-react-hooks"
 import eslintReact from "@eslint-react/eslint-plugin"
-import importPlugin from "eslint-plugin-import"
-import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended"
+import importX from "eslint-plugin-import-x"
 import lodash from "eslint-plugin-lodash"
 import vitest from "@vitest/eslint-plugin"
 import testingLibrary from "eslint-plugin-testing-library"
 import noRelativeImportPaths from "eslint-plugin-no-relative-import-paths"
-import streamlitCustom from "eslint-plugin-streamlit-custom"
 import globals from "globals"
-import { globalIgnores } from "eslint/config"
-import jsxA11y from "eslint-plugin-jsx-a11y"
+import { defineConfig, globalIgnores } from "eslint/config"
 
 // Import other configs
 // Note: Some configs may need to be applied differently in flat config
@@ -40,14 +38,196 @@ import jsxA11y from "eslint-plugin-jsx-a11y"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-export default tseslint.config([
+// This is to support our custom rules, which are written in TypeScript,
+// but need to be imported as JS to work in ESLint.
+const jiti = createJiti(import.meta.url)
+const streamlitCustom = await jiti.import("eslint-plugin-streamlit-custom", {
+  default: true,
+})
+
+/**
+ * Helper to create the no-restricted-imports rule config.
+ *
+ * @param {Object[]} additionalPatterns - Extra "patterns" to restrict (merged with the base rules).
+ * @param {boolean} isTestFile - Whether to apply the relaxed rules for test files.
+ */
+export const getNoRestrictedImports = (
+  additionalPatterns = [],
+  isTestFile = false
+) => {
+  const restrictedImportPaths = [
+    {
+      name: "timezone-mock",
+      message: "Please use the withTimezones test harness instead",
+    },
+    {
+      name: "@emotion/react",
+      message:
+        "Please use the useEmotionTheme hook instead of useTheme for type-safety",
+      importNames: ["useTheme"],
+    },
+    {
+      name: "axios",
+      importNames: ["CancelToken"],
+      message: "Please use the `AbortController` API instead of `CancelToken`",
+    },
+    {
+      // lodash only provides downstream peer/types; runtime imports use lodash-es.
+      name: "lodash",
+      message: "Please import from `lodash-es` for tree-shaking.",
+    },
+    {
+      name: "react",
+      importNames: ["default"],
+      message:
+        "Please use named imports for React (e.g., import { useState } from 'react';)",
+    },
+  ]
+
+  const basePaths = isTestFile
+    ? restrictedImportPaths
+    : [
+        ...restrictedImportPaths,
+        {
+          name: "@streamlit/lib/testing",
+          message: "Test utilities must stay in test files.",
+        },
+      ]
+
+  // Only protobufjs' minimal runtime (Reader/Writer/util) belongs in the app
+  // bundle, which is what the generated proto code already imports. The full
+  // entry point adds the reflection layer and the .proto parser, and
+  // `protobufjs/light` still ships the reflection layer. Matched as a pattern
+  // rather than by name so deep and extensioned specifiers cannot slip past.
+  // Note that `protobufjs/minimal.d.ts` re-exports the full typings, so
+  // reflection classes like `Root` type-check when imported from
+  // `protobufjs/minimal` but are undefined at runtime.
+  const restrictedProtobufjs = {
+    regex: "^protobufjs$|^protobufjs/(?!minimal(\\.js)?$)",
+    message:
+      "Please import from `protobufjs/minimal` to keep the reflection layer and .proto parser out of the bundle.",
+  }
+
+  return [
+    "error",
+    {
+      paths: [...basePaths],
+      patterns: [...additionalPatterns, restrictedProtobufjs],
+    },
+  ]
+}
+
+const restrictedGlobals = [
+  {
+    name: "localStorage",
+    message:
+      "Please use window.localStorage instead since localStorage is not " +
+      "supported in some browsers (e.g. Android WebView).",
+  },
+  {
+    name: "innerWidth",
+    message: "Please use the `useWindowDimensionsContext` hook instead.",
+  },
+  {
+    name: "innerHeight",
+    message: "Please use the `useWindowDimensionsContext` hook instead.",
+  },
+]
+
+const useTimeoutRestrictedGlobals = [
+  {
+    name: "setTimeout",
+    message:
+      "Please use the `useTimeout` hook or another shared timeout helper instead of direct `setTimeout` in non-test source files.",
+  },
+]
+
+const useTimeoutRestrictedProperties = [
+  {
+    object: "window",
+    property: "setTimeout",
+    message:
+      "Please use the `useTimeout` hook or another shared timeout helper instead of `window.setTimeout` in non-test source files.",
+  },
+  {
+    object: "globalThis",
+    property: "setTimeout",
+    message:
+      "Please use the `useTimeout` hook or another shared timeout helper instead of `globalThis.setTimeout` in non-test source files.",
+  },
+]
+
+/**
+ * Helper to create the no-restricted-globals rule config.
+ *
+ * @param {Object} options
+ * @param {boolean} [options.includeUseTimeout] - Whether to add setTimeout restrictions.
+ */
+export const getNoRestrictedGlobals = ({ includeUseTimeout = false } = {}) => {
+  return [
+    "error",
+    ...restrictedGlobals,
+    ...(includeUseTimeout ? useTimeoutRestrictedGlobals : []),
+  ]
+}
+
+/**
+ * Helper to create the no-restricted-properties rule config.
+ *
+ * @param {Object} options
+ * @param {boolean} [options.allowWindowStreamlit] - Whether to allow window.__streamlit access.
+ *   Set to true for files that need to mock the config module itself.
+ * @param {boolean} [options.includeUseTimeout] - Whether to add setTimeout restrictions.
+ */
+const getRestrictedProperties = ({ allowWindowStreamlit = false } = {}) => {
+  const restrictions = [
+    {
+      object: "window",
+      property: "innerWidth",
+      message: "Please use the `useWindowDimensionsContext` hook instead.",
+    },
+    {
+      object: "window",
+      property: "innerHeight",
+      message: "Please use the `useWindowDimensionsContext` hook instead.",
+    },
+    {
+      object: "navigator",
+      property: "clipboard",
+      message: "Please use the `useCopyToClipboard` hook instead.",
+    },
+  ]
+
+  if (!allowWindowStreamlit) {
+    restrictions.push({
+      object: "window",
+      property: "__streamlit",
+      message:
+        "Please access window.__streamlit properties via StreamlitConfig in '@streamlit/utils' instead.",
+    })
+  }
+
+  return restrictions
+}
+
+export const getNoRestrictedProperties = ({
+  allowWindowStreamlit = false,
+  includeUseTimeout = false,
+} = {}) => {
+  return [
+    "error",
+    ...getRestrictedProperties({ allowWindowStreamlit }),
+    ...(includeUseTimeout ? useTimeoutRestrictedProperties : []),
+  ]
+}
+
+export default defineConfig([
   // Base recommended configs
   eslint.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
-  reactHooks.configs.recommended,
+  reactHooks.configs.flat.recommended,
   eslintReact.configs["recommended-type-checked"],
-  importPlugin.flatConfigs.recommended,
-  eslintPluginPrettierRecommended,
+  importX.flatConfigs.recommended,
   // Global configuration for all files
   {
     languageOptions: {
@@ -78,10 +258,8 @@ export default tseslint.config([
   {
     files: ["**/*.ts", "**/*.tsx"],
     plugins: {
-      ...jsxA11y.flatConfigs.recommended.plugins,
-      react,
       lodash,
-      "no-relative-import-paths": noRelativeImportPaths,
+      "no-relative-import-paths": fixupPluginRules(noRelativeImportPaths),
       "streamlit-custom": streamlitCustom,
     },
     rules: {
@@ -92,25 +270,42 @@ export default tseslint.config([
       "no-console": "error",
       // Prevent unintentional use of `debugger`
       "no-debugger": "error",
-      // We don't use PropTypes
-      "react/prop-types": "off",
-      // We don't escape entities
-      "react/no-unescaped-entities": "off",
-      // Opting into the latest react-compiler rules
-      // @see https://react.dev/blog/2025/04/21/react-compiler-rc
-      "react-hooks/react-compiler": "error",
+      // Correctness rules that eslint.configs.recommended does not enable
+      "no-self-compare": "error",
+      "no-return-assign": ["error", "always"],
+      "no-sequences": ["error", { allowInParentheses: false }],
+      "no-template-curly-in-string": "error",
+      "no-extend-native": "error",
+      // Keep default as the last switch clause
+      "default-case-last": "error",
+      // Safety net if the ForInStatement ban in no-restricted-syntax is relaxed
+      "guard-for-in": "error",
+      // Safety net if the LabeledStatement ban in no-restricted-syntax is relaxed
+      "no-labels": "error",
+      // Oxlint eslint/preserve-caught-error owns this check.
+      "preserve-caught-error": "off",
       // We do want to discourage the usage of flushSync
-      "@eslint-react/dom/no-flush-sync": "error",
+      "@eslint-react/dom-no-flush-sync": "error",
       // This was giving false positives
       "@eslint-react/no-unused-class-component-members": "off",
       // This was giving false positives
-      "@eslint-react/naming-convention/use-state": "off",
-      // Helps us catch functions written as if they are hooks, but are not.
-      "@eslint-react/hooks-extra/no-useless-custom-hooks": "error",
+      "@eslint-react/use-state": "off",
       // Turning off for now until we have clearer guidance on how to fix existing usages
-      "@eslint-react/hooks-extra/no-direct-set-state-in-use-effect": "off",
+      "@eslint-react/set-state-in-effect": "off",
       // We don't want to warn about empty fragments
-      "@eslint-react/no-useless-fragment": "off",
+      "@eslint-react/jsx-no-useless-fragment": "off",
+      // Prevent context values from being recreated on every render
+      "@eslint-react/no-unstable-context-value": "error",
+      // Default-arg object/array literals are a new reference each render
+      "@eslint-react/no-unstable-default-props": "error",
+      // Require sandbox on raw <iframe> JSX, and rel=noopener on raw <a target=_blank>.
+      // Intrinsic elements only — styled.iframe / styled anchors are not checked.
+      "@eslint-react/dom-no-missing-iframe-sandbox": "error",
+      "@eslint-react/dom-no-unsafe-target-blank": "error",
+      // We want to enforce display names for context providers for better debugging
+      "@eslint-react/no-missing-context-display-name": "error",
+      // New rules in @eslint-react v4/v5 — disable until existing violations are addressed
+      "@eslint-react/exhaustive-deps": "off",
       // TypeScript rules with type-checking
       // We want to use these, but we have far too many instances of these rules
       // for it to be realistic right now. Over time, we should fix these.
@@ -136,6 +331,7 @@ export default tseslint.config([
           args: "all",
           ignoreRestSiblings: false,
           argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
         },
       ],
       // It's safe to use functions before they're defined
@@ -160,6 +356,24 @@ export default tseslint.config([
       ],
       // We want this on
       "@typescript-eslint/no-non-null-assertion": "error",
+      // Prefer optional chaining over && chains
+      "@typescript-eslint/prefer-optional-chain": "error",
+      // Ensure switch statements cover all possible enum/union values
+      "@typescript-eslint/switch-exhaustiveness-check": [
+        "error",
+        {
+          considerDefaultExhaustiveForUnions: true, // Allow default case for unions
+        },
+      ],
+      // Flag class properties that are never modified and should be readonly
+      "@typescript-eslint/prefer-readonly": "warn",
+      // Ensure return await is used in try/catch for proper error stack traces
+      "@typescript-eslint/return-await": ["error", "in-try-catch"],
+      // Treat @deprecated API usage as errors
+      "@typescript-eslint/no-deprecated": "error",
+      // Mixed string/numeric members compare and reverse-map inconsistently;
+      // keep hand-written enums single-typed like generated protobuf ones.
+      "@typescript-eslint/no-mixed-enums": "error",
       // Permit for-of loops
       "no-restricted-syntax": [
         "error",
@@ -170,22 +384,15 @@ export default tseslint.config([
           selector: "CallExpression[callee.name='withTheme']",
           message:
             "The use of withTheme HOC is not allowed for functional components. " +
-            "Please use the useTheme hook instead.",
+            "Please use the useEmotionTheme hook instead.",
         },
       ],
-      "no-restricted-globals": [
-        "error",
-        {
-          name: "localStorage",
-          message:
-            "Please use window.localStorage instead since localStorage is not " +
-            "supported in some browsers (e.g. Android WebView).",
-        },
-      ],
+      "no-restricted-globals": getNoRestrictedGlobals(),
+      "no-restricted-properties": getNoRestrictedProperties(),
       // Imports should be `import "./FooModule"`, not `import "./FooModule.js"`
       // We need to configure this to check our .tsx files, see:
       // https://github.com/benmosher/eslint-plugin-import/issues/1615#issuecomment-577500405
-      "import/extensions": [
+      "import-x/extensions": [
         "error",
         "ignorePackages",
         {
@@ -195,7 +402,12 @@ export default tseslint.config([
           tsx: "never",
         },
       ],
-      "import/prefer-default-export": "off",
+      "import-x/prefer-default-export": "off",
+      // Catch import specifiers that resolve to nothing useful: self-imports,
+      // redundant path segments, empty named blocks.
+      "import-x/no-self-import": "error",
+      "import-x/no-useless-path-segments": "error",
+      "import-x/no-empty-named-blocks": "error",
       "max-classes-per-file": "off",
       "no-shadow": "off",
       "no-param-reassign": "off",
@@ -221,8 +433,8 @@ export default tseslint.config([
           ignoreDeclarationSort: true,
         },
       ],
-      "import/order": [
-        1,
+      "import-x/order": [
+        "error",
         {
           pathGroups: [
             {
@@ -232,6 +444,11 @@ export default tseslint.config([
             },
             {
               pattern: "@streamlit/**",
+              group: "internal",
+              position: "before",
+            },
+            {
+              pattern: "~lib/**",
               group: "internal",
               position: "before",
             },
@@ -246,39 +463,33 @@ export default tseslint.config([
             "index",
           ],
           "newlines-between": "always",
+          alphabetize: {
+            order: "asc",
+            caseInsensitive: true,
+          },
         },
       ],
       "streamlit-custom/no-hardcoded-theme-values": "error",
       "streamlit-custom/use-strict-null-equality-checks": "error",
       // We only turn this rule on for certain directories
       "streamlit-custom/enforce-memo": "off",
-      "no-restricted-imports": [
-        "error",
-        {
-          paths: [
-            {
-              name: "timezone-mock",
-              message: "Please use the withTimezones test harness instead",
-            },
-          ],
-        },
-      ],
-      // React configuration
-      "react/jsx-uses-react": "off",
-      "react/react-in-jsx-scope": "off",
+      "streamlit-custom/no-force-reflow-access": "error",
+      "streamlit-custom/no-aria-hidden-with-focusable-children": "error",
+      "no-restricted-imports": getNoRestrictedImports(),
       // React hooks rules
-      ...reactHooks.configs.recommended.rules,
-      // jsx-a11y rules
-      ...jsxA11y.flatConfigs.recommended.rules,
-      // prohibit autoFocus prop
-      // https://github.com/jsx-eslint/eslint-plugin-jsx-a11y/blob/main/docs/rules/no-autofocus.md
-      "jsx-a11y/no-autofocus": ["error", { ignoreNonDOM: true }],
+      ...reactHooks.configs.flat.recommended.rules,
+      // New React Compiler rules in react-hooks v7.1 — disable until existing
+      // violations are addressed. Only rules-of-hooks and exhaustive-deps were
+      // previously enforced.
+      "react-hooks/refs": "off",
+      "react-hooks/set-state-in-effect": "off",
+      // Enforce "You Might Not Need an Effect" pattern - don't derive state in effects
+      "react-hooks/no-deriving-state-in-effects": "error",
+      // useMemo must return a value; side-effect-only memos belong in useEffect
+      "react-hooks/void-use-memo": "error",
     },
     settings: {
-      react: {
-        version: "detect",
-      },
-      "import/resolver": {
+      "import-x/resolver": {
         typescript: {
           // Use project service for import resolution as well
           project: path.resolve(__dirname, "./tsconfig.json"),
@@ -286,23 +497,94 @@ export default tseslint.config([
       },
     },
   },
+  {
+    files: ["**/src/**/*.ts", "**/src/**/*.tsx"],
+    ignores: ["**/*.test.ts", "**/*.test.tsx"],
+    rules: {
+      "no-restricted-globals": getNoRestrictedGlobals({
+        includeUseTimeout: true,
+      }),
+      "no-restricted-properties": getNoRestrictedProperties({
+        includeUseTimeout: true,
+      }),
+      // Require type on raw <button> JSX (not styled.button); omitted type submits the enclosing form.
+      // Tests still use <button> fixtures without type, so this stays production-only.
+      "@eslint-react/dom-no-missing-button-type": "error",
+    },
+  },
   // Test files specific configuration
   {
     files: ["**/*.test.ts", "**/*.test.tsx"],
-    ...testingLibrary.configs["flat/react"],
     plugins: {
-      ...testingLibrary.configs["flat/react"].plugins,
       "testing-library": testingLibrary,
       vitest,
     },
     rules: {
-      // Recommended vitest configuration to enforce good testing practices
+      // Merge the Testing Library preset into this `rules` object. Spreading the
+      // whole preset at this config root would let this `rules` key replace it
+      // and drop every recommended testing-library rule.
+      ...testingLibrary.configs["flat/react"].rules,
       ...vitest.configs.recommended.rules,
       // Allow hardcoded styles in test files
       "streamlit-custom/no-hardcoded-theme-values": "off",
+      // Allow force reflow access in test files
+      "streamlit-custom/no-force-reflow-access": "off",
 
-      // Testing library rules
+      // Recommended rules with large existing debt; enable in later cleanups.
+      // Plan: https://github.com/streamlit/streamlit/wiki/2026-09-03-improving-frontend-linting
+      "testing-library/no-node-access": "off",
+      "testing-library/no-container": "off",
+      "testing-library/prefer-presence-queries": "off",
+      "testing-library/no-unnecessary-act": "off",
+      "testing-library/no-manual-cleanup": "off",
+      "testing-library/render-result-naming-convention": "off",
+
+      // Testing library overrides
       "testing-library/prefer-user-event": "error",
+      // Prefer screen.getBy* over destructured queries for consistency
+      "testing-library/prefer-screen-queries": "warn",
+      // Prefer findBy* over waitFor + getBy* patterns
+      "testing-library/prefer-find-by": "error",
+      // Enforce consistent use of it() over test()
+      "vitest/consistent-test-it": ["error", { fn: "it" }],
+      // Oxlint vitest/no-focused-tests and no-commented-out-tests own these.
+      "vitest/no-focused-tests": "off",
+      "vitest/no-commented-out-tests": "off",
+      "no-restricted-imports": getNoRestrictedImports([], true),
+    },
+  },
+  // Vendored tests are ignored by oxlint; keep the ESLint copies on there.
+  {
+    files: ["**/vendor/**"],
+    plugins: {
+      vitest,
+    },
+    rules: {
+      "preserve-caught-error": "error",
+      "vitest/no-focused-tests": "error",
+      "vitest/no-commented-out-tests": "error",
+    },
+  },
+  // Specific test files that need to access window.__streamlit for testing the config module itself
+  {
+    files: ["utils/src/config/index.test.ts", "lib/src/theme/utils.test.ts"],
+    rules: {
+      // These test files need to set window.__streamlit to test the config capture behavior
+      "no-restricted-properties": getNoRestrictedProperties({
+        allowWindowStreamlit: true,
+      }),
+    },
+  },
+  // Config module - allow direct window.__streamlit access for capturing values
+  {
+    files: ["utils/src/config/index.ts"],
+    rules: {
+      // This is the only place where direct window.__streamlit access is allowed
+      // as it captures values at module load time and exports frozen copies.
+      // Other restrictions (innerWidth, innerHeight, clipboard) still apply.
+      "no-restricted-properties": getNoRestrictedProperties({
+        allowWindowStreamlit: true,
+      }),
     },
   },
   // Theme files specific configuration
@@ -332,9 +614,11 @@ export default tseslint.config([
   globalIgnores([
     "eslint.config.mjs",
     "app/eslint.config.mjs",
+    "vitest.config.mts",
+    "vitest.setup.ts",
+    "**/vite.config.ts",
     "lib/src/proto.js",
     "lib/src/proto.d.ts",
-    "**/vendor/*",
     "**/node_modules/*",
     "**/dist/*",
     "**/build/*",

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,13 +20,15 @@
  * Returns a promise with the index of the URI that worked.
  */
 
-import axios from "axios"
 import { getLogger } from "loglevel"
 
 // Note we expect the polyfill to load from this import
-import { buildHttpUri } from "@streamlit/utils"
+import {
+  buildHttpUri,
+  notNullOrUndefined,
+  StreamlitConfig,
+} from "@streamlit/utils"
 
-import { getBaseUriParts } from "./utils"
 import {
   CORS_ERROR_MESSAGE_DOCUMENTATION_LINK,
   HOST_CONFIG_PATH,
@@ -34,9 +36,26 @@ import {
   PING_TIMEOUT_MS,
   SERVER_PING_PATH,
 } from "./constants"
-import { IHostConfigResponse, OnRetry } from "./types"
+import { ErrorDetails, IHostConfigProperties, OnRetry } from "./types"
+import {
+  FetchError,
+  fetchWithTimeout,
+  parseUriIntoBaseParts,
+  serializeForDisplay,
+} from "./utils"
 
 const LOG = getLogger("DoInitPings")
+
+export class PingCancelledError extends Error {
+  constructor() {
+    super("Ping cancelled")
+  }
+}
+
+export interface AsyncPingRequest {
+  promise: Promise<number>
+  cancel: () => void
+}
 
 export function doInitPings(
   uriPartsList: URL[],
@@ -48,16 +67,31 @@ export function doInitPings(
     message: string,
     source: string
   ) => void,
-  onHostConfigResp: (resp: IHostConfigResponse) => void
-): Promise<number> {
-  const { promise, resolve } = Promise.withResolvers<number>()
+  onHostConfigResp: (resp: IHostConfigProperties) => void
+): AsyncPingRequest {
+  const { promise, resolve, reject } = Promise.withResolvers<number>()
   let totalTries = 0
   let uriNumber = 0
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  // Once cancelled, the loop must not schedule new attempts, fire new requests,
+  // or invoke any callbacks. This guards against a cancelled loop "resurrecting"
+  // itself: cancel() can be called while a request is in-flight, and without
+  // this flag the settling request would re-arm the retry timer, leaving an
+  // untracked loop running (and potentially two loops running concurrently in
+  // the bypass path).
+  let cancelled = false
+  // Used to abort in-flight health/host-config requests when the loop is
+  // cancelled (e.g. when the WebSocket reconnects), so we don't leave orphaned
+  // requests running against the server.
+  const abortController = new AbortController()
 
   // Hoist the connect() declaration.
   let connect = (): void => {}
 
   const retryImmediately = (): void => {
+    if (cancelled) {
+      return
+    }
     uriNumber++
     if (uriNumber >= uriPartsList.length) {
       uriNumber = 0
@@ -66,20 +100,37 @@ export function doInitPings(
     connect()
   }
 
-  const retry = (errorMarkdown: string): void => {
-    // Adjust retry time by +- 20% to spread out load
-    const jitter = Math.random() * 0.4 - 0.2
+  const retry = (errorDetails: ErrorDetails): void => {
+    if (cancelled) {
+      return
+    }
+
     // Exponential backoff to reduce load from health pings when experiencing
     // persistent failure. Starts at minimumTimeoutMs.
-    const timeoutMs =
+    const exponentialTimeoutMs =
       totalTries === 1
         ? minimumTimeoutMs
-        : minimumTimeoutMs * 2 ** (totalTries - 1) * (1 + jitter)
-    const retryTimeout = Math.min(maximumTimeoutMs, timeoutMs)
+        : minimumTimeoutMs * 2 ** (totalTries - 1)
+    const cappedTimeoutMs = Math.min(maximumTimeoutMs, exponentialTimeoutMs)
+    // Keep the first retry fast, then jitter between 70-100% of the capped
+    // backoff so clients don't synchronize on the maximum retry period.
+    const retryTimeout =
+      totalTries === 1
+        ? cappedTimeoutMs
+        : Math.floor(cappedTimeoutMs * (0.7 + Math.random() * 0.3))
 
-    retryCallback(totalTries, errorMarkdown, retryTimeout)
+    retryCallback(totalTries, errorDetails, retryTimeout)
 
-    window.setTimeout(retryImmediately, retryTimeout)
+    if (typeof window === "undefined") {
+      // There seems to be a race condition when tearing down test env
+      // that can lead to some flakiness in the tests.
+      // If the test environment is torn down, we don't need to
+      // schedule another retry.
+      return
+    }
+    // Use globalThis to ensure timers can be cleared even if window is undefined later
+    // eslint-disable-next-line no-restricted-properties -- Ping retry scheduler requires a raw timer outside React.
+    timeout = globalThis.setTimeout(retryImmediately, retryTimeout)
   }
 
   const retryWhenTheresNoResponse = (): void => {
@@ -87,28 +138,25 @@ export function doInitPings(
     const uri = new URL(buildHttpUri(uriParts, ""))
 
     if (uri.hostname === "localhost") {
-      const markdownMessage = `
-Is Streamlit still running? If you accidentally stopped Streamlit, just restart it in your terminal:
-
-\`\`\`bash
-streamlit run yourscript.py
-\`\`\`
-      `
-      retry(markdownMessage)
+      retry({
+        message:
+          "Is Streamlit still running? If you accidentally stopped Streamlit, just restart it in your terminal:",
+        codeBlock: "streamlit run yourscript.py",
+      })
     } else {
-      retry(
-        "Streamlit server is not responding. " +
-          "Are you connected to the internet?"
-      )
+      retry({
+        message:
+          "Streamlit server is not responding. Are you connected to the internet?",
+      })
     }
   }
 
   const retryWhenIsForbidden = (): void => {
-    const forbiddenMessage = `Cannot connect to Streamlit (HTTP status: 403).
+    retry({
+      message: `Cannot connect to Streamlit (HTTP status: 403).
 
-If you are trying to access a Streamlit app running on another server, this could be due to the app's [CORS](${CORS_ERROR_MESSAGE_DOCUMENTATION_LINK}) settings.`
-
-    retry(forbiddenMessage)
+If you are trying to access a Streamlit app running on another server, this could be due to the app's [CORS](${CORS_ERROR_MESSAGE_DOCUMENTATION_LINK}) settings.`,
+    })
   }
 
   // Handle retrieving the source URL, otherwise fallback to "DoInitPings"
@@ -118,8 +166,7 @@ If you are trying to access a Streamlit app running on another server, this coul
     if (url) {
       try {
         source = new URL(url).pathname
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      } catch (e) {
+      } catch {
         LOG.error(`unrecognized url: ${url}`)
       }
     }
@@ -128,12 +175,16 @@ If you are trying to access a Streamlit app running on another server, this coul
   }
 
   connect = () => {
+    if (cancelled) {
+      return
+    }
     const uriParts = uriPartsList[uriNumber]
     const healthzUri = buildHttpUri(uriParts, SERVER_PING_PATH)
 
-    const hostConfigBaseUrl = window.__streamlit?.HOST_CONFIG_BASE_URL
+    // Use the securely captured config value
+    const hostConfigBaseUrl = StreamlitConfig.HOST_CONFIG_BASE_URL
     const hostConfigServerUriParts = hostConfigBaseUrl
-      ? getBaseUriParts(hostConfigBaseUrl)
+      ? parseUriIntoBaseParts(hostConfigBaseUrl)
       : uriParts
 
     const hostConfigUri = buildHttpUri(
@@ -155,22 +206,28 @@ If you are trying to access a Streamlit app running on another server, this coul
     // not to do so as it's semantically cleaner to not give the healthcheck
     // endpoint additional responsibilities.
     Promise.all([
-      axios.get(healthzUri, { timeout: PING_TIMEOUT_MS }),
-      axios.get(hostConfigUri, { timeout: PING_TIMEOUT_MS }),
+      fetchWithTimeout(healthzUri, PING_TIMEOUT_MS, abortController.signal),
+      fetchWithTimeout(hostConfigUri, PING_TIMEOUT_MS, abortController.signal),
     ])
       .then(([_, hostConfigResp]) => {
-        onHostConfigResp(hostConfigResp.data)
+        if (cancelled) {
+          return
+        }
+        onHostConfigResp(hostConfigResp.data as IHostConfigProperties)
         resolve(uriNumber)
       })
-      .catch(error => {
+      .catch((error: FetchError) => {
+        if (cancelled) {
+          return
+        }
         // If its our 6th try (retry count at which we show connection error dialog), send a client error
         // to inform the host of connection error
         const tooManyRetries = totalTries >= MAX_RETRIES_BEFORE_CLIENT_ERROR
 
-        if (error.code === "ECONNABORTED") {
+        if (error.isTimeout) {
           if (tooManyRetries) {
             // Handle retrieving the source URL from the error (health or host-config endpoint)
-            const source = determineUrlSource(error.config?.url)
+            const source = determineUrlSource(error.url)
             LOG.error("Client error: DoInitPings timed out")
             sendClientError(
               "DoInitPings timed out",
@@ -178,7 +235,7 @@ If you are trying to access a Streamlit app running on another server, this coul
               source
             )
           }
-          return retry("Connection timed out.")
+          return retry({ message: "Connection timed out." })
         }
 
         if (error.response) {
@@ -187,7 +244,7 @@ If you are trying to access a Streamlit app running on another server, this coul
 
           const { data, status, statusText } = error.response
           // Handle retrieving the source URL from the error (health or host-config endpoint)
-          const source = determineUrlSource(error.response.config?.url)
+          const source = determineUrlSource(error.url)
 
           if (status === /* NO RESPONSE */ 0) {
             if (tooManyRetries) {
@@ -219,26 +276,26 @@ If you are trying to access a Streamlit app running on another server, this coul
             )
             sendClientError(status, statusText, source)
           }
-          return retry(
-            `Connection failed with status ${status}, ` +
-              `and response "${data}".`
-          )
+
+          const responseDataStr = serializeForDisplay(data)
+          return retry({
+            message: `Connection failed with status ${status}${responseDataStr ? ", and response:" : "."}`,
+            ...(responseDataStr && { codeBlock: responseDataStr }),
+          })
         }
 
-        if (error.request) {
+        if (error.isNetworkError) {
           // The request was made but no response was received
-          // `error.request` is an instance of XMLHttpRequest in the browser and an instance of
-          // http.ClientRequest in node.js
 
           if (tooManyRetries) {
             // Handle retrieving the source URL from the error (health or host-config endpoint)
-            const source = determineUrlSource(error.request.path)
+            const source = determineUrlSource(error.url)
             LOG.error(
               `Client Error in reaching server endpoint - No response received when attempting to reach ${source}`
             )
             sendClientError(
               "No response received from server",
-              error.request.status,
+              "Network error",
               source
             )
           }
@@ -248,7 +305,7 @@ If you are trying to access a Streamlit app running on another server, this coul
         // Something happened in setting up the request that triggered an Error
         if (tooManyRetries) {
           // Handle retrieving the source URL from the error (health or host-config endpoint)
-          const source = determineUrlSource(error.config?.url)
+          const source = determineUrlSource(error.url)
           LOG.error(
             `Client Error in reaching server endpoint - error in setting up request when attempting to reach ${source}`
           )
@@ -258,11 +315,26 @@ If you are trying to access a Streamlit app running on another server, this coul
             source
           )
         }
-        return retry(error.message)
+        return retry({ message: error.message })
       })
   }
 
   connect()
 
-  return promise
+  const cancel = (): void => {
+    cancelled = true
+    if (notNullOrUndefined(timeout)) {
+      // Use globalThis to clear timers safely without relying on window
+      globalThis.clearTimeout(timeout)
+    }
+    // Abort any in-flight health/host-config requests so they stop running
+    // against the server and can't re-arm the retry loop after cancellation.
+    abortController.abort()
+    reject(new PingCancelledError())
+  }
+
+  return {
+    promise,
+    cancel,
+  }
 }

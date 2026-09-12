@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,16 @@
 import { Block as BlockProto, streamlit } from "@streamlit/protobuf"
 
 import { AppNode, BlockNode } from "~lib/AppNode"
+import { Direction } from "~lib/components/core/Layout/utils"
+import { ComponentRegistry } from "~lib/components/widgets/CustomComponent/ComponentRegistry"
 import { FileUploadClient } from "~lib/FileUploadClient"
+import { ElementsSetVisitor } from "~lib/render-tree/visitors/ElementsSetVisitor"
 import { ScriptRunState } from "~lib/ScriptRunState"
 import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
-import { EmotionTheme, getDividerColors } from "~lib/theme"
+import { getDividerColors } from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
 import { isValidElementId } from "~lib/util/utils"
 import { WidgetStateManager } from "~lib/WidgetStateManager"
-import { Direction } from "~lib/components/core/Layout/utils"
 
 export function getClassnamePrefix(direction: Direction): string {
   return direction === Direction.HORIZONTAL
@@ -30,6 +33,8 @@ export function getClassnamePrefix(direction: Direction): string {
     : "stVerticalBlock"
 }
 
+// Only RUNNING: during a pending stop, placeholder updates should still be
+// allowed to render.
 export function shouldComponentBeEnabled(
   elementType: string,
   scriptRunState: ScriptRunState
@@ -49,15 +54,21 @@ export function isElementStale(
     return true
   }
 
-  if (scriptRunState === ScriptRunState.RUNNING) {
-    if (fragmentIdsThisRun && fragmentIdsThisRun.length) {
+  // STOP_REQUESTED means the user asked to stop but the script is still
+  // executing, so elements from earlier runs must stay stale until the run
+  // actually finishes.
+  if (
+    scriptRunState === ScriptRunState.RUNNING ||
+    scriptRunState === ScriptRunState.STOP_REQUESTED
+  ) {
+    if (fragmentIdsThisRun?.length) {
       // if the fragmentId is set, we only want to mark elements as stale
       // that belong to the same fragmentId and have a different scriptRunId.
       // If they have the same scriptRunId, they were just updated.
       return Boolean(
         node.fragmentId &&
-          fragmentIdsThisRun.includes(node.fragmentId) &&
-          node.scriptRunId !== scriptRunId
+        fragmentIdsThisRun.includes(node.fragmentId) &&
+        node.scriptRunId !== scriptRunId
       )
     }
     return node.scriptRunId !== scriptRunId
@@ -79,6 +90,45 @@ export function isComponentStale(
   )
 }
 
+/**
+ * Whether a leftover dialog from a previous full-app run should be hidden.
+ *
+ * Stale nodes are only pruned after the script finishes successfully, so a
+ * dialog closed via `st.rerun()` would otherwise stay on screen for the whole
+ * next run (issue #9405).
+ *
+ * Any fragment rerun keeps the dialog: unlike {@link isElementStale}, this
+ * does not check whether the node's `fragmentId` is in `fragmentIdsThisRun`.
+ * Fragment `newSession` still assigns a new `scriptRunId`, so hiding on
+ * mismatch would also close the dialog when an unrelated fragment refreshes.
+ *
+ * `RERUN_REQUESTED` also keeps it. That state is set before we know whether
+ * the next run is a fragment or full-app rerun; hiding here would unmount
+ * the dialog on every widget interaction inside it.
+ *
+ * Not the same as {@link isElementStale}: that function marks every element
+ * stale on `RERUN_REQUESTED`.
+ */
+export function shouldHideStaleDialog(
+  node: AppNode,
+  scriptRunState: ScriptRunState,
+  scriptRunId: string,
+  fragmentIdsThisRun?: Array<string>
+): boolean {
+  if (fragmentIdsThisRun?.length) {
+    return false
+  }
+
+  if (
+    scriptRunState !== ScriptRunState.RUNNING &&
+    scriptRunState !== ScriptRunState.STOP_REQUESTED
+  ) {
+    return false
+  }
+
+  return node.scriptRunId !== scriptRunId
+}
+
 export function assignDividerColor(
   node: BlockNode,
   theme: EmotionTheme
@@ -87,13 +137,13 @@ export function assignDividerColor(
   const allColorMap = getDividerColors(theme)
   const allColorKeys = Object.keys(allColorMap)
 
-  // Limited colors for auto assignment
-  const { blue, green, orange, red, violet } = allColorMap
-  const autoColorMap = { blue, green, orange, red, violet }
+  // Limited colors for auto assignment - exclude gray/grey & rainbow
+  const { blue, green, orange, red, violet, yellow } = allColorMap
+  const autoColorMap = { blue, green, orange, red, violet, yellow }
   const autoColorKeys = Object.keys(autoColorMap)
   let dividerIndex = 0
 
-  Array.from(node.getElements()).forEach(element => {
+  for (const element of ElementsSetVisitor.collectElements(node)) {
     const divider = element.heading?.divider
     if (element.type === "heading" && divider) {
       if (divider === "auto") {
@@ -107,7 +157,7 @@ export function assignDividerColor(
         element.heading.divider = allColorMap[divider]
       }
     }
-  })
+  }
 }
 export interface BaseBlockProps {
   /**
@@ -141,6 +191,12 @@ export interface BaseBlockProps {
    * to use it, for example, in Dialogs to prevent fullscreen issues.
    */
   disableFullscreenMode?: boolean
+
+  /**
+   * The app's ComponentRegistry instance. Dispatches "Custom Component"
+   * iframe messages to ComponentInstances.
+   */
+  componentRegistry: ComponentRegistry
 }
 
 /**
@@ -153,7 +209,7 @@ export function convertKeyToClassName(key: string | undefined | null): string {
   if (!key) {
     return ""
   }
-  const className = key.trim().replace(/[^a-zA-Z0-9_-]/g, "-")
+  const className = key.trim().replaceAll(/[^a-zA-Z0-9_-]/g, "-")
   return "st-key-" + className
 }
 
@@ -175,21 +231,17 @@ export function getKeyFromId(
   return userKey === "None" ? undefined : userKey
 }
 
-export function backwardsCompatibleColumnGapSize(
-  columnProto: BlockProto.IColumn
-): streamlit.GapSize {
-  if (columnProto.gapConfig?.gapSize) {
-    return columnProto.gapConfig.gapSize
-  } else if (columnProto.gap) {
-    if (columnProto.gap === "small") {
-      return streamlit.GapSize.SMALL
-    } else if (columnProto.gap === "medium") {
-      return streamlit.GapSize.MEDIUM
-    } else if (columnProto.gap === "large") {
-      return streamlit.GapSize.LARGE
-    }
+export function getColumnGapConfig(
+  columnProto: BlockProto.Column.$Properties
+): streamlit.GapConfig.$Properties {
+  const gapConfig = columnProto.gapConfig
+  if (typeof gapConfig?.pixelGap === "number") {
+    return { pixelGap: gapConfig.pixelGap }
   }
-  return streamlit.GapSize.SMALL
+  if (gapConfig?.gapSize) {
+    return { gapSize: gapConfig.gapSize }
+  }
+  return { gapSize: streamlit.GapSize.SMALL }
 }
 
 export function checkFlexContainerBackwardsCompatibile(
@@ -205,40 +257,26 @@ export function checkFlexContainerBackwardsCompatibile(
   return false
 }
 
-export function getActivateScrollToBottomBackwardsCompatible(
-  blockNode: BlockNode
-): boolean {
-  const hasHeight =
-    blockNode.deltaBlock.heightConfig || blockNode.deltaBlock.vertical?.height
-  if (
-    hasHeight &&
-    blockNode.children.some(node => {
-      return (
-        node instanceof BlockNode && node.deltaBlock.type === "chatMessage"
-      )
-    })
-  ) {
-    return true
+export function shouldActivateScrollToBottom(blockNode: BlockNode): boolean {
+  const hasFixedPixelHeight = blockNode.deltaBlock.heightConfig?.pixelHeight
+  if (!hasFixedPixelHeight) {
+    return false
   }
-  return false
+
+  // When autoscroll is explicitly set, use that value directly.
+  const { autoscroll } = blockNode.deltaBlock
+  if (autoscroll !== null && autoscroll !== undefined) {
+    return autoscroll
+  }
+
+  // Default: auto-scroll when container has chat messages.
+  return blockNode.children.some(
+    node => node instanceof BlockNode && node.deltaBlock.type === "chatMessage"
+  )
 }
 
 export function getBorderBackwardsCompatible(blockProto: BlockProto): boolean {
   return (
     blockProto.flexContainer?.border || blockProto.vertical?.border || false
   )
-}
-
-export function getHeightBackwardsCompatible(
-  blockProto: BlockProto
-): number | undefined {
-  // TODO: when height and width are added for containers, this will be calculated with
-  // useLayoutStyles. Currently we are only using pixel height based on the pre-advanced layouts
-  // feature.
-  if (blockProto.heightConfig?.pixelHeight) {
-    return blockProto.heightConfig?.pixelHeight
-  } else if (blockProto.vertical?.height) {
-    return blockProto.vertical?.height
-  }
-  return undefined
 }

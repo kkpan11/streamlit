@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,15 +13,18 @@
 # limitations under the License.
 
 import math
-import re
+from urllib import parse
 
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction
+from e2e_playwright.conftest import ImageCompareFunction, build_app_url
 from e2e_playwright.shared.app_utils import (
     check_top_level_class,
+    get_checkbox,
     get_element_by_key,
 )
+
+NUM_IFRAMES = 13
 
 
 def test_components_iframe_rendering(
@@ -30,7 +33,7 @@ def test_components_iframe_rendering(
     """Test that our components v1 API correctly renders elements via screenshot matching."""
 
     elements = themed_app.locator("iframe")
-    expect(elements).to_have_count(7)
+    expect(elements).to_have_count(NUM_IFRAMES)
 
     # Only doing a snapshot of the html component, since the iframe one
     # does not use a valid URL.
@@ -39,6 +42,26 @@ def test_components_iframe_rendering(
     # Emulate dark theme OS setting:
     themed_app.emulate_media(color_scheme="dark")
     assert_snapshot(elements.nth(0), name="st_components-html")
+
+
+def test_components_iframe_dimensions(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that iframe correctly sets dimensions."""
+
+    assert_snapshot(
+        app.locator("iframe").nth(6), name="st_components-iframe-no-width-height"
+    )
+    assert_snapshot(
+        app.locator("iframe").nth(7), name="st_components-iframe-fixed-width-height"
+    )
+    assert_snapshot(
+        app.locator("iframe").nth(9),
+        name="st_components-html-no-width-height-container",
+    )
+    # Fixed width/height html are already tested above.
+    assert_snapshot(
+        get_element_by_key(app, "html-iframe-in-vertical-container"),
+        name="st_components-html-iframe-in-vertical-container",
+    )
 
 
 def test_html_correctly_sets_attr(app: Page):
@@ -97,30 +120,63 @@ def test_iframe_tab_index_attributes(app: Page):
     expect(zero_iframe).to_have_attribute("tabindex", "0")
 
 
-def test_declare_component_correctly_sets_attr(app: Page):
+def test_declare_component_correctly_sets_attr(app: Page, app_base_url: str):
     """Test that components.declare_component correctly sets attributes and rendered size."""
 
-    declare_component = app.locator("iframe").nth(6)
+    checkbox_element = get_checkbox(app, "Show custom component")
+    checkbox_element.locator("label").click()
+
+    iframes = app.locator("iframe")
+    expect(iframes).to_have_count(NUM_IFRAMES + 1)
+    declare_component = iframes.nth(11)
 
     expect(declare_component).to_have_attribute(
         "title", "st_components_v1.test_component"
     )
+    expected_streamlit_url = build_app_url(app_base_url, path="/")
+    expected_streamlit_url_encoded = parse.quote(expected_streamlit_url, safe="")
     expect(declare_component).to_have_attribute(
-        "src",
-        re.compile(
-            r"http://not.a.real.url\?streamlitUrl=http%3A%2F%2Flocalhost%3A\d*%2F$"
-        ),
+        "src", f"http://not.a.real.url?streamlitUrl={expected_streamlit_url_encoded}"
     )
 
 
 def test_check_top_level_class(app: Page):
     """Check that the top level class is correctly set."""
+    checkbox_element = get_checkbox(app, "Show custom component")
+    checkbox_element.locator("label").click()
+
     check_top_level_class(app, "stCustomComponentV1")
 
 
 def test_custom_css_class_via_key(app: Page):
     """Test that the element can have a custom css class via the key argument."""
+    checkbox_element = get_checkbox(app, "Show custom component")
+    checkbox_element.locator("label").click()
+
     expect(get_element_by_key(app, "component_1")).to_be_visible()
+
+
+def test_components_zero_dimensions(app: Page):
+    """Test that components.html and components.iframe with width=0 and height=0."""
+
+    iframes = app.locator("iframe")
+    expect(iframes).to_have_count(NUM_IFRAMES)
+
+    zero_html_iframe = iframes.nth(11)
+    expect(zero_html_iframe).to_be_attached()
+
+    zero_html_container = zero_html_iframe.locator("..")
+    expect(zero_html_container).to_be_attached()
+    expect(zero_html_container).to_have_css("width", "0px")
+    expect(zero_html_container).to_have_css("height", "0px")
+
+    zero_iframe_iframe = iframes.nth(12)
+    expect(zero_iframe_iframe).to_be_attached()
+
+    zero_iframe_container = zero_iframe_iframe.locator("..")
+    expect(zero_iframe_container).to_be_attached()
+    expect(zero_iframe_container).to_have_css("width", "0px")
+    expect(zero_iframe_container).to_have_css("height", "0px")
 
 
 # TODO(willhuang1997): Add tests for handling bytes, JSON, DFs, theme

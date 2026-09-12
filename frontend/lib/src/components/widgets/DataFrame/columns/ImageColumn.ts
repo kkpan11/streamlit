@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,10 +40,10 @@ function ImageColumn(props: BaseColumnProps): BaseColumn {
   return {
     ...props,
     kind: "image",
+    typeIcon: ":material/image:",
     sortMode: "default",
     isEditable: false, // Image columns are always read-only
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any): GridCell {
+    getCell(data?: unknown): GridCell {
       // The native image cell implementation in glide-data-grid expects an array
       // of image URLs. For our usecase, we only support single images. We
       // need to wrap the image URL in an array to have it compatible with the

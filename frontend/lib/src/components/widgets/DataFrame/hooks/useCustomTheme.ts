@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,23 @@
  */
 import { useMemo } from "react"
 
-import { useTheme } from "@emotion/react"
 import { Theme as GlideTheme, SpriteMap } from "@glideapps/glide-data-grid"
-import { mix, transparentize } from "color2k"
+import { lighten, mix, transparentize } from "color2k"
 
-import { convertRemToPx, EmotionTheme } from "~lib/theme"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { blend, convertRemToPx } from "~lib/theme/utils"
 
 export type CustomGridTheme = {
   // The theme configuration for the glide-data-grid
-  glideTheme: Partial<GlideTheme>
+  glideTheme: Partial<GlideTheme> &
+    Pick<
+      GlideTheme,
+      "baseFontStyle" | "cellHorizontalPadding" | "fontFamily"
+    > & {
+      // Custom (non-glide-native) key consumed by ButtonCell for
+      // secondary-button hovers. See #11950.
+      bgButtonHovered?: string
+    }
   // The table border radius in pixels
   tableBorderRadius: string
   // The table border size in pixels
@@ -52,7 +60,7 @@ export type CustomGridTheme = {
  * @return a glide-data-grid compatible theme.
  */
 function useCustomTheme(): Readonly<CustomGridTheme> {
-  const theme: EmotionTheme = useTheme()
+  const theme = useEmotionTheme()
 
   const gridTheme: CustomGridTheme = useMemo<CustomGridTheme>(() => {
     const headerIcons = {
@@ -62,6 +70,32 @@ function useCustomTheme(): Readonly<CustomGridTheme> {
       editable: (p: { bgColor: string }) =>
         `<svg xmlns="http://www.w3.org/2000/svg" height="40" viewBox="0 96 960 960" width="40" fill="${p.bgColor}"><path d="m800.641 679.743-64.384-64.384 29-29q7.156-6.948 17.642-6.948 10.485 0 17.742 6.948l29 29q6.948 7.464 6.948 17.95 0 10.486-6.948 17.434l-29 29Zm-310.64 246.256v-64.383l210.82-210.821 64.384 64.384-210.821 210.82h-64.383Zm-360-204.872v-50.254h289.743v50.254H130.001Zm0-162.564v-50.255h454.615v50.255H130.001Zm0-162.307v-50.255h454.615v50.255H130.001Z"/></svg>`,
     }
+
+    // glide-data-grid renders on a canvas and stacks semi-transparent
+    // header fills (base + hover/focus overlays) without clearing between
+    // paints, which produces color shifts / flicker when either color has
+    // an alpha channel. Flatten alpha against the app background so
+    // glide-data-grid always receives fully opaque colors. The app
+    // background itself may also carry alpha (users can configure
+    // theme.backgroundColor as a hex+alpha or rgba value), so we first
+    // composite it over opaque white to get a guaranteed-opaque canvas
+    // backdrop before layering the header colors. See #11950.
+    const opaqueBg = blend(theme.colors.bgColor, "#ffffff")
+    const flatHeaderBg = blend(
+      theme.colors.dataframeHeaderBackgroundColor,
+      opaqueBg
+    )
+    // Drives both bgHeaderHovered and bgHeaderHasFocus — glide paints them
+    // on the canvas, so this must stay opaque (see #11950).
+    const flatHeaderInteractionBg = blend(
+      transparentize(theme.colors.darkenedBgMix100, 0.9),
+      flatHeaderBg
+    )
+    // Translucent secondary-button hover for body cells — kept separate
+    // from the opaque `bgHeaderHovered` so header color customizations do
+    // not restyle buttons. Consumed by ButtonCell via a custom
+    // (non-glide-native) `bgButtonHovered` key on the returned theme.
+    const buttonHoverBg = transparentize(theme.colors.darkenedBgMix100, 0.9)
 
     const glideTheme = {
       // Explanations: https://github.com/glideapps/glide-data-grid/blob/main/packages/core/API.md#theme
@@ -76,42 +110,46 @@ function useCustomTheme(): Readonly<CustomGridTheme> {
       // Header styling:
       bgIconHeader: theme.colors.fadedText60,
       fgIconHeader: theme.colors.white,
-      bgHeader: theme.colors.bgMix,
-      bgHeaderHasFocus: transparentize(theme.colors.darkenedBgMix100, 0.9),
-      bgHeaderHovered: transparentize(theme.colors.darkenedBgMix100, 0.9),
+      bgHeader: flatHeaderBg,
+      bgHeaderHasFocus: flatHeaderInteractionBg,
+      bgHeaderHovered: flatHeaderInteractionBg,
+      bgButtonHovered: buttonHoverBg,
       textHeader: theme.colors.fadedText60,
       textHeaderSelected: theme.colors.white,
       textGroupHeader: theme.colors.fadedText60,
-      headerFontStyle: `${convertRemToPx(theme.fontSizes.sm)}px`,
+      headerIconSize: Math.round(convertRemToPx("1.125rem")),
+      headerFontStyle: `${theme.fontWeights.normal} ${convertRemToPx(theme.fontSizes.sm)}px`,
       // Cell styling:
-      baseFontStyle: `${convertRemToPx(theme.fontSizes.sm)}px`,
+      baseFontStyle: `${theme.fontWeights.normal} ${convertRemToPx(theme.fontSizes.sm)}px`,
       editorFontSize: theme.fontSizes.sm,
       textDark: theme.colors.bodyText,
       textMedium: transparentize(theme.colors.bodyText, 0.2),
       textLight: theme.colors.fadedText40,
-      textBubble: theme.colors.fadedText60,
       bgCell: theme.colors.bgColor,
       // uses same as bgCell to always have the same background color:
       bgCellMedium: theme.colors.bgColor,
       cellHorizontalPadding: Math.round(convertRemToPx(theme.spacing.sm)),
       cellVerticalPadding: Math.round(convertRemToPx("0.1875rem")),
       // Special cells:
+      textBubble: theme.colors.fadedText60,
       bgBubble: theme.colors.secondaryBg,
-      bgBubbleSelected: theme.colors.secondaryBg,
+      bgBubbleSelected: lighten(theme.colors.secondaryBg, 0.1),
+      bubbleHeight: Math.round(convertRemToPx("1.25rem")),
+      bubblePadding: Math.round(convertRemToPx(theme.spacing.sm)),
+      bubbleMargin: Math.round(convertRemToPx(theme.spacing.twoXS)),
       linkColor: theme.colors.link,
       drilldownBorder: theme.colors.darkenedBgMix25,
+      checkboxMaxSize: Math.round(convertRemToPx(theme.sizes.checkbox)),
       // Unused settings:
       // lineHeight
-      // headerIconSize: number;
       // markerFontStyle: string;
-      // resizeIndicatorColor?: string;
       // headerBottomBorderColor?: string;
     }
 
     return {
       glideTheme,
       tableBorderRadius: theme.radii.default,
-      tableBorderWidth: 1,
+      tableBorderWidth: parseInt(theme.sizes.borderWidth, 10),
       // glide-data-grid can only handle integer pixel values:
       defaultTableHeight: Math.round(convertRemToPx("25rem")),
       minColumnWidth: Math.round(convertRemToPx("3.125rem")),

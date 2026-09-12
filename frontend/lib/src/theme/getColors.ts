@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,24 +16,16 @@
 
 import { darken, getLuminance, lighten, mix, transparentize } from "color2k"
 
-import { EmotionTheme } from "./types"
-
-export type DerivedColors = {
-  fadedText05: string
-  fadedText10: string
-  fadedText20: string
-  fadedText40: string
-  fadedText60: string
-
-  bgMix: string
-  darkenedBgMix100: string
-  darkenedBgMix25: string
-  darkenedBgMix15: string
-  lightenedBg05: string
-}
+import { BACKGROUND_ONLY_COLORS, NAMED_COLOR_CONFIG } from "./namedColors"
+import {
+  DerivedColors,
+  EmotionTheme,
+  EmotionThemeColors,
+  GenericColors,
+} from "./types"
 
 export const computeDerivedColors = (
-  genericColors: Record<string, string>
+  genericColors: GenericColors
 ): DerivedColors => {
   const { bodyText, secondaryBg, bgColor } = genericColors
 
@@ -49,6 +41,7 @@ export const computeDerivedColors = (
   const darkenedBgMix100 = hasLightBg
     ? darken(bgMix, 0.3)
     : lighten(bgMix, 0.6) // Icons.
+  const darkenedBgMix40 = transparentize(darkenedBgMix100, 0.6)
   // TODO(tvst): Rename to darkenedBgMix25 (number = opacity)
   const darkenedBgMix25 = transparentize(darkenedBgMix100, 0.75)
   const darkenedBgMix15 = transparentize(darkenedBgMix100, 0.85) // Hovered menu/nav items.
@@ -64,75 +57,150 @@ export const computeDerivedColors = (
 
     bgMix,
     darkenedBgMix100,
+    darkenedBgMix40,
     darkenedBgMix25,
     darkenedBgMix15,
     lightenedBg05,
   }
 }
 
-export function hasLightBackgroundColor(theme: EmotionTheme): boolean {
-  return getLuminance(theme.colors.bgColor) > 0.5
+function _isLightBackground(bgColor: string): boolean {
+  return getLuminance(bgColor) > 0.5
 }
 
-export const createEmotionColors = (genericColors: {
-  [key: string]: string
-}): { [key: string]: string } => {
+export function hasLightBackgroundColor(theme: EmotionTheme): boolean {
+  return _isLightBackground(theme.colors.bgColor)
+}
+
+export const createEmotionColors = (
+  genericColors: GenericColors
+): EmotionThemeColors => {
   const derivedColors = computeDerivedColors(genericColors)
+  const defaultCategoricalColors = defaultCategoricalColorsArray(genericColors)
+  const defaultSequentialColors = defaultSequentialColorsArray(genericColors)
+  const defaultDivergingColors = defaultDivergingColorsArray(genericColors)
 
   return {
     ...genericColors,
     ...derivedColors,
 
-    codeTextColor: genericColors.green,
-    codeBackgroundColor: derivedColors.bgMix,
+    link: genericColors.blueTextColor,
 
-    metricPositiveDeltaColor: genericColors.green,
-    metricNegativeDeltaColor: genericColors.red,
-    metricNeutralDeltaColor: derivedColors.fadedText60,
+    codeTextColor: genericColors.greenTextColor,
+    codeBackgroundColor: derivedColors.bgMix,
 
     borderColor: derivedColors.fadedText10,
     borderColorLight: derivedColors.fadedText05,
-    // Used for borders around dataframes and tables
+
     dataframeBorderColor: derivedColors.fadedText05,
+    dataframeHeaderBackgroundColor: derivedColors.bgMix,
 
     headingColor: genericColors.bodyText,
+
+    chartCategoricalColors: defaultCategoricalColors,
+    chartSequentialColors: defaultSequentialColors,
+    chartDivergingColors: defaultDivergingColors,
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function getDividerColors(theme: EmotionTheme): any {
-  const lightTheme = hasLightBackgroundColor(theme)
-  const blue = lightTheme ? theme.colors.blue60 : theme.colors.blue90
-  const green = lightTheme ? theme.colors.green60 : theme.colors.green90
-  const orange = lightTheme ? theme.colors.orange60 : theme.colors.orange90
-  const red = lightTheme ? theme.colors.red60 : theme.colors.red90
-  const violet = lightTheme ? theme.colors.purple60 : theme.colors.purple80
-  const gray = lightTheme ? theme.colors.gray40 : theme.colors.gray70
+type DividerColors = {
+  red: string
+  orange: string
+  yellow: string
+  blue: string
+  green: string
+  violet: string
+  gray: string
+  grey: string
+  rainbow: string
+}
+
+export function getDividerColors(theme: EmotionTheme): DividerColors {
+  // Handling of defaults based on light/dark theme in emotionBaseTheme/emotionDarkTheme
+  const {
+    redColor,
+    orangeColor,
+    yellowColor,
+    blueColor,
+    greenColor,
+    violetColor,
+    grayColor,
+  } = theme.colors
 
   return {
-    blue: blue,
-    green: green,
-    orange: orange,
-    red: red,
-    violet: violet,
-    gray: gray,
-    grey: gray,
-    rainbow: `linear-gradient(to right, ${red}, ${orange}, ${green}, ${blue}, ${violet})`,
+    red: redColor,
+    orange: orangeColor,
+    yellow: yellowColor,
+    blue: blueColor,
+    green: greenColor,
+    violet: violetColor,
+    gray: grayColor,
+    grey: grayColor,
+    rainbow: `linear-gradient(to right, ${redColor}, ${orangeColor}, ${yellowColor}, ${greenColor}, ${blueColor}, ${violetColor})`,
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function getMarkdownTextColors(theme: EmotionTheme): any {
+type ThemeBackgroundColors = {
+  redbg: string
+  orangebg: string
+  yellowbg: string
+  bluebg: string
+  greenbg: string
+  violetbg: string
+  purplebg: string
+  graybg: string
+  primarybg: string
+}
+
+export function getThemeBackgroundColors(
+  theme: EmotionTheme
+): ThemeBackgroundColors {
   const lightTheme = hasLightBackgroundColor(theme)
-  const primary = theme.colors.primary
-  const red = theme.colors.red
-  const yellow = theme.colors.yellow
-  const green = theme.colors.green
-  const blue = theme.colors.blue
-  const orange = lightTheme ? theme.colors.orange100 : theme.colors.orange60
-  const violet = lightTheme ? theme.colors.purple80 : theme.colors.purple50
-  const purple = lightTheme ? theme.colors.purple100 : theme.colors.purple80
-  const gray = lightTheme ? theme.colors.gray80 : theme.colors.gray70
+  const colors = theme.colors
+
+  return {
+    redbg: colors.redBackgroundColor,
+    orangebg: colors.orangeBackgroundColor,
+    yellowbg: colors.yellowBackgroundColor,
+    bluebg: colors.blueBackgroundColor,
+    greenbg: colors.greenBackgroundColor,
+    violetbg: colors.violetBackgroundColor,
+    purplebg: transparentize(
+      colors[lightTheme ? "purple90" : "purple80"],
+      lightTheme ? 0.9 : 0.7
+    ),
+    graybg: colors.grayBackgroundColor,
+    primarybg: transparentize(colors.primary, lightTheme ? 0.9 : 0.7),
+  }
+}
+
+type MarkdownTextColors = {
+  red: string
+  orange: string
+  yellow: string
+  blue: string
+  green: string
+  violet: string
+  purple: string
+  gray: string
+  primary: string
+}
+
+export function getMarkdownTextColors(
+  theme: EmotionTheme
+): MarkdownTextColors {
+  const lightTheme = hasLightBackgroundColor(theme)
+  const colors = theme.colors
+
+  const primary = colors.primary
+  const red = colors.redTextColor
+  const orange = colors.orangeTextColor
+  const yellow = colors.yellowTextColor
+  const blue = colors.blueTextColor
+  const green = colors.greenTextColor
+  const violet = colors.violetTextColor
+  const purple = lightTheme ? colors.purple100 : colors.purple80
+  const gray = colors.grayTextColor
 
   return {
     red: red,
@@ -144,44 +212,6 @@ export function getMarkdownTextColors(theme: EmotionTheme): any {
     purple: purple,
     gray: gray,
     primary: primary,
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function getMarkdownBgColors(theme: EmotionTheme): any {
-  const lightTheme = hasLightBackgroundColor(theme)
-
-  return {
-    redbg: transparentize(
-      theme.colors[lightTheme ? "red80" : "red60"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    orangebg: transparentize(theme.colors.yellow70, lightTheme ? 0.9 : 0.7),
-    yellowbg: transparentize(
-      theme.colors[lightTheme ? "yellow70" : "yellow50"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    greenbg: transparentize(
-      theme.colors[lightTheme ? "green70" : "green60"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    bluebg: transparentize(
-      theme.colors[lightTheme ? "blue70" : "blue60"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    violetbg: transparentize(
-      theme.colors[lightTheme ? "purple70" : "purple60"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    purplebg: transparentize(
-      theme.colors[lightTheme ? "purple90" : "purple80"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    graybg: transparentize(
-      theme.colors[lightTheme ? "gray70" : "gray50"],
-      lightTheme ? 0.9 : 0.7
-    ),
-    primarybg: transparentize(theme.colors.primary, lightTheme ? 0.9 : 0.7),
   }
 }
 
@@ -208,8 +238,7 @@ export function getBlue80(theme: EmotionTheme): string {
     ? theme.colors.blue80
     : theme.colors.blue40
 }
-function getBlueArrayAsc(theme: EmotionTheme): string[] {
-  const { colors } = theme
+function getBlueArrayAsc(colors: GenericColors): string[] {
   return [
     colors.blue10,
     colors.blue20,
@@ -223,8 +252,7 @@ function getBlueArrayAsc(theme: EmotionTheme): string[] {
     colors.blue100,
   ]
 }
-function getBlueArrayDesc(theme: EmotionTheme): string[] {
-  const { colors } = theme
+function getBlueArrayDesc(colors: GenericColors): string[] {
   return [
     colors.blue100,
     colors.blue90,
@@ -239,54 +267,54 @@ function getBlueArrayDesc(theme: EmotionTheme): string[] {
   ]
 }
 
-export function getSequentialColorsArray(theme: EmotionTheme): string[] {
-  return hasLightBackgroundColor(theme)
-    ? getBlueArrayAsc(theme)
-    : getBlueArrayDesc(theme)
-}
-
-export function getDivergingColorsArray(theme: EmotionTheme): string[] {
-  const { colors } = theme
+function defaultDivergingColorsArray(genericColors: GenericColors): string[] {
   return [
-    colors.red100,
-    colors.red90,
-    colors.red70,
-    colors.red50,
-    colors.red30,
-    colors.blue30,
-    colors.blue50,
-    colors.blue70,
-    colors.blue90,
-    colors.blue100,
+    genericColors.red100,
+    genericColors.red90,
+    genericColors.red70,
+    genericColors.red50,
+    genericColors.red30,
+    genericColors.blue30,
+    genericColors.blue50,
+    genericColors.blue70,
+    genericColors.blue90,
+    genericColors.blue100,
   ]
 }
 
-export function getCategoricalColorsArray(theme: EmotionTheme): string[] {
-  const { colors } = theme
-  return hasLightBackgroundColor(theme)
+function defaultSequentialColorsArray(genericColors: GenericColors): string[] {
+  return _isLightBackground(genericColors.bgColor)
+    ? getBlueArrayAsc(genericColors)
+    : getBlueArrayDesc(genericColors)
+}
+
+function defaultCategoricalColorsArray(
+  genericColors: GenericColors
+): string[] {
+  return _isLightBackground(genericColors.bgColor)
     ? [
-        colors.blue80,
-        colors.blue40,
-        colors.red80,
-        colors.red40,
-        colors.blueGreen80,
-        colors.green40,
-        colors.orange80,
-        colors.orange50,
-        colors.purple80,
-        colors.gray40,
+        genericColors.blue80,
+        genericColors.blue40,
+        genericColors.red80,
+        genericColors.red40,
+        genericColors.blueGreen80,
+        genericColors.green40,
+        genericColors.orange80,
+        genericColors.orange50,
+        genericColors.purple80,
+        genericColors.gray40,
       ]
     : [
-        colors.blue40,
-        colors.blue80,
-        colors.red40,
-        colors.red80,
-        colors.green40,
-        colors.blueGreen80,
-        colors.orange50,
-        colors.orange80,
-        colors.purple80,
-        colors.gray40,
+        genericColors.blue40,
+        genericColors.blue80,
+        genericColors.red40,
+        genericColors.red80,
+        genericColors.green40,
+        genericColors.blueGreen80,
+        genericColors.orange50,
+        genericColors.orange80,
+        genericColors.purple80,
+        genericColors.gray40,
       ]
 }
 
@@ -300,4 +328,98 @@ export function getIncreasingGreen(theme: EmotionTheme): string {
   return hasLightBackgroundColor(theme)
     ? theme.colors.blueGreen80
     : theme.colors.green40
+}
+
+// WeakMap allows garbage collection when themes are no longer referenced.
+const namedColorCache = new WeakMap<EmotionTheme, Map<string, string>>()
+const namedBgColorCache = new WeakMap<EmotionTheme, Map<string, string>>()
+
+/**
+ * Get or create the named color mapping for a theme.
+ * Built from NAMED_COLOR_CONFIG to ensure consistency.
+ */
+function getNamedColorMap(theme: EmotionTheme): Map<string, string> {
+  let colorMap = namedColorCache.get(theme)
+  if (!colorMap) {
+    colorMap = new Map()
+    for (const [name, config] of Object.entries(NAMED_COLOR_CONFIG)) {
+      const themeColor = theme.colors[config.colorKey]
+      if (typeof themeColor === "string") {
+        colorMap.set(name, themeColor)
+      }
+    }
+    namedColorCache.set(theme, colorMap)
+  }
+  return colorMap
+}
+
+/**
+ * Get or create the named background color mapping for a theme.
+ * Built from NAMED_COLOR_CONFIG and BACKGROUND_ONLY_COLORS.
+ */
+function getNamedBgColorMap(theme: EmotionTheme): Map<string, string> {
+  let colorMap = namedBgColorCache.get(theme)
+  if (!colorMap) {
+    const bgColors = getThemeBackgroundColors(theme)
+    colorMap = new Map()
+
+    // Add colors from main config that have background colors
+    for (const [name, config] of Object.entries(NAMED_COLOR_CONFIG)) {
+      if (config.bgColorKey) {
+        const bgColor = theme.colors[config.bgColorKey]
+        if (typeof bgColor === "string") {
+          colorMap.set(name, bgColor)
+        }
+      }
+    }
+
+    // Add primary background (computed, not from theme.colors directly)
+    colorMap.set("primary", bgColors.primarybg)
+
+    // Add background-only colors (like purple)
+    for (const [name, config] of Object.entries(BACKGROUND_ONLY_COLORS)) {
+      const bgColor = bgColors[config.bgColorKey as keyof typeof bgColors]
+      if (typeof bgColor === "string") {
+        colorMap.set(name, bgColor)
+      }
+    }
+
+    namedBgColorCache.set(theme, colorMap)
+  }
+  return colorMap
+}
+
+/**
+ * Resolve a named color to its theme color value.
+ * If the color is not a named color, returns it unchanged.
+ *
+ * Note: "purple" is not supported here (no purpleColor exists in the theme).
+ * Use "violet" instead. For background colors, both "purple" and "violet"
+ * are supported via resolveNamedBackgroundColor().
+ *
+ * @param color - The color string to resolve
+ * @param theme - The EmotionTheme containing color values
+ * @returns The resolved theme color or the original color if not a named color
+ */
+export function resolveNamedColor(color: string, theme: EmotionTheme): string {
+  const colorMap = getNamedColorMap(theme)
+  return colorMap.get(color.toLowerCase()) ?? color
+}
+
+/**
+ * Resolve a named color to its theme background color value.
+ * If the color is not a named color, returns it unchanged.
+ *
+ * Note: "purple" and "violet" have distinct background colors.
+ *
+ * @param color - The color string to resolve
+ * @param theme - The EmotionTheme containing color values
+ * @returns The resolved theme background color or the original color if not a named color
+ */
+export function resolveNamedBackgroundColor(
+  color: string,
+  theme: EmotionTheme
+): string {
+  const colorMap = getNamedBgColorMap(theme)
+  return colorMap.get(color.toLowerCase()) ?? color
 }

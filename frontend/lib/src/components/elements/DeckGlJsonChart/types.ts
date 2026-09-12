@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-import type { DeckProps } from "@deck.gl/core"
+import type { DeckProps, View } from "@deck.gl/core"
 
-import type { DeckGlJsonChart as DeckGlJsonChartProto } from "@streamlit/protobuf"
+import type {
+  DeckGlJsonChart as DeckGlJsonChartProto,
+  streamlit,
+} from "@streamlit/protobuf"
 
 import { WidgetStateManager } from "~lib/WidgetStateManager"
-
-export type StreamlitDeckProps = DeckProps & {
-  mapStyle?: string
-}
 
 type SerializedLayer = {
   /** @see https://deck.gl/docs/api-reference/json/conversion-reference */
@@ -34,8 +33,10 @@ type SerializedLayer = {
 
 export type ParsedDeckGlConfig = {
   layers: SerializedLayer[]
-  initialViewState: DeckProps["initialViewState"]
-  views: DeckProps["views"]
+  initialViewState: Record<string, unknown>
+  views?: unknown
+  /** GPU parameters from pydeck (`{ cull: true }` in examples). */
+  parameters?: DeckProps["parameters"]
   mapStyle?: string
   mapProvider?: string
   cartoKey?: string
@@ -46,15 +47,19 @@ export interface DeckGLProps {
   disableFullscreenMode?: boolean
   element: DeckGlJsonChartProto
   fragmentId: string | undefined
+  heightConfig?: streamlit.HeightConfig.$Properties | null
   widgetMgr: WidgetStateManager
+  widthConfig?: streamlit.WidthConfig.$Properties | null
 }
 
 export interface DeckObject {
-  initialViewState: {
+  initialViewState: Record<string, unknown> & {
     height: number
     width: number
   }
   layers: DeckProps["layers"]
+  views?: View | View[]
+  parameters?: DeckProps["parameters"]
   mapStyle?: string | Array<string>
   mapProvider?: string
   cartoKey?: string

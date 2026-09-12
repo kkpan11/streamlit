@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator, Mapping
 
     from streamlit.proto.WidgetStates_pb2 import WidgetState as WidgetStateProto
     from streamlit.proto.WidgetStates_pb2 import WidgetStates as WidgetStatesProto
@@ -58,18 +58,35 @@ class SafeSessionState:
         with self._lock:
             return self._state.register_widget(metadata, user_key)
 
-    def on_script_will_rerun(self, latest_widget_states: WidgetStatesProto) -> None:
+    def on_script_will_rerun(
+        self,
+        fresh_widget_states: WidgetStatesProto | None,
+        *,
+        replay_trigger_states: WidgetStatesProto | None = None,
+        replay_trigger_values: Mapping[str, Any] | None = None,
+    ) -> None:
         self._yield_callback()
         with self._lock:
             # TODO: rewrite this to copy the callbacks list into a local
             #  variable so that we don't need to hold our lock for the
             #  duration. (This will also allow us to downgrade our RLock
             #  to a Lock.)
-            self._state.on_script_will_rerun(latest_widget_states)
+            self._state.on_script_will_rerun(
+                fresh_widget_states,
+                replay_trigger_states=replay_trigger_states,
+                replay_trigger_values=replay_trigger_values,
+            )
 
-    def on_script_finished(self, widget_ids_this_run: set[str]) -> None:
+    def on_script_finished(
+        self,
+        widget_ids_this_run: frozenset[str],
+        *,
+        remove_stale_widgets: bool = True,
+    ) -> None:
         with self._lock:
-            self._state.on_script_finished(widget_ids_this_run)
+            self._state.on_script_finished(
+                widget_ids_this_run, remove_stale_widgets=remove_stale_widgets
+            )
 
     def maybe_check_serializable(self) -> None:
         with self._lock:
@@ -83,6 +100,14 @@ class SafeSessionState:
     def is_new_state_value(self, user_key: str) -> bool:
         with self._lock:
             return self._state.is_new_state_value(user_key)
+
+    def reset_state_value(self, user_key: str, value: Any | None) -> None:
+        """Reset a new session state value to a given value
+        without triggering the "state value cannot be modified" error.
+        """
+        self._yield_callback()
+        with self._lock:
+            self._state.reset_state_value(user_key, value)
 
     @property
     def filtered_state(self) -> dict[str, Any]:

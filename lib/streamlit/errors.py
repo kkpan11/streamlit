@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ruff: noqa: RUF027 - We allow template strings in localizable exception messages instead of f-strings.
+
 from __future__ import annotations
 
 import os
@@ -22,9 +24,10 @@ from streamlit import util
 if TYPE_CHECKING:
     from collections.abc import Collection
     from datetime import date, time
+    from traceback import StackSummary
 
 
-class Error(Exception):
+class Error(Exception):  # pragma: no cover - trivial base class
     """The base class for all exceptions thrown by Streamlit.
 
     Should be used for exceptions raised due to user errors (typically via
@@ -32,51 +35,42 @@ class Error(Exception):
     code.
     """
 
-    pass
+
+class StreamlitComponentRegistryError(Error):  # pragma: no cover - trivial subclass
+    """Exceptions raised while discovering or registering Streamlit components.
+
+    These errors occur during Streamlit startup when scanning installed
+    distributions for component metadata and registering them with the component
+    registry.
+    """
 
 
-class CustomComponentError(Error):
-    """Exceptions thrown in the custom components code path."""
-
-    pass
-
-
-class DeprecationError(Error):
-    pass
-
-
-class FragmentStorageKeyError(Error, KeyError):
+class FragmentStorageKeyError(Error, KeyError):  # pragma: no cover - trivial subclass
     """A KeyError raised when a KeyError is encountered during a FragmentStorage
     operation.
     """
 
-    pass
 
-
-class FragmentHandledException(Exception):  # noqa: N818
+class FragmentHandledException(Exception):  # noqa: N818  # pragma: no cover - trivial subclass
     """An exception that is raised by the fragment
     when it has handled the exception itself.
     """
 
-    pass
+
+class NoSessionContext(Error):  # noqa: N818  # pragma: no cover - trivial subclass
+    """Raised when a Streamlit command runs outside an active script session."""
 
 
-class NoStaticFiles(Error):  # noqa: N818
-    pass
-
-
-class NoSessionContext(Error):  # noqa: N818
-    pass
-
-
-class MarkdownFormattedException(Error):  # noqa: N818
+class MarkdownFormattedException(Error):  # noqa: N818  # pragma: no cover - trivial subclass
     """Exceptions with Markdown in their description.
 
     Instances of this class can use markdown in their messages, which will get
     nicely formatted on the frontend.
     """
 
-    pass
+
+class StreamlitMaxRetriesError(Error):  # pragma: no cover - trivial subclass
+    """An exception raised when a file or folder cannot be accessed after multiple retries."""
 
 
 class StreamlitAPIException(MarkdownFormattedException):
@@ -91,21 +85,49 @@ class StreamlitAPIException(MarkdownFormattedException):
     entries from the stack trace so that the user doesn't see a bunch of
     noise related to Streamlit internals.
 
+    Prefer a more specific subclass when one fits. ``error_id`` is an optional
+    stable telemetry identifier. When this base type is still right, pass a
+    kebab-case ``error_id`` so uncaught-exception telemetry can distinguish
+    error categories (``StreamlitAPIException:<error_id>``). Reuse the same id
+    when the same error is raised from multiple sites.
     """
+
+    def __init__(self, *args: Any, error_id: str | None = None) -> None:
+        # Do not put widget keys, file paths, or free-text values in error_id.
+        super().__init__(*args)
+        self.error_id = error_id
 
     def __repr__(self) -> str:
         return util.repr_(self)
 
 
-class DuplicateWidgetID(StreamlitAPIException):
-    pass
+class StreamlitDataframeConversionError(StreamlitAPIException):
+    """Raised when a value cannot be converted to a DataFrame or Arrow table."""
 
 
-class StreamlitAuthError(StreamlitAPIException):
-    pass
+class DuplicateWidgetID(StreamlitAPIException):  # pragma: no cover - trivial subclass
+    """Base class for duplicate element ID and key errors so ``except DuplicateWidgetID`` catches both."""
 
 
-class StreamlitDuplicateElementId(DuplicateWidgetID):
+class StreamlitAuthError(StreamlitAPIException):  # pragma: no cover - trivial subclass
+    """Raised when Streamlit authentication fails."""
+
+
+class StreamlitMissingAuthlibError(StreamlitAuthError):
+    """Raised when authentication features are used but Authlib is not installed
+    (or is older than the minimum supported version).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Authentication requires Authlib>=1.3.2. "
+            "Install it via `pip install streamlit[auth]`."
+        )
+
+
+class StreamlitDuplicateElementId(
+    DuplicateWidgetID
+):  # pragma: no cover - simple f-string
     """An exception raised when the auto-generated ID of an element is not unique."""
 
     def __init__(self, element_type: str) -> None:
@@ -119,7 +141,9 @@ class StreamlitDuplicateElementId(DuplicateWidgetID):
         )
 
 
-class StreamlitDuplicateElementKey(DuplicateWidgetID):
+class StreamlitDuplicateElementKey(
+    DuplicateWidgetID
+):  # pragma: no cover - simple f-string
     """An exception raised when the key of an element is not unique."""
 
     def __init__(self, user_key: str) -> None:
@@ -130,8 +154,10 @@ class StreamlitDuplicateElementKey(DuplicateWidgetID):
         )
 
 
-class UnserializableSessionStateError(StreamlitAPIException):
-    pass
+class UnserializableSessionStateError(
+    StreamlitAPIException
+):  # pragma: no cover - trivial subclass
+    """Raised when a session state value cannot be pickled."""
 
 
 class StreamlitAPIWarning(StreamlitAPIException, Warning):
@@ -140,6 +166,8 @@ class StreamlitAPIWarning(StreamlitAPIException, Warning):
     Note that this should not be "raised", but passed to st.exception
     instead.
     """
+
+    tacked_on_stack: StackSummary | None
 
     def __init__(self, *args: Any) -> None:
         super().__init__(*args)
@@ -153,21 +181,21 @@ class StreamlitAPIWarning(StreamlitAPIException, Warning):
         return util.repr_(self)
 
 
-class StreamlitModuleNotFoundError(StreamlitAPIWarning):
-    """Print a pretty message when a Streamlit command requires a dependency
-    that is not one of our core dependencies.
+class LocalizableStreamlitException(StreamlitAPIException):
+    """API exception with a format-string message and kwargs for localization.
+
+    Users can localize the message from ``exec_kwargs``, for example in an
+    ``on_script_error`` handler on ``st.App``. Kwargs are used for telemetry
+    only in a few specific cases (for example ``parameter``). ``error_id`` is
+    reserved for telemetry and is not interpolated into the message.
     """
 
-    def __init__(self, module_name: str, *args: Any) -> None:
-        message = (
-            f'This Streamlit command requires module "{module_name}" to be installed.'
-        )
-        super().__init__(message, *args)
-
-
-class LocalizableStreamlitException(StreamlitAPIException):
     def __init__(self, message: str, **kwargs: Any) -> None:
-        super().__init__((message).format(**kwargs))
+        # Treat error_id as a telemetry slug, not a message placeholder:
+        # extract it before formatting so it is not interpolated or stored
+        # in exec_kwargs.
+        error_id = kwargs.pop("error_id", None)
+        super().__init__((message).format(**kwargs), error_id=error_id)
         self._exec_kwargs = kwargs
 
     @property
@@ -175,45 +203,29 @@ class LocalizableStreamlitException(StreamlitAPIException):
         return self._exec_kwargs
 
 
-class StreamlitInvalidPageLayoutError(LocalizableStreamlitException):
-    """Exception raised when an invalid value is specified for layout."""
-
-    def __init__(self, layout: str) -> None:
-        super().__init__(
-            '`layout` must be `"centered"` or `"wide"` (got `"{layout}"`)',
-            layout=layout,
-        )
-
-
-class StreamlitInvalidSidebarStateError(LocalizableStreamlitException):
-    """Exception raised when an invalid value is specified for `initial_sidebar_state`."""
-
-    def __init__(self, initial_sidebar_state: str) -> None:
-        super().__init__(
-            '`initial_sidebar_state` must be `"auto"` or `"expanded"` or '
-            '`"collapsed"` (got `"{initial_sidebar_state}"`)',
-            initial_sidebar_state=initial_sidebar_state,
-        )
-
-
-class StreamlitInvalidMenuItemKeyError(LocalizableStreamlitException):
-    """Exception raised when an invalid key is specified."""
-
-    def __init__(self, key: str) -> None:
-        super().__init__(
-            'We only accept the keys: `"Get help"`, `"Report a bug"`, and `"About"` (`"{key}"` is not a valid key.)',
-            key=key,
-        )
-
-
 class StreamlitInvalidURLError(LocalizableStreamlitException):
-    """Exception raised when an invalid URL is specified for any of the menu items except for “About”."""
+    """Raised when a URL is malformed or uses an unsupported protocol."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        protocols: Collection[str] = ("http", "https", "mailto"),
+    ) -> None:
+        # mailto: has no authority component, so it is written as scheme:
+        # rather than scheme://.
+        prefixes = [
+            f'"{protocol}:"' if protocol == "mailto" else f'"{protocol}://"'
+            for protocol in protocols
+        ]
+        if len(prefixes) <= 2:
+            protocols_text = " or ".join(prefixes)
+        else:
+            protocols_text = f"{', '.join(prefixes[:-1])}, or {prefixes[-1]}"
         super().__init__(
-            '"{url}" is a not a valid URL. '
-            'You must use a fully qualified domain beginning with "http://", "https://", or "mailto:".',
+            '"{url}" is not a valid URL. '
+            "You must use a fully qualified domain beginning with {protocols}.",
             url=url,
+            protocols=protocols_text,
         )
 
 
@@ -227,28 +239,6 @@ class StreamlitInvalidColumnSpecError(LocalizableStreamlitException):
             "positive integer (number of columns) or a list of positive numbers (width ratios of the columns). "
             "See [documentation](https://docs.streamlit.io/develop/api-reference/layout/st.columns) "
             "for more information."
-        )
-
-
-class StreamlitInvalidVerticalAlignmentError(LocalizableStreamlitException):
-    """Exception raised when an invalid value is specified for vertical_alignment."""
-
-    def __init__(self, vertical_alignment: str) -> None:
-        super().__init__(
-            'The `vertical_alignment` argument to `st.columns` must be `"top"`, `"center"`, or `"bottom"`. \n'
-            "The argument passed was {vertical_alignment}.",
-            vertical_alignment=vertical_alignment,
-        )
-
-
-class StreamlitInvalidColumnGapError(LocalizableStreamlitException):
-    """Exception raised when an invalid value is specified for gap."""
-
-    def __init__(self, gap: str) -> None:
-        super().__init__(
-            'The `gap` argument to `st.columns` must be `"small"`, `"medium"`, `"large"`, or `"none"`. \n'
-            "The argument passed was {gap}.",
-            gap=gap,
         )
 
 
@@ -293,19 +283,19 @@ class StreamlitMixedNumericTypesError(LocalizableStreamlitException):
 
         error_message = "All numerical arguments must be of the same type."
 
-        if value:
+        if value is not None:
             value_type = type(value).__name__
             error_message += "\n`value` has {value_type} type."
 
-        if min_value:
+        if min_value is not None:
             min_value_type = type(min_value).__name__
             error_message += "\n`min_value` has {min_value_type} type."
 
-        if max_value:
+        if max_value is not None:
             max_value_type = type(max_value).__name__
             error_message += "\n`max_value` has {max_value_type} type."
 
-        if step:
+        if step is not None:
             step_type = type(step).__name__
             error_message += "\n`step` has {step_type} type."
 
@@ -348,6 +338,66 @@ class StreamlitValueAboveMaxError(LocalizableStreamlitException):
         )
 
 
+class StreamlitInvalidMinMaxError(LocalizableStreamlitException):
+    """Raised when ``min_value`` is greater than ``max_value``.
+
+    - ``st.slider`` swaps reversed bounds and raises this only for equal
+      bounds.
+    - ``st.date_input``, ``st.datetime_input``, and ``st.number_input``
+      reject reversed bounds. Equal bounds stay valid.
+    """
+
+    def __init__(self, min_value: object, max_value: object) -> None:
+        if min_value == max_value:
+            message = (
+                "The `min_value` and `max_value` parameters are both set to "
+                "{min_value}. They must not be equal."
+            )
+        else:
+            message = (
+                "The `min_value`, set to {min_value}, cannot be greater than "
+                "the `max_value`, set to {max_value}."
+            )
+        super().__init__(
+            message,
+            min_value=min_value,
+            max_value=max_value,
+        )
+
+
+class StreamlitValueOutOfRangeError(LocalizableStreamlitException):
+    """Raised when a parameter is outside a closed ``[min, max]`` interval.
+
+    Uncaught-exception telemetry appends the parameter name, for example
+    ``StreamlitValueOutOfRangeError:index``. Optional ``detail`` appears in
+    the error message only.
+    """
+
+    def __init__(
+        self,
+        parameter: str,
+        value: object,
+        min_value: object,
+        max_value: object,
+        *,
+        detail: str | None = None,
+    ) -> None:
+        message = (
+            "The `{parameter}` parameter, set to {value}, is outside the "
+            "required range [{min_value}, {max_value}]."
+        )
+        if detail:
+            message += " {detail}"
+        super().__init__(
+            message,
+            parameter=parameter,
+            value=value,
+            min_value=min_value,
+            max_value=max_value,
+            detail=detail,
+        )
+
+
 class StreamlitJSNumberBoundsError(LocalizableStreamlitException):
     """Exception raised when a number exceeds the Javascript limits."""
 
@@ -367,26 +417,89 @@ class StreamlitInvalidNumberFormatError(LocalizableStreamlitException):
         )
 
 
-# st.page_link
-class StreamlitMissingPageLabelError(LocalizableStreamlitException):
-    """Exception raised when a page_link is created without a label."""
+class StreamlitMissingRequiredParameterError(LocalizableStreamlitException):
+    """Raised when a required parameter is missing, ``None``, or empty.
 
-    def __init__(self) -> None:
+    Uncaught-exception telemetry appends the parameter name, for example
+    ``StreamlitMissingRequiredParameterError:label``.
+    """
+
+    def __init__(self, parameter: str, *, detail: str | None = None) -> None:
+        message = "The `{parameter}` parameter is required."
+        if detail:
+            message += " {detail}"
         super().__init__(
-            "The `label` param is required for external links used with `st.page_link` - please provide a `label`."
+            message,
+            parameter=parameter,
+            detail=detail,
+        )
+
+
+class StreamlitIncompatibleParametersError(LocalizableStreamlitException):
+    """Raised when two or more parameter uses cannot be combined.
+
+    Describe each conflict as a string. Include ``parameter=value`` when the
+    conflict depends on a value (for example ``wrap=False``); otherwise pass
+    only the parameter name (for example ``on_change``). These strings appear
+    only in the displayed error; uncaught-exception telemetry records only
+    the exception type.
+    """
+
+    def __init__(
+        self,
+        first_use: str,
+        second_use: str,
+        *other_uses: str,
+        explanation: str | None = None,
+    ) -> None:
+        uses = (first_use, second_use, *other_uses)
+        quoted = [f"`{use}`" for use in uses]
+        if len(quoted) == 2:
+            uses_text = f"{quoted[0]} and {quoted[1]}"
+        else:
+            uses_text = ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+        message = "{uses_text} cannot be used together."
+        if explanation:
+            message += " {explanation}"
+        super().__init__(
+            message,
+            uses_text=uses_text,
+            uses=list(uses),
+            explanation=explanation,
+        )
+
+
+class StreamlitQueryParamDictValueError(LocalizableStreamlitException):
+    """Exception raised when a query param value is a dictionary."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(
+            "Query param value for `{key}` cannot be set to a dictionary. "
+            "Provide a string or iterable of strings instead.",
+            key=key,
         )
 
 
 class StreamlitPageNotFoundError(LocalizableStreamlitException):
-    """Exception raised the linked page can not be found."""
+    """Raised when the linked page cannot be found."""
 
     def __init__(
-        self, page: str, main_script_directory: str, uses_pages_directory: bool
+        self,
+        page: str,
+        main_script_directory: str | None = None,
+        uses_pages_directory: bool = False,
     ) -> None:
+        if main_script_directory is None:
+            super().__init__(
+                "Unable to create Page. The file `{page}` could not be found.",
+                page=page,
+            )
+            return
+
         directory = os.path.basename(main_script_directory)
 
         message = (
-            "Could not find page: `{page}`. You must provide a `StreamlitPage` "
+            "Could not find page: `{page}`. You must provide a `Page` "
             "object or file path relative to the entrypoint file. Only pages "
             "previously defined by `st.Page` and passed to `st.navigation` are "
             "allowed."
@@ -406,14 +519,65 @@ class StreamlitPageNotFoundError(LocalizableStreamlitException):
         )
 
 
-# policies
-class StreamlitFragmentWidgetsNotAllowedOutsideError(LocalizableStreamlitException):
-    """Exception raised when the fragment attempts to write to an element outside of its container."""
+# Bidirectional Components
+class BidiComponentError(
+    LocalizableStreamlitException
+):  # pragma: no cover - trivial base class
+    """Base class for bidirectional (custom components v2) component errors.
+
+    ``except BidiComponentError`` catches all specialized bidi errors.
+    """
+
+
+class BidiComponentInvalidIdError(BidiComponentError):
+    """Exception raised when an invalid ID component is provided."""
+
+    def __init__(self, part: str, delimiter: str) -> None:
+        super().__init__(
+            "The `{part}` of a bidirectional component's ID must not contain "
+            "the delimiter sequence `{delimiter}`.",
+            part=part,
+            delimiter=delimiter,
+        )
+
+
+class BidiComponentInvalidCallbackNameError(BidiComponentError):
+    """Exception raised when a callback with an invalid name is provided."""
+
+    def __init__(self, callback_name: str) -> None:
+        super().__init__(
+            "The callback name `'{callback_name}'` is not allowed. "
+            "Callback names must follow the pattern `on_{{event_name}}_change` "
+            "where `event_name` is not empty.",
+            callback_name=callback_name,
+        )
+
+
+class BidiComponentInvalidDefaultKeyError(BidiComponentError):
+    """Exception raised when an invalid key is provided in the default dict."""
+
+    def __init__(self, state_key: str, available_keys: list[str]) -> None:
+        super().__init__(
+            "Key `'{state_key}'` in `default` is not a valid state name. "
+            "Valid state names are those with corresponding `on_{{state_name}}_change` "
+            "callbacks. Available state names: `{available_keys}`",
+            state_key=state_key,
+            available_keys=available_keys or "none",
+        )
+
+
+class BidiComponentUnserializableDataError(BidiComponentError):
+    """Exception raised when data provided to a bidirectional component cannot be serialized."""
 
     def __init__(self) -> None:
-        super().__init__("Fragments cannot write widgets to outside containers.")
+        super().__init__(
+            "The `data` provided to the bidirectional component could not be serialized. "
+            "Please ensure the data is JSON-serializable, or is a supported data structure "
+            "like a pandas DataFrame."
+        )
 
 
+# policies
 class StreamlitInvalidFormCallbackError(LocalizableStreamlitException):
     """Exception raised a `on_change` callback is set on any element in a form except for
     the `st.form_submit_button`.
@@ -426,6 +590,10 @@ class StreamlitInvalidFormCallbackError(LocalizableStreamlitException):
         )
 
 
+class StreamlitInvalidLayoutContextError(StreamlitAPIException):
+    """Raised when a command is used in a disallowed layout, form, or dialog context."""
+
+
 class StreamlitValueAssignmentNotAllowedError(LocalizableStreamlitException):
     """Exception raised when trying to set values where writes are not allowed."""
 
@@ -436,14 +604,27 @@ class StreamlitValueAssignmentNotAllowedError(LocalizableStreamlitException):
         )
 
 
+class StreamlitWidgetAlreadyInstantiatedError(LocalizableStreamlitException):
+    """Raised when session state is assigned after the widget is created."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(
+            "`st.session_state.{key}` cannot be modified after the widget"
+            " with key `{key}` is instantiated.",
+            key=key,
+        )
+
+
 class StreamlitInvalidColorError(LocalizableStreamlitException):
+    """Raised when a color is not a valid hex string or RGB(A) sequence."""
+
     def __init__(
         self, color: str | Collection[Any] | tuple[int, int, int, int]
     ) -> None:
         super().__init__(
             "This does not look like a valid color: {color}.\n\n"
-            "Colors must be in one of the following formats:"
-            "* Hex string with 3, 4, 6, or 8 digits. Example: `'#00ff00'`"
+            "Colors must be in one of the following formats:\n\n"
+            "* Hex string with 3, 4, 6, or 8 digits. Example: `'#00ff00'`\n"
             "* List or tuple with 3 or 4 components. Example: `[1.0, 0.5, 0, 0.2]`",
             color=repr(color),
         )
@@ -454,26 +635,25 @@ class StreamlitBadTimeStringError(LocalizableStreamlitException):
 
     def __init__(self, time_string: str) -> None:
         super().__init__(
-            "Time string doesn't look right. It should be formatted as"
+            "Time string doesn't look right. It should be formatted as "
             "`'1d2h34m'` or `2 days`, for example. Got: {time_string}",
             time_string=time_string,
         )
 
 
-class StreamlitSecretNotFoundError(LocalizableStreamlitException, FileNotFoundError):
-    """Exception raised when a secret cannot be found or parsed in the secrets.toml file."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
+class StreamlitSecretNotFoundError(
+    LocalizableStreamlitException, FileNotFoundError
+):  # pragma: no cover - trivial subclass
+    """Exception raised when a secret cannot be found or a secrets source cannot be parsed."""
 
 
 class StreamlitInvalidWidthError(LocalizableStreamlitException):
     """Exception raised when an invalid width value is provided."""
 
     def __init__(self, width: Any, allow_content: bool = False) -> None:
-        valid_values = "an integer (pixels) or 'stretch'"
+        valid_values = "a positive integer (pixels) or 'stretch'"
         if allow_content:
-            valid_values = "an integer (pixels), 'stretch', or 'content'"
+            valid_values = "a positive integer (pixels), 'stretch', or 'content'"
 
         super().__init__(
             "Invalid width value: {width}. Width must be either {valid_values}.",
@@ -486,12 +666,104 @@ class StreamlitInvalidHeightError(LocalizableStreamlitException):
     """Exception raised when an invalid height value is provided."""
 
     def __init__(self, height: Any, allow_content: bool = False) -> None:
-        valid_values = "an integer (pixels) or 'stretch'"
+        valid_values = "a positive integer (pixels) or 'stretch'"
         if allow_content:
-            valid_values = "an integer (pixels), 'stretch', or 'content'"
+            valid_values = "a positive integer (pixels), 'stretch', or 'content'"
 
         super().__init__(
             "Invalid height value: {height}. Height must be either {valid_values}.",
             height=repr(height),
             valid_values=valid_values,
+        )
+
+
+class StreamlitValueError(LocalizableStreamlitException):
+    """Raised when a parameter receives a value outside a known set of options.
+
+    ``valid_values`` is the user-facing list of supported values: Literal /
+    enum-like options, or a short description of an open-ended constraint (for
+    example ``a positive duration``). For a closed ``[min, max]`` interval,
+    use ``StreamlitValueOutOfRangeError``. Uncaught-exception telemetry
+    appends the parameter name, for example ``StreamlitValueError:width``.
+    Optional ``detail`` appears in the error message only.
+    """
+
+    def __init__(
+        self,
+        parameter: str,
+        valid_values: Collection[str],
+        *,
+        detail: str | None = None,
+    ) -> None:
+        message = "Invalid `{parameter}` value. Supported values: {valid_values}."
+        if detail:
+            message += " {detail}"
+        super().__init__(
+            message,
+            parameter=parameter,
+            valid_values=", ".join(valid_values),
+            detail=detail,
+        )
+
+
+class StreamlitInvalidParameterTypeError(LocalizableStreamlitException):
+    """Raised when a parameter has an unsupported type."""
+
+    def __init__(
+        self,
+        parameter: str,
+        provided_type: str,
+        expected_types: list[str],
+        *,
+        detail: str | None = None,
+    ) -> None:
+        message = (
+            "Invalid `{parameter}` type. Expected one of: {expected_types}. "
+            "Provided type: {provided_type}."
+        )
+        if detail:
+            message += " {detail}"
+        super().__init__(
+            message,
+            parameter=parameter,
+            expected_types=", ".join(expected_types),
+            provided_type=provided_type,
+            detail=detail,
+        )
+
+
+class StreamlitDefaultNotInOptionsError(LocalizableStreamlitException):
+    """Raised when a default value is not among the provided options."""
+
+    def __init__(self, value: Any) -> None:
+        super().__init__(
+            "The default value '{value}' is not part of the options. "
+            "Please make sure that every default value also exists in the options.",
+            value=value,
+        )
+
+
+# config
+class StreamlitInvalidThemeError(LocalizableStreamlitException):
+    """Base class for theme errors so ``except StreamlitInvalidThemeError`` also
+    catches invalid option and section errors.
+    """
+
+
+class StreamlitInvalidThemeOptionError(
+    StreamlitInvalidThemeError
+):  # pragma: no cover - trivial subclass
+    """Exception raised when an invalid theme config option is provided."""
+
+
+class StreamlitInvalidThemeSectionError(StreamlitInvalidThemeError):
+    """Exception raised when an invalid theme section is provided."""
+
+    def __init__(self, option_name: str, file_path_or_url: str = "config.toml") -> None:
+        super().__init__(
+            "Invalid theme section: `{option_name}` found in {file_path_or_url}. "
+            "Valid sections are: `theme`, `theme.light`, `theme.dark`, `theme.sidebar`, `theme.light.sidebar`, "
+            "and `theme.dark.sidebar`.",
+            option_name=option_name,
+            file_path_or_url=file_path_or_url,
         )

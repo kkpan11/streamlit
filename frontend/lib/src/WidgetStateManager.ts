@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,32 +14,115 @@
  * limitations under the License.
  */
 
-import { Draft, default as produce } from "immer"
-import { Long, util } from "protobufjs"
+import { Draft, produce } from "immer"
+import { getLogger } from "loglevel"
+import { type Long, util } from "protobufjs/minimal"
+import queryString from "query-string"
 import { Signal, SignalConnection } from "typed-signals"
 
 import {
+  type ArrowTable,
   ChatInputValue,
   DoubleArray,
-  IArrowTable,
-  IChatInputValue,
-  IFileUploaderState,
+  type FileUploaderState,
   SInt64Array,
   StringArray,
+  StringTriggerValue,
   Button as SubmitButtonProto,
   WidgetState,
   WidgetStates,
 } from "@streamlit/protobuf"
 
-import { isValidFormId, notNullOrUndefined } from "~lib/util/utils"
+import { assertNever } from "~lib/util/assertNever"
+import {
+  isNullOrUndefined,
+  isValidFormId,
+  notNullOrUndefined,
+} from "~lib/util/utils"
+
+/**
+ * Describes the origin and intended delivery of a widget value change.
+ */
 export interface Source {
-  fromUi: boolean
+  /**
+   * True if the change came from a user interaction in the browser; false for
+   * programmatic writes (e.g. mount defaults, session_state updates, or
+   * backend-driven changes).
+   *
+   * This is provenance only: it controls form pending-change batching and
+   * URL-sync eligibility. It does NOT by itself decide whether a rerun is
+   * scheduled — see `triggerRerun` (which defaults to this value when omitted).
+   */
+  fromUser: boolean
+
+  /**
+   * Whether the change should be committed to the backend by scheduling a
+   * rerun. Defaults to `fromUser` when omitted.
+   *
+   * Widgets using `on_change="ignore"` pass `false` to buffer the value in the
+   * frontend without rerunning; the value is delivered on the next rerun
+   * triggered by another interaction. This flag is ignored for widgets inside a
+   * form, because the form owns commit timing (values are sent on submit).
+   */
+  triggerRerun?: boolean
+}
+
+/**
+ * Whether a value change should be committed to the backend by scheduling a
+ * rerun. Defaults to the change's provenance (`fromUser`) unless a widget
+ * explicitly overrides delivery (e.g. `on_change="ignore"` passes `false`).
+ */
+function shouldTriggerRerun(source: Source): boolean {
+  return source.triggerRerun ?? source.fromUser
 }
 
 /** Common widget protobuf fields that are used by the WidgetStateManager. */
 export interface WidgetInfo {
   id: string
   formId?: string
+}
+
+/**
+ * Metadata describing a single widget value change (a write).
+ *
+ * Bundles the widget's scope (form/fragment) together with the change's
+ * provenance and delivery so callers pass them by name rather than as
+ * easily-swapped positional arguments.
+ */
+export interface WidgetUpdate extends Source {
+  /** Form the widget belongs to; `undefined` or `""` means it is not in a form. */
+  formId: string | undefined
+  /** Fragment scope for the resulting rerun; `undefined` means a full-app rerun. */
+  fragmentId: string | undefined
+}
+
+type FormSubmitValidator = () => boolean
+
+/**
+ * Valid widget value types for query param bindings.
+ * These correspond to the WidgetState proto value field names.
+ */
+export type WidgetValueType =
+  | "bool_value"
+  | "int_value"
+  | "double_value"
+  | "string_value"
+  | "string_array_value"
+  | "int_array_value"
+  | "double_array_value"
+
+/**
+ * Binding information for a widget that syncs to URL query parameters.
+ */
+interface QueryParamBinding {
+  paramKey: string
+  valueType: WidgetValueType
+  defaultValue: unknown
+  // Whether the widget allows clearing to empty state.
+  // When true, empty values write ?foo= to URL; when false, empty clears the param.
+  clearable: boolean
+  urlFormat?: "comma" | "repeated" // How to serialize arrays
+  dateType?: DateType
 }
 
 /**
@@ -67,6 +150,40 @@ export function createFormsData(): FormsData {
     formsWithPendingChanges: new Set(),
     formsWithUploads: new Set(),
     submitButtons: new Map(),
+  }
+}
+
+const LOG = getLogger("WidgetStateManager")
+
+// Structurally identical to MomentKind in formatMoment.ts, but kept separate:
+// MomentKind is for display formatting (moment.js), DateType is for URL
+// serialization (ISO strings). Coupling them would create an unrelated
+// dependency between URL binding logic and the display formatting layer.
+export type DateType = "date" | "time" | "datetime"
+
+/**
+ * Convert a microsecond timestamp (as used by date/time sliders) to an ISO
+ * string suitable for URL query parameters. The format matches the ISO
+ * conventions used by st.date_input and st.time_input.
+ *
+ * Python datetime microseconds → JS milliseconds → Date UTC → ISO substring.
+ */
+export function microsToIsoString(micros: number, dateType: DateType): string {
+  // micros are UTC-based; Date constructor interprets ms as UTC.
+  const iso = new Date(micros / 1000).toISOString()
+  switch (dateType) {
+    case "date":
+      return iso.slice(0, 10) // "YYYY-MM-DD"
+    case "time": {
+      // Include seconds when non-zero to preserve sub-minute precision.
+      const hhmmss = iso.slice(11, 19) // "HH:mm:ss"
+      return hhmmss.endsWith(":00") ? hhmmss.slice(0, 5) : hhmmss
+    }
+    case "datetime": {
+      // Include seconds when non-zero to preserve sub-minute precision.
+      const secs = iso.slice(17, 19)
+      return secs === "00" ? iso.slice(0, 16) : iso.slice(0, 19)
+    }
   }
 }
 
@@ -141,6 +258,8 @@ export class WidgetStateDict {
 class FormState {
   public readonly widgetStates = new WidgetStateDict()
 
+  public readonly submitValidators = new Map<string, FormSubmitValidator>()
+
   /** True if the form was created with the clear_on_submit flag. */
   public clearOnSubmit = false
 
@@ -190,8 +309,55 @@ export class WidgetStateManager {
   // A dictionary that maps elementId -> element state keys -> element state values.
   // This is used to store frontend-only state for elements.
   // This state is not never sent to the server.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  private readonly elementStates = new Map<string, Map<string, any>>()
+  private readonly elementStates = new Map<string, Map<string, unknown>>()
+
+  /**
+   * Debouncing helpers for trigger widgets.
+   *
+   * Multiple calls to `setTriggerValue` that happen within the same
+   * JavaScript macrotask (for example, when a single click handler invokes
+   * `setTriggerValue` several times for different trigger names) should be
+   * batched into a single `updateWidgets` message. Otherwise, each call would
+   * schedule its own `setTimeout(…, 0)` which results in multiple
+   * `updateWidgets` messages being sent in quick succession. The Streamlit
+   * backend only handles the *latest* message before rerunning the script,
+   * which means earlier triggers can be lost. We fix this by batching.
+   */
+  private readonly pendingTriggerIds = new Set<string>()
+
+  /** Promise resolvers that should run once the pending trigger batch has
+   *  been flushed to the backend. */
+  private triggerFlushResolvers: Array<() => void> = []
+
+  /** Indicates whether we already scheduled a macrotask-level flush. */
+  private flushScheduled = false
+
+  /** The fragmentId associated with the currently scheduled flush (if any). */
+  private scheduledFragmentId: string | undefined
+
+  /**
+   * Tracks whether we've already logged a mixed-fragmentId warning for the
+   * currently scheduled batch. This prevents spamming the console if multiple
+   * conflicting calls happen in the same macrotask.
+   */
+  private hasFragmentIdConflict = false
+
+  /**
+   * Registry of widgets bound to URL query parameters.
+   * Maps widgetId -> QueryParamBinding
+   */
+  private readonly boundWidgets = new Map<string, QueryParamBinding>()
+
+  /**
+   * Reverse lookup: paramKey -> widgetId
+   */
+  private readonly paramKeyToWidgetId = new Map<string, string>()
+
+  /**
+   * Callback to notify App.tsx when query params change.
+   * This keeps App's queryParams state in sync with the URL.
+   */
+  private onQueryParamsChange?: (queryString: string) => void
 
   constructor(props: Props) {
     this.props = props
@@ -224,14 +390,39 @@ export class WidgetStateManager {
   }
 
   /**
+   * Registers a sync form-submit gate for `widgetId`. On submit, every
+   * registered validator runs (no short-circuit); if any returns `false`,
+   * the form submit is aborted after every validator has run.
+   */
+  public addFormSubmitValidator(
+    formId: string,
+    widgetId: string,
+    validator: FormSubmitValidator
+  ): void {
+    this.getOrCreateFormState(formId).submitValidators.set(widgetId, validator)
+  }
+
+  public removeFormSubmitValidator(formId: string, widgetId: string): void {
+    // Use a non-creating lookup here: this runs from the widget's unmount
+    // cleanup, where the form may already have been evicted (e.g. the form was
+    // removed from the page before this widget unmounts). Calling
+    // `getOrCreateFormState` would resurrect a phantom, empty `FormState` that
+    // is never submitted or cleaned up, so we no-op when the form is gone.
+    this.forms.get(formId)?.submitValidators.delete(widgetId)
+  }
+
+  /**
    * Commit pending changes for widgets that belong to the given form,
    * and send a rerunBackMsg to the server.
+   *
+   * @returns `true` if the form was submitted, or `false` if a registered
+   * form-submit validator blocked the submit.
    */
   public submitForm(
     formId: string,
     fragmentId: string | undefined,
     actualSubmitButton?: WidgetInfo
-  ): void {
+  ): boolean {
     if (!isValidFormId(formId)) {
       // This should never get thrown - only FormSubmitButton calls this
       // function.
@@ -240,6 +431,15 @@ export class WidgetStateManager {
     }
 
     const form = this.getOrCreateFormState(formId)
+
+    // Run every registered validator (don't short-circuit) so that all invalid
+    // fields can surface their error state, then abort the submit if any failed.
+    const validationResults = Array.from(form.submitValidators.values()).map(
+      validator => validator()
+    )
+    if (validationResults.some(passed => !passed)) {
+      return false
+    }
 
     const submitButtons = this.formsData.submitButtons.get(formId)
 
@@ -256,7 +456,7 @@ export class WidgetStateManager {
 
     if (selectedSubmitButton) {
       this.createWidgetState(selectedSubmitButton, {
-        fromUi: true,
+        fromUser: true,
       }).triggerValue = true
     }
 
@@ -280,55 +480,146 @@ export class WidgetStateManager {
     if (form.clearOnSubmit) {
       form.formCleared.emit()
     }
-  }
 
-  /* Sometimes users change an input field and directly click on a button - which uses the trigger value -
-   * to trigger a rerun. We wrap the code that sends the trigger update in `setTimeout` so that trigger-based
-   * updates will be executed at the end of JavaScript's event loop. Callbacks for other elements, for example,
-   * the onBlur event of an input field, will be deterministically executed first in the event loop since they
-   * were encountered first in the sequential execution and will be executed FIFO from the task queue.
-   *
-   * Returns a promise that is resolved as soon as the timeout was triggered, mainly to make this easier to test.
-   * in our unit tests.
-   */
-  private setTriggerValueAtEndOfEventLoop(
-    widget: WidgetInfo,
-    source: Source,
-    fragmentId: string | undefined
-  ): Promise<void> {
-    return new Promise(resolve => {
-      setTimeout(() => {
-        this.onWidgetValueChanged(widget.formId, source, fragmentId)
-        this.deleteWidgetState(widget.id)
-        resolve()
-      }, 0)
-    })
-  }
-
-  public setChatInputValue(
-    widget: WidgetInfo,
-    value: IChatInputValue,
-    source: Source,
-    fragmentId: string | undefined
-  ): void {
-    this.createWidgetState(widget, source).chatInputValue = new ChatInputValue(
-      value
-    )
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
-    this.deleteWidgetState(widget.id)
+    return true
   }
 
   /**
-   * Sets the trigger value for the given widget ID to true, sends a rerunScript message
-   * to the server, and then immediately unsets the trigger value.
+   * Sets a ChatInput value. ChatInput is trigger-like: it always schedules a
+   * flush and ignores `update.triggerRerun`.
+   *
+   * The value is sent to the backend exactly once and then cleared so that
+   * subsequent reruns receive an "empty" value. As with `setTriggerValue`, the
+   * write is coalesced into a macrotask-level batch to avoid race conditions
+   * when multiple updates are emitted within the same tick.
    */
-  public setTriggerValue(
-    widget: WidgetInfo,
-    source: Source,
-    fragmentId: string | undefined
+  public setChatInputValue(
+    elementId: string,
+    value: ChatInputValue.$Properties,
+    update: WidgetUpdate
+  ): void {
+    // 1. Store the value in a temporary WidgetState proto.
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).chatInputValue = new ChatInputValue(
+      value
+    )
+
+    // 2. Mark this widget ID so that it is cleaned-up after the pending
+    //    batch flush. The `scheduleFlush` helper already takes care of
+    //    deleting all IDs present in `pendingTriggerIds` once the update
+    //    message has been sent.
+    this.pendingTriggerIds.add(elementId)
+
+    // 3. Schedule (or reuse) a macrotask-level flush so that ChatInput
+    //    updates are coalesced with other trigger/value updates that happen
+    //    during the same event loop tick.
+    this.scheduleFlush(update.fragmentId)
+  }
+
+  /**
+   * Sets a string trigger value for a widget. String trigger values behave
+   * like boolean triggers - they are sent to the backend once and then
+   * auto-reset to null after each script run. Use this for trigger-based
+   * widgets that need to return a string value (e.g., menu button selections).
+   *
+   * Like other trigger setters, this always schedules a flush and ignores
+   * `update.triggerRerun`.
+   */
+  public setStringTriggerValue(
+    elementId: string,
+    value: string,
+    update: WidgetUpdate
+  ): void {
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).stringTriggerValue =
+      new StringTriggerValue({ data: value })
+
+    this.pendingTriggerIds.add(elementId)
+    this.scheduleFlush(update.fragmentId)
+  }
+
+  /**
+   * 1. Boolean trigger
+   *    setTriggerValue(elementId, update)
+   *
+   * 2. Payload (JSON-encoded) trigger
+   *    setTriggerValue(elementId, update, payload)
+   *
+   *    `payload` can be any JSON-serialisable value. For Bidi Component v2
+   *    we always transport payloads via the protobuf `json_trigger_value`
+   *    field as a JSON-stringified array of payload objects. Multiple calls
+   *    within the same macrotask are batched into that array. If `payload`
+   *    is omitted (or `undefined`) we fall back to the boolean
+   *    `trigger_value=true` behaviour.
+   *
+   * Note: a trigger only exists during the rerun it causes, so there is nothing
+   * to buffer — `update.triggerRerun` is intentionally ignored here and a flush
+   * is always scheduled.
+   */
+
+  public setTriggerValue<T extends Record<string, unknown>>(
+    elementId: string,
+    update: WidgetUpdate,
+    value?: T
   ): Promise<void> {
-    this.createWidgetState(widget, source).triggerValue = true
-    return this.setTriggerValueAtEndOfEventLoop(widget, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    // If we already have a pending trigger for this widget in the current
+    // macrotask, append to it instead of overwriting so multiple triggers are
+    // delivered in a single backend message.
+    let widgetState = this.getWidgetState(widget)
+    if (widgetState === undefined) {
+      widgetState = this.createWidgetState(widget, update)
+    }
+
+    if (value === undefined) {
+      // Simple boolean trigger.
+      widgetState.triggerValue = true
+    } else {
+      // Custom Components v2: always encode payloads as a JSON array.
+      // To batch multiple trigger events in the same macrotask, we store
+      // payloads as a JSON-stringified array. On each call, we parse
+      // the existing string, append the new payload, and re-stringify.
+      const nextPayloadObject = value
+
+      try {
+        if (isNullOrUndefined(widgetState.jsonTriggerValue)) {
+          // First payload -> start an array.
+          widgetState.jsonTriggerValue = JSON.stringify([nextPayloadObject])
+        } else {
+          // Subsequent payloads -> append to existing array
+          const prevRaw = widgetState.jsonTriggerValue
+          const prevParsed = JSON.parse(prevRaw)
+          const prevArray = Array.isArray(prevParsed)
+            ? prevParsed
+            : [prevParsed]
+          prevArray.push(nextPayloadObject)
+          widgetState.jsonTriggerValue = JSON.stringify(prevArray)
+        }
+      } catch (error) {
+        // In the unlikely event prior state was not valid JSON, fall back to a 2-item array.
+        LOG.error(
+          "Failed to parse or stringify widgetState.jsonTriggerValue:",
+          error
+        )
+        widgetState.jsonTriggerValue = JSON.stringify([
+          widgetState.jsonTriggerValue,
+          nextPayloadObject,
+        ])
+      }
+    }
+
+    // --------------------------------------------------------------
+    // Batch trigger updates fired during the same JavaScript macrotask.
+    // --------------------------------------------------------------
+    this.pendingTriggerIds.add(elementId)
+
+    return new Promise(resolve => {
+      // Queue resolver so callers still get the same promise-based API.
+      this.triggerFlushResolvers.push(resolve)
+
+      // Schedule (or reuse) a macrotask-level flush.
+      this.scheduleFlush(update.fragmentId)
+    })
   }
 
   public getBoolValue(widget: WidgetInfo): boolean | undefined {
@@ -341,13 +632,14 @@ export class WidgetStateManager {
   }
 
   public setBoolValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: boolean,
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).boolValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).boolValue = value
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public getIntValue(widget: WidgetInfo): number | undefined {
@@ -360,13 +652,14 @@ export class WidgetStateManager {
   }
 
   public setIntValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: number | null,
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).intValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).intValue = value
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public getDoubleValue(widget: WidgetInfo): number | undefined {
@@ -379,13 +672,14 @@ export class WidgetStateManager {
   }
 
   public setDoubleValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: number | null,
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).doubleValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).doubleValue = value
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public getStringValue(widget: WidgetInfo): string | undefined {
@@ -398,25 +692,27 @@ export class WidgetStateManager {
   }
 
   public setStringValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: string | null,
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).stringValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).stringValue = value
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public setStringArrayValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: string[],
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).stringArrayValue = new StringArray({
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).stringArrayValue = new StringArray({
       data: value,
     })
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public getStringArrayValue(widget: WidgetInfo): string[] | undefined {
@@ -448,15 +744,30 @@ export class WidgetStateManager {
   }
 
   public setDoubleArrayValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: number[],
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).doubleArrayValue = new DoubleArray({
-      data: value,
+    const widget = { id: elementId, formId: update.formId }
+    // Filter out invalid values (NaN, undefined, null) before storing.
+    const validValue = value.filter(
+      v => v !== undefined && v !== null && !Number.isNaN(v)
+    )
+    // If all values are invalid, preserve previous state and warn.
+    // This can happen if user code passes NaN values (e.g., from empty DataFrame operations).
+    if (validValue.length === 0) {
+      LOG.warn(
+        `setDoubleArrayValue: All values were invalid (NaN/null/undefined) ` +
+          `for widget "${elementId}". Preserving previous state.`
+      )
+      this.maybeSyncValueToUrl(widget, update, [])
+      return
+    }
+    this.createWidgetState(widget, update).doubleArrayValue = new DoubleArray({
+      data: validValue,
     })
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, validValue)
   }
 
   public getIntArrayValue(widget: WidgetInfo): number[] | undefined {
@@ -474,15 +785,16 @@ export class WidgetStateManager {
   }
 
   public setIntArrayValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: number[],
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).intArrayValue = new SInt64Array({
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).intArrayValue = new SInt64Array({
       data: value,
     })
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    this.onWidgetValueChanged(update)
+    this.maybeSyncValueToUrl(widget, update, value)
   }
 
   public getJsonValue(widget: WidgetInfo): string | undefined {
@@ -495,27 +807,28 @@ export class WidgetStateManager {
   }
 
   public setJsonValue(
-    widget: WidgetInfo,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    value: any,
-    source: Source,
-    fragmentId: string | undefined
+    elementId: string,
+    value: unknown,
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).jsonValue = JSON.stringify(value)
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).jsonValue = JSON.stringify(value)
+    this.onWidgetValueChanged(update)
   }
 
   public setArrowValue(
-    widget: WidgetInfo,
-    value: IArrowTable,
-    source: Source,
-    fragmentId: string | undefined
+    elementId: string,
+    value: ArrowTable.$Properties,
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).arrowValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).arrowValue = value
+    this.onWidgetValueChanged(update)
   }
 
-  public getArrowValue(widget: WidgetInfo): IArrowTable | undefined {
+  public getArrowValue(
+    widget: WidgetInfo
+  ): ArrowTable.$Properties | undefined {
     const state = this.getWidgetState(widget)
     if (
       notNullOrUndefined(state) &&
@@ -529,13 +842,13 @@ export class WidgetStateManager {
   }
 
   public setBytesValue(
-    widget: WidgetInfo,
+    elementId: string,
     value: Uint8Array,
-    source: Source,
-    fragmentId: string | undefined
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).bytesValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).bytesValue = value
+    this.onWidgetValueChanged(update)
   }
 
   public getBytesValue(widget: WidgetInfo): Uint8Array | undefined {
@@ -548,24 +861,24 @@ export class WidgetStateManager {
   }
 
   public setFileUploaderStateValue(
-    widget: WidgetInfo,
-    value: IFileUploaderState,
-    source: Source,
-    fragmentId: string | undefined
+    elementId: string,
+    value: FileUploaderState.$Properties,
+    update: WidgetUpdate
   ): void {
-    this.createWidgetState(widget, source).fileUploaderStateValue = value
-    this.onWidgetValueChanged(widget.formId, source, fragmentId)
+    const widget = { id: elementId, formId: update.formId }
+    this.createWidgetState(widget, update).fileUploaderStateValue = value
+    this.onWidgetValueChanged(update)
   }
 
   public getFileUploaderStateValue(
     widget: WidgetInfo
-  ): IFileUploaderState | undefined {
+  ): FileUploaderState.$Properties | undefined {
     const state = this.getWidgetState(widget)
     if (
       notNullOrUndefined(state) &&
       state.value === "fileUploaderStateValue"
     ) {
-      return state.fileUploaderStateValue as IFileUploaderState
+      return state.fileUploaderStateValue as FileUploaderState.$Properties
     }
 
     return undefined
@@ -573,22 +886,20 @@ export class WidgetStateManager {
 
   /**
    * Perform housekeeping every time a widget value changes.
-   * - If the widget does not belong to a form, and the value update came from
-   *   a user action, send the "updateWidgets" message
-   * - If the widget belongs to a form, dispatch the "pendingFormsChanged"
-   *   callback if needed.
+   * - If the widget belongs to a form, update its pending-changes state (the
+   *   form defers committing values until it is submitted).
+   * - Otherwise, if the change should trigger a rerun (see `shouldTriggerRerun`),
+   *   send the "updateWidgets" message. Changes with `triggerRerun: false`
+   *   (e.g. on_change="ignore") are buffered without rerunning.
    *
    * Called by every "setValue" function.
    */
-  private onWidgetValueChanged(
-    formId: string | undefined,
-    source: Source,
-    fragmentId: string | undefined
-  ): void {
-    if (isValidFormId(formId)) {
+  private onWidgetValueChanged(update: WidgetUpdate): void {
+    if (isValidFormId(update.formId)) {
       this.syncFormsWithPendingChanges()
-    } else if (source.fromUi) {
-      this.sendUpdateWidgetsMessage(fragmentId)
+    } else if (shouldTriggerRerun(update)) {
+      // Batch value changes that occur within the same JavaScript macrotask.
+      this.scheduleFlush(update.fragmentId)
     }
   }
 
@@ -632,13 +943,26 @@ export class WidgetStateManager {
   }
 
   /**
-   * Remove the state of widgets that are not contained in `activeIds`.
-   * This is called when a script finishes running, so that we don't retain
-   * data for widgets that have been removed from the app.
+   * Remove widget and element state that is no longer in `activeIds`, except
+   * in-flight trigger ids in `pendingTriggerIds`.
+   *
+   * Called when a script finishes running so we do not keep data for widgets
+   * that have been removed from the app. The excepted trigger ids are waiting
+   * on the batched flush, and some (such as the Custom Components v2 trigger
+   * aggregator) are synthetic ids that never appear in `activeIds` at all;
+   * dropping one leaves that flush to send a rerun with no trigger, silently
+   * losing the interaction (GitHub issue #16732). Element state is never part
+   * of the rerun message, so it follows `activeIds` only.
    */
   public removeInactive(activeIds: Set<string>): void {
-    this.widgetStates.removeInactive(activeIds)
-    this.forms.forEach(form => form.widgetStates.removeInactive(activeIds))
+    // Nothing in flight is the common case, so avoid copying the set for it.
+    const retainedIds =
+      this.pendingTriggerIds.size === 0
+        ? activeIds
+        : new Set([...activeIds, ...this.pendingTriggerIds])
+
+    this.widgetStates.removeInactive(retainedIds)
+    this.forms.forEach(form => form.widgetStates.removeInactive(retainedIds))
     this.elementStates.forEach((_, elementId) => {
       if (!activeIds.has(elementId)) {
         this.deleteElementState(elementId)
@@ -652,7 +976,7 @@ export class WidgetStateManager {
    * the WidgetState will be created inside the form's WidgetStateDict.
    */
   private createWidgetState(widget: WidgetInfo, source: Source): WidgetState {
-    const addToForm = isValidFormId(widget.formId) && source.fromUi
+    const addToForm = isValidFormId(widget.formId) && source.fromUser
     const widgetStateDict = addToForm
       ? this.getOrCreateFormState(widget.formId as string).widgetStates
       : this.widgetStates
@@ -797,9 +1121,11 @@ export class WidgetStateManager {
    * Get the element state value for the given element ID and key, if it exists.
    * This is a frontend-only state that is never sent to the server.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  public getElementState(elementId: string, key: string): any {
-    return this.elementStates.get(elementId)?.get(key)
+  public getElementState<T = unknown>(
+    elementId: string,
+    key: string
+  ): T | undefined {
+    return this.elementStates.get(elementId)?.get(key) as T | undefined
   }
 
   /**
@@ -810,19 +1136,23 @@ export class WidgetStateManager {
    *
    * @param {string} elementId - The unique identifier of the element.
    * @param {string} key - The key to set
-   * @param {any} value - The value to set for the element's state.
+   * @param {unknown} value - The value to set for the element's state.
    * @returns {void}
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  public setElementState(elementId: string, key: string, value: any): void {
+  public setElementState(
+    elementId: string,
+    key: string,
+    value: unknown
+  ): void {
     if (!this.elementStates.has(elementId)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      this.elementStates.set(elementId, new Map<string, any>())
+      this.elementStates.set(elementId, new Map<string, unknown>())
     }
 
     // It's expected here that there is always an initialized map for an elementId
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    ;(this.elementStates.get(elementId) as Map<string, any>).set(key, value)
+    const stateMap = this.elementStates.get(elementId)
+    if (stateMap) {
+      stateMap.set(key, value)
+    }
   }
 
   /**
@@ -836,6 +1166,459 @@ export class WidgetStateManager {
     } else {
       this.elementStates.delete(elementId)
     }
+  }
+
+  /**
+   * Schedule a macrotask-level flush of pending widget updates (triggers and
+   * regular value changes). Multiple calls within the same macrotask will be
+   * coalesced into a single `updateWidgets` message.
+   */
+  private scheduleFlush(fragmentId: string | undefined): void {
+    // Update the stored fragmentId if we don't have one yet. If multiple calls
+    // happen and at least one of them specifies a fragmentId, we keep the
+    // first non-undefined value.
+    if (this.scheduledFragmentId === undefined) {
+      this.scheduledFragmentId = fragmentId
+    }
+
+    // If we already have a scheduled fragmentId and a new (different) one is
+    // provided in the same macrotask, log a warning and proceed with the first
+    // one. This acknowledges a rare edge case where multiple components could
+    // trigger updates tied to different fragments in one batch. We've decided
+    // to prefer to warn rather than throw; this leaves us exposed to potential
+    // bugs in very unusual setups. We can tighten this in the future if
+    // real-world issues arise.
+    if (
+      this.scheduledFragmentId !== undefined &&
+      fragmentId !== undefined &&
+      fragmentId !== this.scheduledFragmentId &&
+      !this.hasFragmentIdConflict
+    ) {
+      LOG.warn(
+        "Unexpected state: Multiple different fragmentIds detected in a single batch of widget updates. Proceeding with flushing updates using fragmentId '%s' for this batch.",
+        this.scheduledFragmentId
+      )
+      this.hasFragmentIdConflict = true
+    }
+
+    if (this.flushScheduled) {
+      return
+    }
+
+    this.flushScheduled = true
+
+    // eslint-disable-next-line no-restricted-globals -- Batching widget flushes is non-React scheduling logic.
+    setTimeout(() => {
+      // Send a *single* widgets update containing **all** pending updates.
+      this.sendUpdateWidgetsMessage(this.scheduledFragmentId)
+
+      // Clean-up temporary trigger widget states so they don't leak into future updates.
+      this.pendingTriggerIds.forEach(id => this.deleteWidgetState(id))
+      this.pendingTriggerIds.clear()
+
+      // Resolve all promises that were waiting for this flush.
+      this.triggerFlushResolvers.forEach(r => r())
+      this.triggerFlushResolvers = []
+
+      // Reset scheduling flags.
+      this.flushScheduled = false
+      this.scheduledFragmentId = undefined
+      this.hasFragmentIdConflict = false
+    }, 0)
+  }
+
+  // Query Param Binding Methods
+
+  /**
+   * Register a widget's binding to a URL query parameter.
+   *
+   * If another widget was previously bound to this paramKey, its binding is
+   * replaced and the old widget's entry in boundWidgets is cleaned up. This
+   * mirrors the backend behavior in QueryParams.bind_widget() which also
+   * handles duplicate paramKey cleanup.
+   *
+   * @param clearable - Whether the widget allows clearing to empty state.
+   *   Required - widget components must explicitly pass this based on their UI behavior.
+   */
+  public registerQueryParamBinding(
+    widgetId: string,
+    paramKey: string,
+    valueType: WidgetValueType,
+    defaultValue: unknown,
+    clearable: boolean,
+    urlFormat?: "comma" | "repeated",
+    dateType?: DateType
+  ): void {
+    // Clean up old binding if a different widget was bound to this paramKey.
+    // This keeps boundWidgets and paramKeyToWidgetId consistent.
+    const existingWidgetId = this.paramKeyToWidgetId.get(paramKey)
+    if (existingWidgetId && existingWidgetId !== widgetId) {
+      this.boundWidgets.delete(existingWidgetId)
+    }
+
+    // For date/time sliders, convert microsecond defaults to ISO strings so
+    // that shouldClearUrlParam / isDefaultArrayValue comparisons match the
+    // ISO strings produced by convertToUrlValue.
+    let normalizedDefault = defaultValue
+    if (dateType) {
+      if (Array.isArray(normalizedDefault)) {
+        normalizedDefault = normalizedDefault.map(n =>
+          typeof n === "number" ? microsToIsoString(n, dateType) : String(n)
+        )
+      } else if (typeof normalizedDefault === "number") {
+        normalizedDefault = microsToIsoString(normalizedDefault, dateType)
+      }
+    }
+
+    this.boundWidgets.set(widgetId, {
+      paramKey,
+      valueType,
+      defaultValue: normalizedDefault,
+      urlFormat,
+      clearable,
+      dateType,
+    })
+    this.paramKeyToWidgetId.set(paramKey, widgetId)
+  }
+
+  /**
+   * Unregister a widget's query param binding (called on unmount).
+   *
+   * Note: This does NOT clear the URL param - that cleanup is handled by the
+   * backend via remove_stale_bindings().
+   */
+  public unregisterQueryParamBinding(widgetId: string): void {
+    const binding = this.boundWidgets.get(widgetId)
+    if (binding) {
+      this.paramKeyToWidgetId.delete(binding.paramKey)
+      this.boundWidgets.delete(widgetId)
+    }
+  }
+
+  /** Check if a widget has a query param binding. */
+  public hasQueryParamBinding(widgetId: string): boolean {
+    return this.boundWidgets.has(widgetId)
+  }
+
+  /**
+   * Filter query params for page navigation.
+   * Preserves embed params and params bound to widgets, clears all others.
+   *
+   * @param embedParams - The embed query params string (from preserveEmbedQueryParams)
+   * @returns Filtered query string with embed + bound widget params
+   */
+  public filterParamsForPageChange(embedParams: string): string {
+    // If no widgets are bound, just return embed params
+    if (this.paramKeyToWidgetId.size === 0) {
+      return embedParams
+    }
+
+    // Get current URL params for bound widgets
+    const currentUrl = new URL(window.location.href)
+    const boundParamsObj: Record<string, string | string[]> = {}
+
+    this.paramKeyToWidgetId.forEach((_, paramKey) => {
+      const values = currentUrl.searchParams.getAll(paramKey)
+      if (values.length === 1) {
+        boundParamsObj[paramKey] = values[0]
+      } else if (values.length > 1) {
+        boundParamsObj[paramKey] = values
+      }
+    })
+
+    // Build query string using query-string library.
+    // Replace %20 with + to match backend urllib.parse.urlencode encoding.
+    const boundParamsStr = queryString
+      .stringify(boundParamsObj, {
+        arrayFormat: "none",
+      })
+      .replaceAll("%20", "+")
+
+    // Combine embed params with bound widget params
+    if (!boundParamsStr) {
+      return embedParams
+    }
+
+    return embedParams ? `${embedParams}&${boundParamsStr}` : boundParamsStr
+  }
+
+  /** Set callback for query param changes (used by App.tsx). */
+  public setQueryParamsChangeHandler(
+    handler: (queryString: string) => void
+  ): void {
+    this.onQueryParamsChange = handler
+  }
+
+  /** Notify listener of URL query param changes. */
+  private notifyQueryParamsChange(): void {
+    if (this.onQueryParamsChange) {
+      const url = new URL(window.location.href)
+      this.onQueryParamsChange(url.searchParams.toString())
+    }
+  }
+
+  /**
+   * Convert widget value to URL-safe format based on binding type.
+   * Returns null to indicate the param should be removed from URL.
+   * Returns "" or [] to indicate an empty value that should be preserved as ?foo=
+   */
+  private convertToUrlValue(
+    value: unknown,
+    binding: QueryParamBinding
+  ): string | string[] | null {
+    // Null values - check if empty is valid for this widget
+    if (value === null) {
+      // If empty is valid, return "" to preserve ?foo= in URL
+      // If empty is not valid, return null to signal removal
+      return this.isEmptyValueValid(binding) ? "" : null
+    }
+
+    switch (binding.valueType) {
+      case "bool_value":
+      case "double_value":
+      case "int_value":
+        // eslint-disable-next-line @typescript-eslint/no-base-to-string -- value is a primitive (boolean/number) here
+        return String(value)
+
+      case "string_value":
+        return value as string
+
+      case "string_array_value":
+        return (value as string[]).filter(v => v !== "")
+
+      case "int_array_value":
+        return (value as number[]).map(n => String(n))
+
+      case "double_array_value": {
+        const arr = value as number[]
+        if (binding.dateType) {
+          const dt = binding.dateType
+          return arr.map(n => microsToIsoString(n, dt))
+        }
+        return arr.map(n => String(n))
+      }
+
+      default:
+        return assertNever(binding.valueType)
+    }
+  }
+
+  /**
+   * Check if empty/cleared is a valid state for this widget.
+   * Used to determine whether to write ?foo= (empty value) or remove the param entirely.
+   *
+   * Returns binding.clearable, which is explicitly set by each widget component.
+   */
+  private isEmptyValueValid(binding: QueryParamBinding): boolean {
+    return binding.clearable
+  }
+
+  /**
+   * Check if value should clear the URL param (remove it from URL entirely).
+   *
+   * Returns true to indicate the param should be removed when:
+   * - Empty value AND empty is not valid for this widget
+   * - Empty value AND empty equals the widget's default (hide at default)
+   * - Non-empty value matches the widget's default
+   *
+   * When empty IS valid AND differs from default (e.g., multiselect with
+   * default=["Python"] cleared to []), we preserve ?foo= in the URL.
+   */
+  private shouldClearUrlParam(
+    urlValue: string | string[] | null,
+    binding: QueryParamBinding
+  ): boolean {
+    // Check if value is empty (null, [], or "")
+    const isEmpty =
+      urlValue === null ||
+      (Array.isArray(urlValue) && urlValue.length === 0) ||
+      urlValue === ""
+
+    // Empty value that's not valid for this widget should always be cleared
+    if (isEmpty && !this.isEmptyValueValid(binding)) {
+      return true
+    }
+
+    // Check if value matches default (hide at default)
+    // This applies to both empty values (when empty is valid) and non-empty values
+    // Note: urlValue cannot be null here - convertToUrlValue only returns null when
+    // isEmptyValueValid is false, and we already returned true for that case above.
+    if (Array.isArray(urlValue)) {
+      return this.isDefaultArrayValue(urlValue, binding)
+    }
+    return this.isDefaultValue(urlValue, binding)
+  }
+
+  /**
+   * Update a single URL parameter using query-string library.
+   * Handles both scalar and array values, respecting urlFormat setting.
+   */
+  private updateUrlParam(
+    paramKey: string,
+    value: string | string[] | null,
+    urlFormat: "comma" | "repeated" | undefined
+  ): void {
+    // Parse current URL params - use "none" to correctly parse repeated params (?a=1&a=2)
+    const currentParams = queryString.parse(window.location.search, {
+      arrayFormat: "none",
+    })
+
+    if (value === null) {
+      // Drop this param from the query string; stringify uses skipNull: true.
+      currentParams[paramKey] = null
+    } else if (Array.isArray(value)) {
+      if (value.length === 0) {
+        // Empty array: write as empty string to produce ?key= in URL
+        // (queryString.stringify omits empty arrays, so we use "" instead)
+        currentParams[paramKey] = ""
+      } else if (urlFormat === "comma") {
+        // Comma-separated: store as single joined string
+        currentParams[paramKey] = value.join(",")
+      } else {
+        // Repeated params: store as array
+        currentParams[paramKey] = value
+      }
+    } else {
+      // Scalar value
+      currentParams[paramKey] = value
+    }
+
+    // Build new URL using query-string.
+    // arrayFormat: "none" produces ?key=a&key=b for arrays.
+    // Replace %20 with + to match backend urllib.parse.urlencode encoding.
+    const newSearch = queryString
+      .stringify(currentParams, {
+        arrayFormat: "none",
+        skipNull: true,
+        skipEmptyString: false,
+      })
+      .replaceAll("%20", "+")
+
+    // Skip replaceState if the URL wouldn't actually change
+    const currentSearch = window.location.search.replace(/^\?/, "")
+    if (newSearch === currentSearch) {
+      return
+    }
+
+    const newUrl = new URL(window.location.href)
+    newUrl.search = newSearch
+    window.history.replaceState({}, "", newUrl.toString())
+    this.notifyQueryParamsChange()
+  }
+
+  /**
+   * Sync widget value to URL if bound and the change came from the user.
+   *
+   * User changes update the URL even when they do not trigger a rerun
+   * (`on_change="ignore"` / `triggerRerun: false`) and even inside a form.
+   * That matches form behavior: the URL can reflect a value the backend has
+   * not received yet, so a reload or share keeps the user's latest UI value.
+   * Programmatic writes (`fromUser: false`) do not update the URL.
+   */
+  private maybeSyncValueToUrl(
+    widget: WidgetInfo,
+    source: Source,
+    value: unknown
+  ): void {
+    if (!source.fromUser) return
+
+    const binding = this.boundWidgets.get(widget.id)
+    if (!binding) return
+
+    // Pure: Convert value to URL format
+    const urlValue = this.convertToUrlValue(value, binding)
+
+    // Pure: Check if we should clear the param
+    const shouldClear = this.shouldClearUrlParam(urlValue, binding)
+
+    // Side effect: Update URL
+    this.updateUrlParam(
+      binding.paramKey,
+      shouldClear ? null : urlValue,
+      binding.urlFormat
+    )
+  }
+
+  /**
+   * Convert a value to its URL-comparable string form.
+   * Handles primitives (string, number, boolean) and Date objects.
+   * Date is formatted as local-time ISO (YYYY-MM-DD) to match the wire
+   * format used by date_input URL values.
+   * @returns The string representation, or undefined for unsupported types.
+   */
+  private toStringPrimitive(value: unknown): string | undefined {
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      return String(value)
+    }
+    if (value instanceof Date) {
+      const y = value.getFullYear()
+      const m = String(value.getMonth() + 1).padStart(2, "0")
+      const d = String(value.getDate()).padStart(2, "0")
+      return `${y}-${m}-${d}`
+    }
+    return undefined
+  }
+
+  /**
+   * Check if value equals the widget's default (with type coercion).
+   *
+   * Note: For clearable scalar widgets, convertToUrlValue(null) returns "".
+   * If such a widget has an empty array default (unusual), "" should match [].
+   */
+  private isDefaultValue(value: unknown, binding: QueryParamBinding): boolean {
+    const defaultValue = binding.defaultValue
+    if (isNullOrUndefined(defaultValue)) {
+      return isNullOrUndefined(value) || value === ""
+    }
+    // Defensive: treat "" (cleared scalar) as matching [] (empty array default)
+    // This is an edge case - scalar widgets typically don't have array defaults
+    if (
+      value === "" &&
+      Array.isArray(defaultValue) &&
+      defaultValue.length === 0
+    ) {
+      return true
+    }
+    const valueStr = this.toStringPrimitive(value)
+    const defaultStr = this.toStringPrimitive(defaultValue)
+    if (valueStr === undefined || defaultStr === undefined) {
+      return false
+    }
+    return valueStr === defaultStr
+  }
+
+  /**
+   * Check if array equals the widget's default array (with type coercion).
+   *
+   * Handles edge cases where the widget's default may be a scalar but the
+   * current value is an array (e.g., slider with value=[5] and defaultValue=5).
+   *
+   * Note: For widgets that allow clearing (clearable=true), empty arrays that
+   * differ from default are handled by shouldClearUrlParam before this is called.
+   */
+  private isDefaultArrayValue(
+    values: string[],
+    binding: QueryParamBinding
+  ): boolean {
+    const defaultValue = binding.defaultValue
+    if (!Array.isArray(defaultValue)) {
+      // Single-element array matches scalar default (e.g., slider: [5] == 5)
+      if (values.length === 1 && defaultValue !== null) {
+        const defaultStr = this.toStringPrimitive(defaultValue)
+        return defaultStr !== undefined && values[0] === defaultStr
+      }
+      // Empty array or multi-element array cannot match scalar default
+      return false
+    }
+    if (values.length !== defaultValue.length) return false
+    return values.every((v, i) => {
+      const defaultStr = this.toStringPrimitive(defaultValue[i])
+      return defaultStr !== undefined && v === defaultStr
+    })
   }
 }
 
@@ -862,7 +1645,7 @@ function requireNumberInt(value: number | Long): number {
   }
 
   throw new Error(
-    // eslint-disable-next-line @typescript-eslint/no-base-to-string, @typescript-eslint/restrict-template-expressions -- TODO: Fix this
-    `value ${value} cannot be converted to number without a loss of precision!`
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- Long has a toString() method
+    `value ${value.toString()} cannot be converted to number without a loss of precision!`
   )
 }

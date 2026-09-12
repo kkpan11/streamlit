@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,16 +23,15 @@ import {
   LoadingCell,
   TextCell,
 } from "@glideapps/glide-data-grid"
-import merge from "lodash/merge"
-import toString from "lodash/toString"
-import moment, { Moment } from "moment"
+import { Vector } from "apache-arrow"
+import { isString, merge, toString } from "lodash-es"
+import moment from "moment"
 import "moment-duration-format"
 import "moment-timezone"
 import numbro from "numbro"
-import { sprintf } from "sprintf-js"
 
 import { ArrowType } from "~lib/dataframes/arrowTypeUtils"
-import { EmotionTheme } from "~lib/theme"
+import type { EmotionTheme } from "~lib/theme/types"
 import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 /**
@@ -40,47 +39,50 @@ import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
  * These options can also be used to overwrite from user-defined column config.
  */
 export interface BaseColumnProps {
-  // The id of the column:
+  /** The id of the column. */
   readonly id: string
-  // The name of the column from the original data:
+  /** The name of the column from the original data. */
   readonly name: string
-  // The display title of the column:
+  /** The display title of the column. */
   readonly title: string
-  // The index number of the column:
+  /** The index number of the column. */
   readonly indexNumber: number
-  // The arrow data type of the column:
+  /** The arrow data type of the column. */
   readonly arrowType: ArrowType
-  // If `True`, the column can be edited:
+  /** If `True`, the column can be edited. */
   readonly isEditable: boolean
-  // If `True`, the column is hidden (will not be shown):
+  /** If `True`, the column is hidden (will not be shown). */
   readonly isHidden: boolean
-  // If `True`, the column is a table index:
+  /** If `True`, the column is a table index. */
   readonly isIndex: boolean
-  // If `True`, the column is pinned/frozen:
+  /** If `True`, the column is pinned/frozen. */
   readonly isPinned: boolean
-  // If `True`, the column is a stretched:
+  /** If `True`, the column is a stretched. */
   readonly isStretched: boolean
-  // If `True`, a value is required before the cell or row can be submitted:
+  /** If `True`, a value is required before the cell or row can be submitted. */
   readonly isRequired?: boolean
-  // If `True`, the content of the cell is allowed to be wrapped
-  // to fill the available height of the cell.
+  /**
+   * If `True`, the content of the cell is allowed to be wrapped to fill the
+   * available height of the cell.
+   */
   readonly isWrappingAllowed?: boolean
-  // The initial width of the column:
+  /** The initial width of the column. */
   readonly width?: number
-  // A help text that is displayed on hovering the column header.
+  /** A help text that is displayed on hovering the column header. */
   readonly help?: string
-  // Configuration options related to the column type:
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  readonly columnTypeOptions?: Record<string, any>
-  // The content alignment of the column:
+  /**
+   * Configuration options related to the column type.
+   */
+  readonly columnTypeOptions?: Record<string, unknown>
+  /** The content alignment of the column. */
   readonly contentAlignment?: "left" | "center" | "right"
-  // The default value of the column used when adding a new row:
+  /** The default value of the column used when adding a new row. */
   readonly defaultValue?: string | number | boolean
-  // Theme overrides for this column:
+  /** Theme overrides for this column. */
   readonly themeOverride?: Partial<GlideTheme>
-  // A custom icon to be displayed in the column header:
+  /** A custom icon to be displayed in the column header. */
   readonly icon?: string
-  // The group that this column belongs to.
+  /** The group that this column belongs to. */
   readonly group?: string
 }
 
@@ -94,17 +96,19 @@ export interface BaseColumn extends BaseColumnProps {
   // smart: Detects if value is a number or a string and sorts accordingly.
   // raw: Sorts based on the actual type of the cell data value.
   readonly sortMode: "default" | "raw" | "smart"
+  // An material icon identifier (":material/...") that is used
+  // as type icon in the column menu.
+  readonly typeIcon: string
   // Validate the input data for compatibility with the column type:
   // Either returns a boolean indicating if the data is valid or not, or
   // returns the corrected value.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-redundant-type-constituents -- TODO: Replace 'any' with a more specific type.
-  validateInput?(data?: any): boolean | any
+  validateInput?(data?: unknown): unknown
   // Get a cell with the provided data for the column type:
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  getCell(data?: any, validate?: boolean): GridCell
+  getCell(data?: unknown, validate?: boolean): GridCell
   // Get the raw value of the given cell:
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-redundant-type-constituents -- TODO: Replace 'any' with a more specific type.
-  getCellValue(cell: GridCell): any | null
+  getCellValue(cell: GridCell): unknown
+  // Compare two raw cell values for equality:
+  valuesEqual?(a: unknown, b: unknown): boolean
 }
 
 /**
@@ -192,6 +196,47 @@ export function isMissingValueCell(
 }
 
 /**
+ * Returns `true` if both values are arrays with strictly equal items in the same order.
+ */
+export function arrayValuesEqual(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) {
+    return false
+  }
+
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+/**
+ * Returns `true` if two raw values should be treated as equal for the column.
+ */
+export function valuesEqual(
+  a: unknown,
+  b: unknown,
+  column: BaseColumn
+): boolean {
+  if (isNullOrUndefined(a) && isNullOrUndefined(b)) {
+    return true
+  }
+
+  if (isNullOrUndefined(a) || isNullOrUndefined(b)) {
+    return false
+  }
+
+  if (column.valuesEqual) {
+    try {
+      return column.valuesEqual(a, b)
+    } catch {
+      // Column comparators may coerce or serialize values (e.g. Number(),
+      // JSON.stringify()), which can throw on unexpected inputs. Fall back to
+      // an identity check so equality checks never break the data editor.
+      return Object.is(a, b)
+    }
+  }
+
+  return Object.is(a, b)
+}
+
+/**
  * Returns an empty cell.
  */
 export function getEmptyCell(missingCell = false): LoadingCell {
@@ -200,13 +245,15 @@ export function getEmptyCell(missingCell = false): LoadingCell {
       kind: GridCellKind.Loading,
       allowOverlay: false,
       isMissingValue: true,
+      copyData: "",
     } as LoadingCell
   }
 
   return {
     kind: GridCellKind.Loading,
     allowOverlay: false,
-  } as LoadingCell
+    copyData: "",
+  }
 }
 
 /**
@@ -226,7 +273,7 @@ export function getTextCell(readonly: boolean, faded: boolean): TextCell {
     allowOverlay: true,
     readonly,
     style,
-  } as TextCell
+  }
 }
 
 /**
@@ -249,7 +296,7 @@ export function toGlideColumn(column: BaseColumn): GridColumn {
     ...(column.width && {
       width: column.width,
     }),
-  } as GridColumn
+  }
 }
 
 /**
@@ -260,22 +307,19 @@ export function toGlideColumn(column: BaseColumn): GridColumn {
  *
  * @returns The merged column parameters.
  */
-export function mergeColumnParameters(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  defaultParams: Record<string, any> | undefined | null,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  userParams: Record<string, any> | undefined | null
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-): Record<string, any> {
+export function mergeColumnParameters<T = Record<string, unknown>>(
+  defaultParams: Record<string, unknown> | undefined | null,
+  userParams: Record<string, unknown> | undefined | null
+): T {
   if (isNullOrUndefined(defaultParams)) {
-    return userParams || {}
+    return (userParams || {}) as T
   }
 
   if (isNullOrUndefined(userParams)) {
-    return defaultParams || {}
+    return (defaultParams || {}) as T
   }
 
-  return merge(defaultParams, userParams)
+  return merge(defaultParams, userParams) as T
 }
 
 /**
@@ -286,8 +330,7 @@ export function mergeColumnParameters(
  *
  * @returns The converted array or an empty array if the value cannot be interpreted as an array.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toSafeArray(data: any): any[] {
+export function toSafeArray(data: unknown): unknown[] {
   if (isNullOrUndefined(data)) {
     return []
   }
@@ -308,8 +351,7 @@ export function toSafeArray(data: any): any[] {
       // Support for JSON arrays: ["foo", 1, null, "test"]
       try {
         return JSON.parse(data)
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      } catch (error) {
+      } catch {
         return [data]
       }
     } else {
@@ -328,16 +370,32 @@ export function toSafeArray(data: any): any[] {
       return [toSafeString(parsedData)]
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    return parsedData.map((value: any) =>
+    return parsedData.map((value: unknown) =>
       ["string", "number", "boolean", "null"].includes(typeof value)
         ? value
         : toSafeString(value)
     )
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (error) {
+  } catch {
     return [toSafeString(data)]
   }
+}
+
+/**
+ * Checks if the provided data used as array value is supported for editing.
+ *
+ * @param data - The value to inspect.
+ * @returns True if `data` is supported for array-editing.
+ */
+export function isEditableArrayValue(data: unknown): boolean {
+  if (isString(data)) {
+    return true
+  }
+
+  if (data instanceof Vector) {
+    data = Array.from(data)
+  }
+
+  return Array.isArray(data) && data.every(isString)
 }
 
 /**
@@ -350,9 +408,8 @@ export function toSafeArray(data: any): any[] {
  *
  * @returns `true` if the data might be a JSON string.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function isMaybeJson(data: any): boolean {
-  return data && data.startsWith("{") && data.endsWith("}")
+export function isMaybeJson(data: unknown): boolean {
+  return typeof data === "string" && data.startsWith("{") && data.endsWith("}")
 }
 
 /**
@@ -363,19 +420,16 @@ export function isMaybeJson(data: any): boolean {
  *
  * @return The converted string or a string showing the type of the object as fallback.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toSafeString(data: any): string {
+export function toSafeString(data: unknown): string {
   try {
     try {
       return toString(data)
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    } catch (error) {
+    } catch {
       return JSON.stringify(data, (_key, value) =>
         typeof value === "bigint" ? Number(value) : value
       )
     }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (error) {
+  } catch {
     // This is most likely an object that cannot be converted to a string
     // console.log converts this to `[object Object]` which we are doing here as well:
     return `[${typeof data}]`
@@ -391,8 +445,7 @@ export function toSafeString(data: any): string {
  * @return The converted boolean, null if the value is empty or undefined if the
  *         value cannot be interpreted as a boolean.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toSafeBoolean(value: any): boolean | null | undefined {
+export function toSafeBoolean(value: unknown): boolean | null | undefined {
   if (isNullOrUndefined(value)) {
     return null
   }
@@ -422,8 +475,7 @@ export function toSafeBoolean(value: any): boolean | null | undefined {
  * @returns The converted number or null if the value is empty or undefined or NaN if the
  *          value cannot be interpreted as a number.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toSafeNumber(value: any): number | null {
+export function toSafeNumber(value: unknown): number | null {
   // TODO(lukasmasuch): Should this return null as replacement for NaN?
 
   if (isNullOrUndefined(value)) {
@@ -447,8 +499,7 @@ export function toSafeNumber(value: any): number | null {
       if (notNullOrUndefined(unformattedValue)) {
         return unformattedValue
       }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    } catch (error) {
+    } catch {
       // Do nothing here
     }
   } else if (value instanceof Int32Array) {
@@ -460,6 +511,26 @@ export function toSafeNumber(value: any): number | null {
 }
 
 /**
+ * Converts an array to a string representation suitable for copying.
+ *
+ * @param array - The array to convert.
+ * @returns The string representation of the array.
+ */
+export function arrayToCopyValue(array?: unknown[] | null): string {
+  if (isNullOrUndefined(array)) {
+    return ""
+  }
+
+  return toSafeString(
+    array.map((x: unknown) =>
+      // Replace commas with spaces since commas are used to
+      // separate the list items.
+      typeof x === "string" && x.includes(",") ? x.replaceAll(",", " ") : x
+    )
+  )
+}
+
+/**
  * Tries to convert a given value of unknown type to a JSON string without
  * the risks of any exceptions.
  *
@@ -467,8 +538,7 @@ export function toSafeNumber(value: any): number | null {
  *
  * @returns The converted JSON string or a string showing the type of the object as fallback.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toJsonString(value: any): string {
+export function toJsonString(value: unknown): string {
   if (isNullOrUndefined(value)) {
     return ""
   }
@@ -485,195 +555,10 @@ export function toJsonString(value: any): string {
       // so we convert them to a number as fallback
       typeof val === "bigint" ? Number(val) : val
     )
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (error) {
+  } catch {
     // If the value cannot be converted to a JSON string, return the stringified value
     return toSafeString(value)
   }
-}
-
-/**
- * Determines the default mantissa to use for the given number.
- *
- * @param value - The number to determine the mantissa for.
- *
- * @returns The mantissa to use.
- */
-function determineDefaultMantissa(value: number): number {
-  if (value === 0 || Math.abs(value) >= 0.0001) {
-    return 4
-  }
-
-  const expStr = value.toExponential()
-  const parts = expStr.split("e")
-  return Math.abs(parseInt(parts[1], 10))
-}
-
-/**
- * Helper function to format the Intl.NumberFormat call using locales
- *
- * @param value - the number to format
- * @param options - the options to pass to the Intl.NumberFormat call
- *
- * @returns The formatted number as a string.
- */
-function formatIntlNumberWithLocales(
-  value: number,
-  options: Intl.NumberFormatOptions = {}
-): string {
-  const locales = navigator.languages
-  try {
-    return new Intl.NumberFormat(locales, options).format(value)
-  } catch (error) {
-    // If the locale is not supported, the above throws a RangeError
-    // In this case we use default locale as fallback
-    if (error instanceof RangeError) {
-      return new Intl.NumberFormat(undefined, options).format(value)
-    }
-    throw error
-  }
-}
-
-/**
- * Formats the given number to a string based on a provided format or the default format.
- *
- * @param format - The format to use. If not provided, the default format is used.
- * @param maxPrecision - The maximum number of decimals to show. This is only used by the default format.
- *                     If not provided, the default is 4 decimals and trailing zeros are hidden.
- *
- * @returns The formatted number as a string.
- */
-export function formatNumber(
-  value: number,
-  format?: string,
-  maxPrecision?: number
-): string {
-  if (Number.isNaN(value) || !Number.isFinite(value)) {
-    return ""
-  }
-
-  if (isNullOrUndefined(format) || format === "") {
-    // If no format is provided, use the default format
-    if (notNullOrUndefined(maxPrecision)) {
-      // Use the configured precision to influence how the number is formatted
-      if (maxPrecision === 0) {
-        // Numbro is unable to format the number with 0 decimals.
-        value = Math.round(value)
-      }
-
-      return numbro(value).format({
-        thousandSeparated: false,
-        mantissa: maxPrecision,
-        trimMantissa: false,
-      })
-    }
-
-    // Use a default format if no precision is given
-    return numbro(value).format({
-      thousandSeparated: false,
-      mantissa: determineDefaultMantissa(value),
-      trimMantissa: true,
-    })
-  }
-
-  if (format === "plain") {
-    return numbro(value).format({
-      thousandSeparated: false,
-      // Use a large mantissa to avoid cutting off decimals
-      mantissa: 20,
-      trimMantissa: true,
-    })
-  } else if (format === "localized") {
-    return formatIntlNumberWithLocales(value)
-  } else if (format === "percent") {
-    return formatIntlNumberWithLocales(value, {
-      style: "percent",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    })
-  } else if (format === "dollar") {
-    return formatIntlNumberWithLocales(value, {
-      style: "currency",
-      currency: "USD",
-      currencyDisplay: "narrowSymbol",
-      maximumFractionDigits: 2,
-    })
-  } else if (format === "euro") {
-    return formatIntlNumberWithLocales(value, {
-      style: "currency",
-      currency: "EUR",
-      maximumFractionDigits: 2,
-    })
-  } else if (["compact", "scientific", "engineering"].includes(format)) {
-    return formatIntlNumberWithLocales(value, {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      notation: format as any,
-    })
-  } else if (format === "accounting") {
-    return numbro(value).format({
-      thousandSeparated: true,
-      negative: "parenthesis",
-      mantissa: 2,
-      trimMantissa: false,
-    })
-  }
-
-  return sprintf(format, value)
-}
-
-/**
- * Formats the given date to a string with the given format.
- *
- * @param momentDate The moment date to format.
- * @param format The format to use.
- *   If the format is `localized` the date will be formatted according to the user's locale.
- *   If the format is `distance` the date will be formatted as a relative time distance (e.g. "2 hours ago").
- *   If the format is `calendar` the date will be formatted as a calendar date (e.g. "Tomorrow 12:00").
- *   If the format is `iso8601` the date will be formatted according to ISO 8601 standard:
- *     - For date: YYYY-MM-DD
- *     - For time: HH:mm:ss.sssZ
- *     - For datetime: YYYY-MM-DDTHH:mm:ss.sssZ
- *   Otherwise, it is interpreted as momentJS format string: https://momentjs.com/docs/#/displaying/format/
- * @returns The formatted date as a string.
- */
-export function formatMoment(
-  momentDate: Moment,
-  format: string,
-  momentKind: "date" | "time" | "datetime" = "datetime"
-): string {
-  if (format === "localized") {
-    const locales = navigator.languages
-    const dateStyle = momentKind === "time" ? undefined : "medium"
-    const timeStyle = momentKind === "date" ? undefined : "medium"
-    try {
-      return new Intl.DateTimeFormat(locales, {
-        dateStyle,
-        timeStyle,
-      }).format(momentDate.toDate())
-    } catch (error) {
-      // If the locale is not supported, the above throws a RangeError
-      // In this case we use default locale as fallback
-      if (error instanceof RangeError) {
-        return new Intl.DateTimeFormat(undefined, {
-          dateStyle,
-          timeStyle,
-        }).format(momentDate.toDate())
-      }
-      throw error
-    }
-  } else if (format === "distance") {
-    return momentDate.fromNow()
-  } else if (format === "calendar") {
-    return momentDate.calendar()
-  } else if (format === "iso8601") {
-    if (momentKind === "date") {
-      return momentDate.format("YYYY-MM-DD")
-    } else if (momentKind === "time") {
-      return momentDate.format("HH:mm:ss.SSS[Z]")
-    }
-    return momentDate.toISOString()
-  }
-  return momentDate.format(format)
 }
 
 /**
@@ -686,8 +571,7 @@ export function formatMoment(
  *
  * @returns The converted date or null if the value cannot be interpreted as a date.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function toSafeDate(value: any): Date | null | undefined {
+export function toSafeDate(value: unknown): Date | null | undefined {
   if (isNullOrUndefined(value)) {
     return null
   }
@@ -753,8 +637,7 @@ export function toSafeDate(value: any): Date | null | undefined {
         return parsedMomentTime.toDate()
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (error) {
+  } catch {
     return undefined
   }
 
@@ -776,7 +659,7 @@ export function countDecimals(value: number): number {
 
   let numberStr = value.toString()
 
-  if (numberStr.indexOf("e") !== -1) {
+  if (numberStr.includes("e")) {
     // Handle scientific notation
     numberStr = value.toLocaleString("fullwide", {
       useGrouping: false,
@@ -784,7 +667,7 @@ export function countDecimals(value: number): number {
     })
   }
 
-  if (numberStr.indexOf(".") === -1) {
+  if (!numberStr.includes(".")) {
     // Fallback to 0 decimals, this can happen with
     // extremely large or small numbers
     return 0
@@ -806,9 +689,17 @@ export function countDecimals(value: number): number {
  * truncateDecimals(123.456, 0); // returns 123
  */
 export function truncateDecimals(value: number, decimals: number): number {
-  return decimals === 0
-    ? Math.trunc(value)
-    : Math.trunc(value * 10 ** decimals) / 10 ** decimals
+  if (!Number.isFinite(value)) return value // keep NaN/±∞ untouched
+  if (decimals <= 0) return Math.trunc(value)
+
+  const factor = 10 ** decimals
+  const shifted = value * factor
+
+  // Add/subtract a relative ε that is just large enough to push
+  // 451.999… → 452 (or −452.000… → −451.999…) before we truncate.
+  const epsilon = Number.EPSILON * Math.abs(shifted) * 10
+
+  return Math.trunc(shifted + Math.sign(shifted) * epsilon) / factor
 }
 
 const LINE_BREAK_REGEX = new RegExp(/(\r\n|\n|\r)/gm)
@@ -819,7 +710,7 @@ const LINE_BREAK_REGEX = new RegExp(/(\r\n|\n|\r)/gm)
  * @returns The text without line breaks.
  */
 export function removeLineBreaks(text: string): string {
-  if (text.indexOf("\n") !== -1) {
+  if (text.includes("\n")) {
     return text.replace(LINE_BREAK_REGEX, " ")
   }
   return text
@@ -849,17 +740,16 @@ export function getLinkDisplayValueFromRegex(
   try {
     // apply the regex pattern to display the value
     const patternMatch = href.match(displayTextRegex)
-    if (patternMatch && patternMatch[1] !== undefined) {
+    if (patternMatch?.[1] !== undefined) {
       // return the first matching group
       // Since this might be a URI encoded value, we decode it.
       // Note: we replace + with %20 to correctly convert + to whitespaces.
-      return decodeURIComponent(patternMatch[1].replace(/\+/g, "%20"))
+      return decodeURIComponent(patternMatch[1].replaceAll("+", "%20"))
     }
 
     // if the regex doesn't find a match with the url, just use the url as display value
     return href
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (error) {
+  } catch {
     // if there was any error return the href
     return href
   }

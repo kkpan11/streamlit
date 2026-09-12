@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,7 +56,7 @@ os.environ["MPLBACKEND"] = "Agg"
 
 
 def _command_to_string(command: str | list[str]) -> str:
-    return " ".join(command) if isinstance(command, list) else command
+    return " ".join(command) if isinstance(command, list) else str(command)
 
 
 def _get_filenames(folders: list[str]) -> list[str]:

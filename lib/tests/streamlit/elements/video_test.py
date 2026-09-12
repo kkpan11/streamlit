@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 from io import BytesIO
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import pytest
@@ -25,7 +25,7 @@ import streamlit as st
 from streamlit.errors import StreamlitAPIException
 from streamlit.runtime.media_file_storage import MediaFileStorageError
 from streamlit.runtime.memory_media_file_storage import _calculate_file_id
-from streamlit.util import calc_md5
+from streamlit.util import calc_hash
 from streamlit.web.server.server import MEDIA_ENDPOINT
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
@@ -151,7 +151,7 @@ class VideoTest(DeltaGeneratorTestCase):
         expected_subtitle_url = _calculate_file_id(
             fake_subtitle_data,
             "text/vtt",
-            filename=f"{calc_md5(b'default')}.vtt",
+            filename=f"{calc_hash(b'default')}.vtt",
         )
         assert expected_subtitle_url in el.video.subtitles[0].url
 
@@ -174,12 +174,12 @@ class VideoTest(DeltaGeneratorTestCase):
         expected_empty_subtitle_url = _calculate_file_id(
             b"",
             "text/vtt",
-            filename=f"{calc_md5(b'')}.vtt",
+            filename=f"{calc_hash(b'')}.vtt",
         )
         expected_english_subtitle_url = _calculate_file_id(
             fake_subtitle_data,
             "text/vtt",
-            filename=f"{calc_md5(b'English')}.vtt",
+            filename=f"{calc_hash(b'English')}.vtt",
         )
         assert expected_empty_subtitle_url in el.video.subtitles[0].url
         assert expected_english_subtitle_url in el.video.subtitles[1].url
@@ -188,36 +188,42 @@ class VideoTest(DeltaGeneratorTestCase):
         fake_video_data = b"\x11\x22\x33\x44\x55\x66"
         fake_sub_content = b"WEBVTT\n\n\n1\n00:01:47.250 --> 00:01:50.500\n`hello."
 
-        with NamedTemporaryFile(suffix=".vtt", mode="wb") as tmp_file:
-            p = Path(tmp_file.name)
-            tmp_file.write(fake_sub_content)
-            tmp_file.flush()
+        # Write the subtitle to a closed file before st.video: subtitle handling
+        # reopens the path, and Windows refuses to reopen a still-open temp file.
+        with TemporaryDirectory() as tmp_dir:
+            subtitle_path = Path(tmp_dir) / "subtitles.vtt"
+            subtitle_path.write_bytes(fake_sub_content)
 
-            st.video(fake_video_data, subtitles=p)
+            st.video(fake_video_data, subtitles=subtitle_path)
 
         expected_english_subtitle_url = _calculate_file_id(
             fake_sub_content,
             "text/vtt",
-            filename=f"{calc_md5(b'default')}.vtt",
+            filename=f"{calc_hash(b'default')}.vtt",
         )
 
         el = self.get_delta_from_queue().new_element
         assert expected_english_subtitle_url in el.video.subtitles[0].url
 
-    def test_singe_subtitle_exception(self):
-        """Test that an error is raised if invalid subtitles is provided."""
+    def test_invalid_subtitle_string_raises(self):
+        """Invalid subtitle text is wrapped with the default track label."""
         fake_video_data = b"\x11\x22\x33\x44\x55\x66"
 
-        with pytest.raises(StreamlitAPIException) as e:
+        with pytest.raises(
+            StreamlitAPIException, match="Failed to process the provided subtitle"
+        ) as exc_info:
             st.video(fake_video_data, subtitles="invalid_subtitles")
-        assert str(e.value) == "Failed to process the provided subtitle: default"
 
-    def test_dict_subtitle_video_exception(self):
-        """Test that an error is raised if invalid subtitles in dict is provided."""
+        assert exc_info.value.error_id == "video-failed-processing-subtitle"
+        assert "'default'" in str(exc_info.value)
+        assert "VTT-formatted text" in str(exc_info.value)
+
+    def test_invalid_subtitle_in_dict_raises(self):
+        """An invalid subtitle in a dict names the failing track."""
         fake_video_data = b"\x11\x22\x33\x44\x55\x66"
         fake_sub_content = b"WEBVTT\n\n\n1\n00:01:47.250 --> 00:01:50.500\n`hello."
 
-        with pytest.raises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitAPIException, match="Martian") as exc_info:
             st.video(
                 fake_video_data,
                 subtitles={
@@ -226,4 +232,6 @@ class VideoTest(DeltaGeneratorTestCase):
                     "Martian": "invalid_subtitles",
                 },
             )
-        assert str(e.value) == "Failed to process the provided subtitle: Martian"
+
+        assert exc_info.value.error_id == "video-failed-processing-subtitle"
+        assert "VTT-formatted text" in str(exc_info.value)

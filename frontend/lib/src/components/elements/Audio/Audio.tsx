@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement, useEffect, useMemo, useRef } from "react"
+import { memo, ReactElement, useEffect, useMemo, useRef } from "react"
 
 import { getLogger } from "loglevel"
 
 import { Audio as AudioProto } from "@streamlit/protobuf"
 
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
 import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
 import { WidgetStateManager as ElementStateManager } from "~lib/WidgetStateManager"
 
@@ -49,7 +50,7 @@ function Audio({
 
     // Recover the state in case this component got unmounted
     // and mounted again for the same element.
-    const preventAutoplayState = elementMgr.getElementState(
+    const preventAutoplayState = elementMgr.getElementState<boolean>(
       element.id,
       "preventAutoplay"
     )
@@ -150,6 +151,7 @@ function Audio({
     }
   }, [loop, startTime])
 
+  const crossOrigin = useCrossOriginAttribute(element.url)
   const uri = endpoints.buildMediaURL(element.url)
 
   const handleAudioError = (
@@ -175,6 +177,7 @@ function Audio({
         autoPlay={autoplay && !preventAutoplay}
         src={uri}
         onError={handleAudioError}
+        crossOrigin={crossOrigin}
       />
     </StyledAudioContainer>
   )

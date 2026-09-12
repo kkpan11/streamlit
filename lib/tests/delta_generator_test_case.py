@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,10 +21,12 @@ import unittest
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+from streamlit.components.v2.component_manager import BidiComponentManager
 from streamlit.runtime import Runtime
 from streamlit.runtime.caching.storage.dummy_cache_storage import (
     MemoryCacheStorageManager,
 )
+from streamlit.runtime.dataframe_source_manager import DataframeSourceManager
 from streamlit.runtime.forward_msg_queue import ForwardMsgQueue
 from streamlit.runtime.fragment import MemoryFragmentStorage
 from streamlit.runtime.media_file_manager import MediaFileManager
@@ -37,6 +39,7 @@ from streamlit.runtime.scriptrunner import (
     get_script_run_ctx,
 )
 from streamlit.runtime.scriptrunner_utils.script_requests import ScriptRequests
+from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
 from streamlit.runtime.session_manager import SessionManager
 from streamlit.runtime.state import SafeSessionState, SessionState
 from streamlit.web.server.server import MEDIA_ENDPOINT, UPLOAD_FILE_ENDPOINT
@@ -47,6 +50,8 @@ if TYPE_CHECKING:
 
 
 class DeltaGeneratorTestCase(unittest.TestCase):
+    _bidi_component_manager: BidiComponentManager | None = None
+
     def setUp(self):
         self.forward_msg_queue = ForwardMsgQueue()
 
@@ -67,14 +72,26 @@ class DeltaGeneratorTestCase(unittest.TestCase):
             pages_manager=PagesManager(""),
         )
         add_script_run_ctx(threading.current_thread(), self.script_run_ctx)
+        ThreadState.initialize()
 
         # Create a MemoryMediaFileStorage instance, and the MediaFileManager
         # singleton.
         self.media_file_storage = MemoryMediaFileStorage(MEDIA_ENDPOINT)
 
+        if DeltaGeneratorTestCase._bidi_component_manager is None:
+            manager = BidiComponentManager()
+            manager.discover_and_register_components(start_file_watching=False)
+            DeltaGeneratorTestCase._bidi_component_manager = manager
+        else:
+            manager = DeltaGeneratorTestCase._bidi_component_manager
+
+        self.bidi_component_manager = manager
+
         mock_runtime = MagicMock(spec=Runtime)
+        mock_runtime.bidi_component_registry = self.bidi_component_manager
         mock_runtime.cache_storage_manager = MemoryCacheStorageManager()
         mock_runtime.media_file_mgr = MediaFileManager(self.media_file_storage)
+        mock_runtime.dataframe_source_mgr = DataframeSourceManager()
         mock_runtime.uploaded_file_mgr = self.script_run_ctx.uploaded_file_mgr
         mock_runtime._session_mgr = MagicMock(spec=SessionManager)
         Runtime._instance = mock_runtime

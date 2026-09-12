@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,30 +20,27 @@
  * Returns a promise with the index of the URI that worked.
  */
 
-import { CancelToken } from "axios"
+import type { AxiosProgressEvent } from "axios"
 
-import { IAppPage } from "@streamlit/protobuf"
-import type { StreamlitWindowObject } from "@streamlit/utils"
+import { type AppPage, ForwardMsg } from "@streamlit/protobuf"
 
 import { ConnectionState } from "./ConnectionState"
 
-declare global {
-  interface Window {
-    __streamlit?: StreamlitWindowObject
-  }
-}
+export type OnMessage = (ForwardMsg: ForwardMsg) => void
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export type OnMessage = (ForwardMsg: any) => void
+export interface ErrorDetails {
+  message: string
+  codeBlock?: string
+}
 
 export type OnConnectionStateChange = (
   connectionState: ConnectionState,
-  errMsg?: string
+  errMsg?: ErrorDetails
 ) => void
 
 export type OnRetry = (
   totalTries: number,
-  errorMarkdown: string,
+  errorDetails: ErrorDetails,
   retryTimeout: number
 ) => void
 
@@ -107,12 +104,27 @@ export interface StreamlitEndpoints {
   buildComponentURL(componentName: string, path: string): string
 
   /**
+   * Return a URL to fetch data for the given bidirectional component.
+   * @param componentName The registered name of the component.
+   * @param path The path of the component resource to fetch, e.g. "script.js".
+   */
+  buildBidiComponentURL(componentName: string, path: string): string
+
+  /**
    * Construct a URL for a media file.
    * @param url a relative or absolute URL. If `url` is absolute, it will be
    * returned unchanged. Otherwise, the return value will be a URL for fetching
    * the media file from the connected Streamlit instance.
    */
   buildMediaURL(url: string): string
+
+  /**
+   * Construct a URL for a download file.
+   * @param url a relative or absolute URL. If `url` is absolute, it will be
+   * returned unchanged. Otherwise, the return value will be a URL for fetching
+   * the media file from the connected Streamlit instance.
+   */
+  buildDownloadUrl(url: string): string
 
   /**
    * Construct a URL for uploading a file.
@@ -128,7 +140,10 @@ export interface StreamlitEndpoints {
    * @param page the page's AppPage protobuf properties
    * @param pageIndex the page's zero-based index
    */
-  buildAppPageURL(pageLinkBaseURL: string | undefined, page: IAppPage): string
+  buildAppPageURL(
+    pageLinkBaseURL: string | undefined,
+    page: AppPage.$Properties
+  ): string
 
   /**
    * Upload a file to the FileUploader endpoint.
@@ -137,7 +152,7 @@ export interface StreamlitEndpoints {
    * @param file The file to upload.
    * @param sessionId the current sessionID. The file will be associated with this ID.
    * @param onUploadProgress optional function that will be called repeatedly with progress events during the upload.
-   * @param cancelToken optional axios CancelToken that can be used to cancel the in-progress upload.
+   * @param signal optional AbortSignal that can be used to cancel the in-progress upload.
    *
    * @return a Promise<number> that resolves with the file's unique ID, as assigned by the server.
    */
@@ -145,9 +160,8 @@ export interface StreamlitEndpoints {
     fileUploadUrl: string,
     file: File,
     sessionId: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    onUploadProgress?: (progressEvent: any) => void,
-    cancelToken?: CancelToken
+    onUploadProgress?: (progressEvent: AxiosProgressEvent) => void,
+    signal?: AbortSignal
   ): Promise<void>
 
   /**
@@ -165,73 +179,11 @@ export interface StreamlitEndpoints {
   setFileUploadClientConfig?(config: FileUploadClientConfig): void
 }
 
-/**
- * The lib config contains various configurations that the host platform can
- * use to configure streamlit-lib frontend behavior. This should to be treated as part of the public
- * API, and changes need to be backwards-compatible meaning that an old host configuration
- * should still work with a new frontend versions.
- */
-export type LibConfig = {
-  /**
-   * The mapbox token that can be configured by a platform.
-   */
-  mapboxToken?: string
-
-  /**
-   * Whether to disable the full screen mode all elements / widgets.
-   */
-  disableFullscreenMode?: boolean
-
-  enforceDownloadInNewTab?: boolean
-}
-
-/**
- * The app config contains various configurations that the host platform can
- * use to configure streamlit-app frontend behavior. This should to be treated as part of the public
- * API, and changes need to be backwards-compatible meaning that an old host configuration
- * should still work with a new frontend versions.
- *
- * TODO(lukasmasuch): Potentially refactor HostCommunicationManager and move this type
- * to AppContext.tsx.
- */
-export type AppConfig = {
-  /**
-   * A list of origins that we're allowed to receive cross-iframe messages
-   * from via the browser's window.postMessage API.
-   */
-  allowedOrigins?: string[]
-  /**
-   * Whether to wait until we've received a SET_AUTH_TOKEN message before
-   * resolving deferredAuthToken.promise. The WebsocketConnection class waits
-   * for this promise to resolve before attempting to establish a connection
-   * with the Streamlit server.
-   */
-  useExternalAuthToken?: boolean
-  /**
-   * Enables custom string messages to be sent to the host
-   */
-  enableCustomParentMessages?: boolean
-  /**
-   * Whether host wants to block error dialogs. If true, blocks error dialogs
-   * from being shown to the user, sends error info to host via postMessage
-   */
-  blockErrorDialogs?: boolean
-}
-
-export type MetricsConfig = {
-  /**
-   * URL to send metrics data to via POST request.
-   * Setting to "postMessage" sends metrics events via postMessage to host.
-   * Setting to "off" disables metrics collection.
-   * If undefined, metricsUrl requested from centralized config file.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-redundant-type-constituents
-  metricsUrl?: string | "postMessage" | "off"
-}
-
-/**
- * The response structure of the `_stcore/host-config` endpoint.
- * This combines streamlit-lib specific configuration options with
- * streamlit-app specific options (e.g. allowed message origins).
- */
-export type IHostConfigResponse = LibConfig & AppConfig & MetricsConfig
+// Re-export base config types from @streamlit/utils for backward compatibility.
+// These types are defined in the utils package to keep a single source of truth.
+export type {
+  AppConfig,
+  IHostConfigProperties,
+  LibConfig,
+  MetricsConfig,
+} from "@streamlit/utils"

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@
  */
 
 import { Field, Struct, StructRow, TimeUnit, util } from "apache-arrow"
-import trimEnd from "lodash/trimEnd"
+import { trimEnd } from "lodash-es"
 import { getLogger } from "loglevel"
 import moment from "moment-timezone"
 import numbro from "numbro"
@@ -440,8 +440,7 @@ function formatPeriod(duration: number | bigint, field?: Field): string {
  * @param field The field metadata from arrow containing metadata about the column.
  * @returns The formatted JSON string.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-function formatObject(object: any, field?: Field): string {
+function formatObject(object: unknown, field?: Field): string {
   if (field?.type instanceof Struct) {
     // This type is used by python dictionary values
 
@@ -490,10 +489,10 @@ function formatInterval(x: StructRow, field?: Field): string {
   // Serialization for pandas.Interval is provided by Arrow extensions
   // https://github.com/pandas-dev/pandas/blob/235d9009b571c21b353ab215e1e675b1924ae55c/
   // pandas/core/arrays/arrow/extension_types.py#L17
-  const extensionName = field && field.metadata.get("ARROW:extension:name")
+  const extensionName = field?.metadata.get("ARROW:extension:name")
   if (extensionName && extensionName === "pandas.interval") {
     const extensionMetadata = JSON.parse(
-      field.metadata.get("ARROW:extension:metadata") as string
+      field?.metadata.get("ARROW:extension:metadata") as string
     )
     const { subtype, closed } = extensionMetadata
 
@@ -512,7 +511,7 @@ function formatInterval(x: StructRow, field?: Field): string {
         name: "",
         metadata: null,
       },
-      arrowField: (field.type as Struct)?.children?.[0],
+      arrowField: (field?.type as Struct)?.children?.[0],
     })
     const rightInterval = format(interval.right, {
       // Construct a arrow type for the right interval
@@ -524,7 +523,7 @@ function formatInterval(x: StructRow, field?: Field): string {
         name: "",
         metadata: null,
       },
-      arrowField: (field.type as Struct)?.children?.[1],
+      arrowField: (field?.type as Struct)?.children?.[1],
     })
 
     return `${leftBracket + leftInterval}, ${rightInterval + rightBracket}`

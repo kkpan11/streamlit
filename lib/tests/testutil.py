@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,14 +17,20 @@
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from streamlit import config
+from streamlit.connections.retry_util import retry as _REAL_RETRY
 from streamlit.runtime.fragment import MemoryFragmentStorage
 from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
 from streamlit.runtime.pages_manager import PagesManager
 from streamlit.runtime.scriptrunner import ScriptRunContext
+from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
+from streamlit.runtime.scriptrunner_utils.script_run_context_attr import (
+    SCRIPT_RUN_CONTEXT_ATTR_NAME,
+)
 from streamlit.runtime.state import SafeSessionState, SessionState
 
 # Reexport functions that were moved to main codebase
@@ -36,11 +42,19 @@ from streamlit.testing.v1.util import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from snowflake.snowpark import Session
 
 
 def create_mock_script_run_ctx() -> ScriptRunContext:
-    """Create a ScriptRunContext for use in tests."""
+    """Create a ScriptRunContext for use in tests.
+
+    Also initializes FragmentThreadState on the current thread's ContextVar,
+    mirroring what reset() does in production. This ensures any code path that
+    calls ThreadState.get() will find an initialized binding.
+    """
+    ThreadState.initialize()
     return ScriptRunContext(
         session_id="mock_session_id",
         _enqueue=lambda msg: None,
@@ -52,6 +66,40 @@ def create_mock_script_run_ctx() -> ScriptRunContext:
         fragment_storage=MemoryFragmentStorage(),
         pages_manager=PagesManager(""),
     )
+
+
+def retry_without_sleep(**kwargs: object) -> object:
+    """Call the original connection retry with a no-op sleep so unit tests stay fast.
+
+    The original ``retry`` is bound at import time. Tests patch
+    ``retry_util.retry`` with this helper, so a lazy import would resolve to
+    this function and recurse.
+    """
+    kwargs["sleep"] = lambda _seconds: None
+    return _REAL_RETRY(**kwargs)
+
+
+@contextmanager
+def script_run_ctx_and_cleared_cache() -> Iterator[None]:
+    """Attach a mock ScriptRunContext and restore the previous one after the test.
+
+    Also clears ``st.cache_data`` so query-cache tests cannot leak across cases.
+    """
+    import streamlit as st
+    from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+    thread = threading.current_thread()
+    previous_ctx = getattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME, None)
+    add_script_run_ctx(thread, create_mock_script_run_ctx())
+    try:
+        yield
+    finally:
+        st.cache_data.clear()
+        if previous_ctx is None:
+            if hasattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME):
+                delattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME)
+        else:
+            setattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME, previous_ctx)
 
 
 def build_mock_config_is_manually_set(overrides_dict):
@@ -118,3 +166,63 @@ def create_snowpark_session() -> Session:
         yield session
     finally:
         session.close()
+
+
+def create_pep649_function(
+    base_func: object, string_annotations: dict[str, str]
+) -> object:
+    """Create a function with PEP 649-style annotations that raise NameError.
+
+    This helper creates a function with a custom __annotate__ that simulates
+    PEP 649 deferred annotation behavior: raises NameError when annotations
+    are evaluated in VALUE format (like types imported under TYPE_CHECKING).
+
+    Parameters
+    ----------
+    base_func
+        The base function to copy. Its code, globals, name, defaults, and
+        closure will be preserved.
+    string_annotations
+        A dict mapping parameter/return names to their string representations.
+        E.g., {"items": "UndefinedType", "return": "None"}
+
+    Returns
+    -------
+    object
+        A new function with a custom __annotate__ that:
+        - Raises NameError("name 'UndefinedType' is not defined") for VALUE format
+        - Returns string_annotations for STRING format
+        - Returns ForwardRef-wrapped values for FORWARDREF format
+
+    Examples
+    --------
+    >>> def my_func(items: object) -> None:
+    ...     pass
+    >>> pep649_func = create_pep649_function(
+    ...     my_func, {"items": "UndefinedType", "return": "None"}
+    ... )
+    >>> import inspect
+    >>> inspect.signature(pep649_func)  # Raises NameError
+    """
+    import types
+
+    from annotationlib import Format, ForwardRef
+
+    def annotate_raises(format: Format) -> dict[str, object]:
+        """Annotate function that raises NameError like PEP 649 with undefined types."""
+        if format == Format.VALUE:
+            raise NameError("name 'UndefinedType' is not defined")
+        if format == Format.STRING:
+            return string_annotations
+        # FORWARDREF format
+        return {k: ForwardRef(v) for k, v in string_annotations.items()}
+
+    func = types.FunctionType(
+        base_func.__code__,  # type: ignore[union-attr]
+        base_func.__globals__,  # type: ignore[union-attr]
+        base_func.__name__,  # type: ignore[union-attr]
+        base_func.__defaults__,  # type: ignore[union-attr]
+        base_func.__closure__,  # type: ignore[union-attr]
+    )
+    func.__annotate__ = annotate_raises  # type: ignore[attr-defined]
+    return func

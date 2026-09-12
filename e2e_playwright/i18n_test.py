@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 from typing import Any
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction
 
@@ -45,12 +45,25 @@ def browser_context_args(
     }
 
 
-def test_range_date_calendar_picker_rendering(
-    themed_app: Page, assert_snapshot: ImageCompareFunction
+def test_single_date_calendar_picker_rendering(
+    app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the range calendar picker renders correctly via screenshots matching."""
-    themed_app.get_by_test_id("stDateInput").nth(0).click()
+    """Test that the single-date calendar picker renders correctly via screenshots matching."""
+    date_input = app.get_by_test_id("stDateInput").first
+    expect(date_input).to_be_visible()
+    date_input.scroll_into_view_if_needed()
+    date_input.get_by_test_id("stDateInputField").get_by_role(
+        "spinbutton"
+    ).first.click()
+
+    calendar_popover = app.get_by_test_id("stDateInputCalendar")
+
+    expect(calendar_popover).to_be_visible()
+    # Add a small timeout to minimize some flakiness:
+    app.wait_for_timeout(500)
+    calendar_popover.scroll_into_view_if_needed()
+
     assert_snapshot(
-        themed_app.locator('[data-baseweb="calendar"]').first,
-        name="st_date_input-range_two_dates_calendar",
+        calendar_popover,
+        name="st_date_input-single_date_calendar",
     )

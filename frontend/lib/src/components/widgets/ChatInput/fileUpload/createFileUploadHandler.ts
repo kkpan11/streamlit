@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import axios from "axios"
+import type { AxiosProgressEvent } from "axios"
 
-import { IFileURLs } from "@streamlit/protobuf"
+import { type FileURLs } from "@streamlit/protobuf"
 
+import { UploadFileInfo } from "~lib/components/shared/UploadedFile/UploadFileInfo"
 import { FileUploadClient } from "~lib/FileUploadClient"
 import { WidgetInfo } from "~lib/WidgetStateManager"
-import { UploadFileInfo } from "~lib/components/widgets/FileUploader/UploadFileInfo"
 
 interface CreateUploadFileParams {
   getNextLocalFileId: () => number
@@ -28,8 +28,8 @@ interface CreateUploadFileParams {
   updateFile: (id: number, fileInfo: UploadFileInfo) => void
   uploadClient: FileUploadClient
   element: WidgetInfo
-  onUploadProgress: (e: ProgressEvent, id: number) => void
-  onUploadComplete: (id: number, fileURLs: IFileURLs) => void
+  onUploadProgress: (e: AxiosProgressEvent, id: number) => void
+  onUploadComplete: (id: number, fileURLs: FileURLs.$Properties) => void
 }
 
 export const createUploadFileHandler =
@@ -42,18 +42,23 @@ export const createUploadFileHandler =
     onUploadProgress,
     onUploadComplete,
   }: CreateUploadFileParams) =>
-  (fileURLs: IFileURLs, file: File): void => {
+  (fileURLs: FileURLs.$Properties, file: File): void => {
     // Create an UploadFileInfo for this file and add it to our state.
-    const cancelToken = axios.CancelToken.source()
+    // For directory uploads, prefer the webkitRelativePath so we preserve
+    // the original directory structure in the displayed file name.
+    const fileName = file.webkitRelativePath || file.name
+
+    const abortController = new AbortController()
     const uploadingFileInfo = new UploadFileInfo(
-      file.name,
+      fileName,
       file.size,
       getNextLocalFileId(),
       {
         type: "uploading",
-        cancelToken,
+        abortController,
         progress: 1,
-      }
+      },
+      file
     )
     addFiles([uploadingFileInfo])
 
@@ -66,13 +71,13 @@ export const createUploadFileHandler =
         fileURLs.uploadUrl as string,
         file,
         e => onUploadProgress(e, uploadingFileInfo.id),
-        cancelToken.token
+        abortController.signal
       )
       .then(() => onUploadComplete(uploadingFileInfo.id, fileURLs))
       .catch(err => {
-        // If this was a cancel error, we don't show the user an error -
+        // If this was an abort error, we don't show the user an error -
         // the cancellation was in response to an action they took.
-        if (!axios.isCancel(err)) {
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
           updateFile(
             uploadingFileInfo.id,
             uploadingFileInfo.setStatus({

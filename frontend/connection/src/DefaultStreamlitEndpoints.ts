@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,24 @@
  * limitations under the License.
  */
 
-import axios, { AxiosRequestConfig, AxiosResponse, CancelToken } from "axios"
+import type {
+  AxiosProgressEvent,
+  AxiosRequestConfig,
+  AxiosResponse,
+} from "axios"
 import { getLogger } from "loglevel"
 
-import { IAppPage } from "@streamlit/protobuf"
+import { type AppPage } from "@streamlit/protobuf"
 import {
   buildHttpUri,
   getCookie,
   makePath,
   notNullOrUndefined,
+  StreamlitConfig,
 } from "@streamlit/utils"
 
 import { FileUploadClientConfig, StreamlitEndpoints } from "./types"
+import { parseUriIntoBaseParts } from "./utils"
 
 const LOG = getLogger("DefaultStreamlitEndpoints")
 
@@ -44,8 +50,10 @@ interface Props {
 // These endpoints need to be kept in sync with the endpoints in
 // lib/streamlit/web/server/server.py
 const MEDIA_ENDPOINT = "/media"
+const STATIC_SERVING_ENDPOINT = "/app/static/"
 const UPLOAD_FILE_ENDPOINT = "/_stcore/upload_file"
 const COMPONENT_ENDPOINT_BASE = "/component"
+const BIDI_COMPONENT_ENDPOINT_BASE = "/_stcore/bidi-components"
 
 /** Default Streamlit server implementation of the StreamlitEndpoints interface. */
 export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
@@ -144,6 +152,13 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
     )
   }
 
+  public buildBidiComponentURL(componentName: string, path: string): string {
+    return buildHttpUri(
+      this.requireServerUri(),
+      `${BIDI_COMPONENT_ENDPOINT_BASE}/${componentName}/${path}`
+    )
+  }
+
   public setFileUploadClientConfig({
     prefix,
     headers,
@@ -165,18 +180,46 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
 
   /**
    * Construct a URL for a media file. If the `staticConfigUrl` is set, we have a static app
-   * and will serve media from S3. If the url is relative and starts with  "/media",
-   * assume it's being served from Streamlit and construct it appropriately.
+   * and will serve media from S3. If the url is relative and starts with "/media" or
+   * "/app/static/", assume it's being served from Streamlit and construct it appropriately.
    * Otherwise leave it alone.
    */
   public buildMediaURL(url: string): string {
-    if (this.staticConfigUrl && url.startsWith(MEDIA_ENDPOINT)) {
-      return this.buildStaticUrl(url)
+    if (this.staticConfigUrl) {
+      // In static connection mode, build S3 URLs for both /media and /app/static/
+      if (
+        url.startsWith(MEDIA_ENDPOINT) ||
+        url.startsWith(STATIC_SERVING_ENDPOINT)
+      ) {
+        return this.buildStaticUrl(url)
+      }
     }
-    if (url.startsWith(MEDIA_ENDPOINT)) {
+    if (
+      url.startsWith(MEDIA_ENDPOINT) ||
+      url.startsWith(STATIC_SERVING_ENDPOINT)
+    ) {
       return buildHttpUri(this.requireServerUri(), url)
     }
     return url
+  }
+
+  /**
+   * Construct a URL for a download file.
+   * @param url a relative or absolute URL. If `url` is absolute, it will be
+   * returned unchanged. Otherwise, the return value will be a URL for fetching
+   * the media file from the connected Streamlit instance. The target server can
+   * be changed by setting StreamlitConfig.DOWNLOAD_ASSETS_BASE_URL.
+   */
+  public buildDownloadUrl(url: string): string {
+    if (!url.startsWith(MEDIA_ENDPOINT)) {
+      return url
+    }
+
+    // The url is relative, so we need to build the full URL.
+    const downloadAssetBaseUrl = StreamlitConfig.DOWNLOAD_ASSETS_BASE_URL
+    return downloadAssetBaseUrl
+      ? buildHttpUri(parseUriIntoBaseParts(downloadAssetBaseUrl), url)
+      : buildHttpUri(this.requireServerUri(), url)
   }
 
   /**
@@ -184,7 +227,7 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
    * exists, we build URL by prefixing URL with prefix from the config,
    * otherwise if the `fileUploadClientConfig` is not present, if URL is
    * relative and starts with "/_stcore/upload_file", assume we're uploading
-   * the file to the Streamlit Tornado server and construct the URL
+   * the file to the Streamlit server and construct the URL
    * appropriately. Otherwise, we're probably uploading the file to some
    * external service, so we leave the URL alone.
    */
@@ -201,7 +244,7 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
   /** Construct a URL for an app page in a multi-page app. */
   public buildAppPageURL(
     pageLinkBaseURL: string | undefined,
-    page: IAppPage
+    page: AppPage.$Properties
   ): string {
     const urlPath = page.urlPathname as string
     const navigateTo = page.isDefault ? "" : urlPath
@@ -227,12 +270,14 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
     fileUploadUrl: string,
     file: File,
     _sessionId: string,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    onUploadProgress?: (progressEvent: any) => void,
-    cancelToken?: CancelToken
+    onUploadProgress?: (progressEvent: AxiosProgressEvent) => void,
+    signal?: AbortSignal
   ): Promise<void> {
     const form = new FormData()
-    form.append(file.name, file)
+    const { name, webkitRelativePath } = file
+    // For directory uploads, use the relative path as fileName to preserve directory structure
+    const fileName = webkitRelativePath || name
+    form.append(name, file, fileName)
 
     const headers: Record<string, string> = this.getAdditionalHeaders()
 
@@ -240,7 +285,7 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
 
     try {
       await this.csrfRequest<number>(uploadUrl, {
-        cancelToken,
+        signal,
         method: "PUT",
         data: form,
         responseType: "text",
@@ -321,8 +366,9 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
       return serverUri
     }
 
-    if (notNullOrUndefined(this.cachedServerUri)) {
-      return this.cachedServerUri
+    const cachedServerUri = this.cachedServerUri
+    if (notNullOrUndefined(cachedServerUri)) {
+      return cachedServerUri
     }
 
     throw new Error("not connected to a server!")
@@ -331,12 +377,12 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
   /**
    * Wrapper around axios.request to update the request config with
    * CSRF headers if client has CSRF protection enabled.
+   * Uses dynamic import to load axios only when needed (file upload/delete operations).
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  private csrfRequest<T = any, R = AxiosResponse<T>>(
+  private async csrfRequest<T = unknown>(
     url: string,
     params: AxiosRequestConfig
-  ): Promise<R> {
+  ): Promise<AxiosResponse<T>> {
     params.url = url
 
     if (this.csrfEnabled) {
@@ -344,12 +390,14 @@ export class DefaultStreamlitEndpoints implements StreamlitEndpoints {
       if (notNullOrUndefined(xsrfCookie)) {
         params.headers = {
           "X-Xsrftoken": xsrfCookie,
-          ...(params.headers || {}),
+          ...params.headers,
         }
         params.withCredentials = true
       }
     }
 
-    return axios.request<T, R>(params)
+    // Dynamic import to avoid loading axios in the entry bundle
+    const { default: axios } = await import("axios")
+    return axios.request<T>(params)
   }
 }

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -84,7 +84,8 @@ st.write("text input 13 (value from form) - value: ", form_value)
 
 
 st.text_input(
-    "text input 14 -> :material/check: :rainbow[Fancy] **markdown** `label` _support_"
+    "text input 14 -> :material/check: :rainbow[Fancy] **markdown** `label` _support_",
+    key="text_input_14",
 )
 
 if "rerun_counter" not in st.session_state:
@@ -99,5 +100,232 @@ st.text_input(
     "text input 16 - material icon", placeholder="Placeholder", icon=":material/search:"
 )
 
+st.markdown("Specialized input types:")
+
+email_value = st.text_input("Email", key="email_input", type="email")
+st.write("email value:", email_value)
+
+url_value = st.text_input("URL", key="url_input", type="url")
+st.write("url value:", url_value)
+
+st.text_input("Phone", key="phone_input", type="phone")
+st.text_input("Search", key="search_input", type="search", bind="query-params")
+
+override_value = st.text_input(
+    "Work email (overrides)",
+    key="email_override_input",
+    type="email",
+    icon=":material/work:",
+    placeholder="name@company.com",
+    validate=(r"^[\w.+-]+@company\.com$", "Use your @company.com address."),
+    autocomplete="off",
+)
+st.write("override value:", override_value)
+
 st.text_input("text input 17 (width=200px)", "width test", width=200)
 st.text_input("text input 18 (width='stretch')", "width test", width="stretch")
+
+if "validation_rerun_counter" not in st.session_state:
+    st.session_state.validation_rerun_counter = 0
+
+st.session_state.validation_rerun_counter += 1
+st.markdown("Validation text inputs:")
+
+validated_regex_value = st.text_input(
+    "text input 19 (validate regex)",
+    key="validated_regex_input",
+    validate=r"^[a-z]+$",
+)
+st.write("validated regex value:", validated_regex_value)
+
+validated_custom_value = st.text_input(
+    "text input 20 (validate custom message)",
+    key="validated_custom_input",
+    validate=(r"^[a-z]+$", "Lowercase only"),
+)
+st.write("validated custom value:", validated_custom_value)
+
+invalid_regex_value = st.text_input(
+    "text input 21 (invalid validate regex)",
+    key="invalid_validate_regex_input",
+    validate="[",
+)
+st.write("invalid regex value:", invalid_regex_value)
+
+with st.form("validated_text_input_form"):
+    st.text_input(
+        "text input 22 (validate in form)",
+        key="validated_form_input",
+        validate=(r"^[0-9]{4}$", "Enter exactly four digits."),
+    )
+    validated_form_submitted = st.form_submit_button("Submit validated text input form")
+
+st.write("validated form submitted:", validated_form_submitted)
+st.write("validated form value:", st.session_state.get("validated_form_input", ""))
+st.write("Validation rerun counter:", st.session_state.validation_rerun_counter)
+
+st.markdown("Dynamic text input:")
+
+if st.toggle("Update text input props"):
+    txt_value = st.text_input(
+        "Updated dynamic text input",
+        value="updated",
+        width=200,
+        help="updated help",
+        key="dynamic_text_input_with_key",
+        on_change=lambda a, param: print(
+            f"Updated text input - callback triggered: {a} {param}"
+        ),
+        args=("Updated text arg",),
+        kwargs={"param": "updated kwarg param"},
+        placeholder="updated placeholder",
+        autocomplete="updated autocomplete",
+        # max_chars is not yet supported for dynamic changes
+        # keeping it at the same value for now:
+        max_chars=100,
+    )
+    st.write("Updated text input value:", txt_value)
+else:
+    txt_value = st.text_input(
+        "Initial dynamic text input",
+        value="initial",
+        width="stretch",
+        help="initial help",
+        key="dynamic_text_input_with_key",
+        on_change=lambda a, param: print(
+            f"Initial text input - callback triggered: {a} {param}"
+        ),
+        args=("Initial text arg",),
+        kwargs={"param": "initial kwarg param"},
+        placeholder="initial placeholder",
+        autocomplete="initial autocomplete",
+        max_chars=100,
+    )
+    st.write("Initial text input value:", txt_value)
+
+# Query param binding text inputs
+st.markdown("Query param binding:")
+bound_text = st.text_input(
+    "Bound no default",
+    key="bound_text",
+    bind="query-params",
+)
+st.write("bound text value:", bound_text)
+
+bound_text_default = st.text_input(
+    "Bound with default",
+    value="hello",
+    key="bound_text_default",
+    bind="query-params",
+)
+st.write("bound text default value:", bound_text_default)
+
+bound_text_max = st.text_input(
+    "Bound max chars",
+    key="bound_max",
+    bind="query-params",
+    max_chars=5,
+)
+st.write("bound text max value:", bound_text_max)
+
+# Programmatic st.session_state updates must sync the browser URL for bound widgets
+if runtime.exists():
+    st.markdown("Bound widget + session_state sync:")
+    if st.button("Set bound_text_ss via session_state", key="set_bound_text_ss_btn"):
+        st.session_state["bound_text_ss"] = "arbitrary value"
+    if st.button("Reset bound_text_ss to default", key="reset_bound_text_ss_btn"):
+        st.session_state["bound_text_ss"] = "default"
+    st.text_input(
+        "bound text session state input",
+        value="default",
+        key="bound_text_ss",
+        bind="query-params",
+    )
+    st.write("bound text ss value:", st.session_state["bound_text_ss"])
+
+# --- setValue one-shot test (element hash memo regression) ---
+if "setvalue_counter" not in st.session_state:
+    st.session_state.setvalue_counter = 0
+
+st.session_state.setvalue_counter += 1
+
+st.text_input(
+    "Programmatic value input", value="fixed_value", key="setvalue_test_input"
+)
+st.write(f"Text input counter: {st.session_state.setvalue_counter}")
+
+st.button("Trigger text input rerun")
+
+# --- on_change="ignore" text input ---
+ignore_text = st.text_input(
+    "Ignore change text input",
+    value="hello",
+    key="ignore_text",
+    on_change="ignore",
+    bind="query-params",
+)
+st.write("Ignore text value:", ignore_text)
+
+if st.button("Apply ignore text", key="apply_ignore_text"):
+    st.write("Applied ignore text value:", ignore_text)
+
+# --- live update mode ---
+st.markdown("Live update text inputs:")
+
+live_default = st.text_input("Live default input", live=True)
+st.write("Live default value:", live_default)
+
+live_slow = st.text_input("Live 1s input", live="1s")
+st.write("Live 1s value:", live_slow)
+
+live_immediate = st.text_input("Live 0ms input", live="0ms")
+st.write("Live 0ms value:", live_immediate)
+
+with st.form("live_form"):
+    live_form_value = st.text_input("Live form input", live=True)
+    live_form_submitted = st.form_submit_button("Submit live form")
+st.write("Live form submitted:", live_form_submitted)
+st.write("Live form value:", live_form_value)
+
+live_ignore = st.text_input(
+    "Live ignore input",
+    live=True,
+    on_change="ignore",
+)
+st.write("Live ignore value:", live_ignore)
+if st.button("Reveal live ignore", key="reveal_live_ignore"):
+    st.write("Revealed live ignore value:", live_ignore)
+
+live_validate = st.text_input(
+    "Live validate input",
+    live=True,
+    validate=r"^[a-z]+$",
+)
+st.write("Live validate value:", live_validate)
+
+live_search = st.text_input("Live search input", type="search", live=True)
+st.write("Live search value:", live_search)
+
+if "outside_fragment_counter" not in st.session_state:
+    st.session_state.outside_fragment_counter = 0
+st.session_state.outside_fragment_counter += 1
+st.write("Outside fragment counter:", st.session_state.outside_fragment_counter)
+
+
+@st.fragment
+def _live_fragment_search() -> None:
+    fragment_query = st.text_input("Live fragment input", live=True)
+    st.write("Live fragment value:", fragment_query)
+
+
+_live_fragment_search()
+
+
+@st.dialog("Live dialog")
+def _live_dialog() -> None:
+    dialog_query = st.text_input("Live dialog input", live=True)
+    st.write("Live dialog value:", dialog_query)
+
+
+if st.button("Open live dialog"):
+    _live_dialog()

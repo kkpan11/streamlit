@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,22 +14,16 @@
  * limitations under the License.
  */
 
-import merge from "lodash/merge"
-import mergeWith from "lodash/mergeWith"
+import { merge, mergeWith } from "lodash-es"
 
-import {
-  convertRemToPx,
-  EmotionTheme,
-  getBlue80,
-  getCategoricalColorsArray,
-  getDivergingColorsArray,
-  getGray30,
-  getGray70,
-  getSequentialColorsArray,
-} from "~lib/theme"
+import { getGray30, getGray70 } from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
+import { convertRemToPx } from "~lib/theme/utils"
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function applyStreamlitTheme(config: any, theme: EmotionTheme): any {
+export function applyStreamlitTheme(
+  config: object | undefined,
+  theme: EmotionTheme
+): object {
   // This theming config contains multiple hard coded spacing values.
   // The reason is that we currently only have rem values in our spacing
   // definitions and vega lite requires numerical (pixel) values.
@@ -90,23 +84,19 @@ export function applyStreamlitTheme(config: any, theme: EmotionTheme): any {
       titleFontWeight: theme.fontWeights.normal,
       titleFontStyle: "normal",
       titleColor: getGray70(theme),
-      // TODO(lukasmasuch): Change padding here to use a spacing
-      // based on our available spacings (-> 4px = 0.25rem)
-      titlePadding: 5,
+      // More than rowPadding so the title is not stuck to the first entry.
+      titlePadding: convertRemToPx(theme.spacing.sm),
       labelPadding: convertRemToPx(theme.spacing.lg),
       columnPadding: convertRemToPx(theme.spacing.sm),
       rowPadding: convertRemToPx(theme.spacing.twoXS),
-      // TODO(lukasmasuch): Change padding here to use a spacing
-      // based on our available spacings (-> 8px = 0.5rem)
-      // eslint-disable-next-line streamlit-custom/no-hardcoded-theme-values
-      padding: 7,
+      padding: convertRemToPx(theme.spacing.sm),
       symbolStrokeWidth: convertRemToPx(theme.spacing.twoXS),
     },
     range: {
-      category: getCategoricalColorsArray(theme),
-      diverging: getDivergingColorsArray(theme),
-      ramp: getSequentialColorsArray(theme),
-      heatmap: getSequentialColorsArray(theme),
+      category: theme.colors.chartCategoricalColors,
+      diverging: theme.colors.chartDivergingColors,
+      ramp: theme.colors.chartSequentialColors,
+      heatmap: theme.colors.chartSequentialColors,
     },
     view: {
       columns: 1,
@@ -123,7 +113,7 @@ export function applyStreamlitTheme(config: any, theme: EmotionTheme): any {
     },
     mark: {
       tooltip: { content: "encoding" },
-      color: getBlue80(theme),
+      color: theme.colors.chartCategoricalColors[0],
     },
     bar: {
       binSpacing: convertRemToPx(theme.spacing.twoXS),
@@ -153,8 +143,10 @@ export function applyStreamlitTheme(config: any, theme: EmotionTheme): any {
   )
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function applyThemeDefaults(config: any, theme: EmotionTheme): any {
+export function applyThemeDefaults(
+  config: object | undefined,
+  theme: EmotionTheme
+): object {
   const { colors, fontSizes, genericFonts } = theme
   const themeFonts = {
     labelFont: genericFonts.bodyFont,

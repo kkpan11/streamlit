@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,21 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement } from "react"
+import { memo, ReactElement, useCallback } from "react"
 
 import { Button as ButtonProto } from "@streamlit/protobuf"
 
+import { Box } from "~lib/components/shared/Base/styled-components"
 import BaseButton, {
   BaseButtonKind,
   BaseButtonSize,
-  BaseButtonTooltip,
-  DynamicButtonLabel,
-} from "~lib/components/shared/BaseButton"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import { DynamicButtonLabel } from "~lib/components/shared/BaseButton/DynamicButtonLabel"
+import { mapProtoIconPosition } from "~lib/components/shared/BaseButton/iconPosition"
+import { useResolvedWrap } from "~lib/components/shared/BaseButton/useResolvedWrap"
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
 import { WidgetStateManager } from "~lib/WidgetStateManager"
-import { Box } from "~lib/components/shared/Base/styled-components"
 
 export interface Props {
   disabled: boolean
@@ -36,6 +39,12 @@ export interface Props {
 
 function Button(props: Props): ReactElement {
   const { disabled, element, widgetMgr, fragmentId } = props
+  const shortcut = element.shortcut ? element.shortcut : undefined
+
+  // When wrap resolves to no-wrap, reveal the full label on hover via a native
+  // title, skipped when help is set since help provides the tooltip.
+  const wrap = useResolvedWrap(element.wrap)
+  const addTitleTooltip = !wrap && !element.help
 
   let kind = BaseButtonKind.SECONDARY
   if (element.type === "primary") {
@@ -44,22 +53,47 @@ function Button(props: Props): ReactElement {
     kind = BaseButtonKind.TERTIARY
   }
 
+  const handleTrigger = useCallback(() => {
+    if (disabled) {
+      return
+    }
+
+    void widgetMgr.setTriggerValue(element.id, {
+      formId: element.formId,
+      fragmentId,
+      fromUser: true,
+    })
+  }, [disabled, widgetMgr, element, fragmentId])
+
+  useRegisterShortcut({
+    shortcut,
+    disabled,
+    onActivate: handleTrigger,
+  })
+
   return (
     <Box className="stButton" data-testid="stButton">
       <BaseButtonTooltip
         help={element.help}
-        containerWidth={element.useContainerWidth}
+        // The element wrapper determines the width so
+        // we should always expand to fill the wrapper.
+        containerWidth={true}
       >
         <BaseButton
           kind={kind}
           size={BaseButtonSize.SMALL}
           disabled={disabled}
-          containerWidth={element.useContainerWidth}
-          onClick={() =>
-            widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
-          }
+          containerWidth={true}
+          onClick={handleTrigger}
         >
-          <DynamicButtonLabel icon={element.icon} label={element.label} />
+          <DynamicButtonLabel
+            icon={element.icon}
+            iconPosition={mapProtoIconPosition(element.iconPosition)}
+            label={element.label}
+            shortcut={shortcut}
+            wrap={wrap}
+            addTitleTooltip={addTitleTooltip}
+          />
         </BaseButton>
       </BaseButtonTooltip>
     </Box>

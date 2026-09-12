@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-import decamelize from "decamelize"
-import get from "lodash/get"
+import { get } from "lodash-es"
 import xxhash from "xxhashjs"
 
 import {
   Alert as AlertProto,
   ChatInput as ChatInputProto,
   Element,
-  LabelVisibilityMessage as LabelVisibilityMessageProto,
+  LabelVisibility as LabelVisibilityProto,
   Skeleton as SkeletonProto,
 } from "@streamlit/protobuf"
 import { isNullOrUndefined, notNullOrUndefined } from "@streamlit/utils"
@@ -30,7 +29,7 @@ import { isNullOrUndefined, notNullOrUndefined } from "@streamlit/utils"
 import { assertNever } from "./assertNever"
 
 // This prefix should be in sync with the value on the python side:
-const GENERATED_ELEMENT_ID_PREFIX = "$$ID"
+export const GENERATED_ELEMENT_ID_PREFIX = "$$ID"
 
 /**
  * Wraps a function to allow it to be called, at most, once per interval
@@ -39,17 +38,18 @@ const GENERATED_ELEMENT_ID_PREFIX = "$$ID"
  * will only be called after the full interval has elapsed since the last
  * call.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export function debounce(delay: number, fn: any): any {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  let timerId: any
+export function debounce<TArgs extends unknown[]>(
+  delay: number,
+  fn: (...args: TArgs) => void
+): (...args: TArgs) => void {
+  let timerId: ReturnType<typeof setTimeout> | null = null
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  return (...args: any[]) => {
+  return (...args: TArgs) => {
     if (timerId) {
       clearTimeout(timerId)
     }
 
+    // eslint-disable-next-line no-restricted-globals -- Shared utility debounce is framework-agnostic and cannot use hooks.
     timerId = setTimeout(() => {
       fn(...args)
       timerId = null
@@ -61,19 +61,17 @@ export function debounce(delay: number, fn: any): any {
  * Embed query param values, which can be set in ?embed={value}, all should be lowercase
  */
 export const EMBED_QUERY_PARAM_KEY = "embed"
-export const EMBED_OPTIONS_QUERY_PARAM_KEY = "embed_options"
-export const EMBED_SHOW_COLORED_LINE = "show_colored_line"
-export const EMBED_SHOW_TOOLBAR = "show_toolbar"
-export const EMBED_SHOW_PADDING = "show_padding"
-export const EMBED_DISABLE_SCROLLING = "disable_scrolling"
-export const EMBED_LIGHT_THEME = "light_theme"
-export const EMBED_DARK_THEME = "dark_theme"
-export const EMBED_TRUE = "true"
-export const EMBED_HIDE_LOADING_SCREEN = "hide_loading_screen"
-export const EMBED_SHOW_LOADING_SCREEN_V1 = "show_loading_screen_v1"
-export const EMBED_SHOW_LOADING_SCREEN_V2 = "show_loading_screen_v2"
+const EMBED_OPTIONS_QUERY_PARAM_KEY = "embed_options"
+const EMBED_SHOW_TOOLBAR = "show_toolbar"
+const EMBED_SHOW_PADDING = "show_padding"
+const EMBED_DISABLE_SCROLLING = "disable_scrolling"
+const EMBED_LIGHT_THEME = "light_theme"
+const EMBED_DARK_THEME = "dark_theme"
+const EMBED_TRUE = "true"
+const EMBED_HIDE_LOADING_SCREEN = "hide_loading_screen"
+const EMBED_SHOW_LOADING_SCREEN_V1 = "show_loading_screen_v1"
+const EMBED_SHOW_LOADING_SCREEN_V2 = "show_loading_screen_v2"
 export const EMBED_QUERY_PARAM_VALUES = [
-  EMBED_SHOW_COLORED_LINE,
   EMBED_SHOW_TOOLBAR,
   EMBED_SHOW_PADDING,
   EMBED_DISABLE_SCROLLING,
@@ -137,22 +135,29 @@ export function preserveEmbedQueryParams(): string {
 }
 
 /**
+ * Builds a query string by combining an optional override with preserved embed params.
+ * Used during page navigation to merge user query params with embed options.
+ */
+export function getQueryString(
+  queryStringOverride: string | undefined,
+  preservedQueryParams: string
+): string {
+  if (queryStringOverride !== undefined) {
+    if (preservedQueryParams) {
+      return queryStringOverride
+        ? `${preservedQueryParams}&${queryStringOverride}`
+        : preservedQueryParams
+    }
+    return queryStringOverride
+  }
+  return preservedQueryParams
+}
+
+/**
  * Returns true if the URL parameters contain ?embed=true (case insensitive).
  */
 export function isEmbed(): boolean {
   return getEmbedUrlParams(EMBED_QUERY_PARAM_KEY).has(EMBED_TRUE)
-}
-
-/**
- * Returns true if the URL parameters contain ?embed=true&embed_options=show_colored_line (case insensitive).
- */
-export function isColoredLineDisplayed(): boolean {
-  return (
-    isEmbed() &&
-    getEmbedUrlParams(EMBED_OPTIONS_QUERY_PARAM_KEY).has(
-      EMBED_SHOW_COLORED_LINE
-    )
-  )
 }
 
 /**
@@ -228,8 +233,7 @@ export function getUrl(): string {
     } else {
       url = document.location.href
     }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (e) {
+  } catch {
     // CSP error might occur when trying to access parent frame
     url = document.location.href
   }
@@ -239,6 +243,21 @@ export function getUrl(): string {
   urlObj.search = ""
   urlObj.hash = ""
   return urlObj.toString()
+}
+
+/**
+ * Returns date in "YYYY-MM-DD-HH-MM-SS" format to be used for screencast recording file name.
+ */
+export function getScreencastTimestamp(): string {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  const hours = String(date.getHours()).padStart(2, "0")
+  const minutes = String(date.getMinutes()).padStart(2, "0")
+  const seconds = String(date.getSeconds()).padStart(2, "0")
+
+  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}`
 }
 
 /**
@@ -315,7 +334,7 @@ export function hashString(s: string): string {
  * Coerces a possibly-null value into a non-null value, throwing an error
  * if the value is null or undefined.
  */
-export function requireNonNull<T>(obj: T | null | undefined): T {
+function requireNonNull<T>(obj: T | null | undefined): T {
   if (isNullOrUndefined(obj)) {
     throw new Error("value is null")
   }
@@ -327,14 +346,6 @@ export function requireNonNull<T>(obj: T | null | undefined): T {
  */
 export function notUndefined<T>(value: T | undefined): value is T {
   return value !== undefined
-}
-
-/**
- * A promise that would be resolved after certain time
- * @param ms number
- */
-export function timeout(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**
@@ -383,8 +394,10 @@ export function isValidElementId(
  * If the element has a valid ID, returns it. Otherwise, returns undefined.
  */
 export function getElementId(element: Element): string | undefined {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  const elementId = get(element as any, [requireNonNull(element.type), "id"])
+  const elementId = get(element as unknown as Record<string, unknown>, [
+    requireNonNull(element.type),
+    "id",
+  ])
   if (elementId && isValidElementId(elementId)) {
     // We only care about valid element IDs (with the correct prefix)
     return elementId
@@ -402,6 +415,52 @@ export function isInForm(widget: { formId?: string }): boolean {
   return isValidFormId(widget.formId)
 }
 
+/**
+ * Determines the appropriate placeholder text for select-type widgets.
+ * Handles both single-select and multi-select cases with appropriate pluralization.
+ *
+ * @param placeholder - The custom placeholder provided by the user (empty string means use defaults)
+ * @param options - Array of available options
+ * @param acceptNewOptions - Whether the widget accepts new options
+ * @param isMultiSelect - Whether this is for a multi-select widget (affects pluralization)
+ * @returns Object containing the placeholder text and whether the widget should be disabled
+ */
+export function getSelectPlaceholder(
+  placeholder: string,
+  options: readonly string[],
+  acceptNewOptions: boolean,
+  isMultiSelect = false
+): { placeholder: string; shouldDisable: boolean } {
+  let shouldDisable = false
+
+  // If custom placeholder is provided (not empty string), use it as-is
+  if (placeholder !== "") {
+    return { placeholder, shouldDisable }
+  }
+
+  // Determine appropriate default placeholder based on widget state
+  if (options.length === 0) {
+    if (!acceptNewOptions) {
+      placeholder = "No options to select"
+      // When a user cannot add new options and there are no options to select from, we disable the widget
+      shouldDisable = true
+    } else {
+      placeholder = isMultiSelect ? "Add options" : "Add an option"
+    }
+  } else {
+    // For non-empty options, set appropriate default placeholder
+    if (acceptNewOptions) {
+      placeholder = isMultiSelect
+        ? "Choose or add options"
+        : "Choose or add an option"
+    } else {
+      placeholder = isMultiSelect ? "Choose options" : "Choose an option"
+    }
+  }
+
+  return { placeholder, shouldDisable }
+}
+
 export enum LabelVisibilityOptions {
   Visible,
   Hidden,
@@ -409,14 +468,14 @@ export enum LabelVisibilityOptions {
 }
 
 export function labelVisibilityProtoValueToEnum(
-  value: LabelVisibilityMessageProto.LabelVisibilityOptions | null | undefined
+  value: LabelVisibilityProto.LabelVisibilityOptions | null | undefined
 ): LabelVisibilityOptions {
   switch (value) {
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.VISIBLE:
+    case LabelVisibilityProto.LabelVisibilityOptions.VISIBLE:
       return LabelVisibilityOptions.Visible
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.HIDDEN:
+    case LabelVisibilityProto.LabelVisibilityOptions.HIDDEN:
       return LabelVisibilityOptions.Hidden
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.COLLAPSED:
+    case LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED:
       return LabelVisibilityOptions.Collapsed
     default:
       return LabelVisibilityOptions.Visible
@@ -427,6 +486,7 @@ export enum AcceptFileValue {
   None,
   Single,
   Multiple,
+  Directory,
 }
 
 export function chatInputAcceptFileProtoValueToEnum(
@@ -439,6 +499,8 @@ export function chatInputAcceptFileProtoValueToEnum(
       return AcceptFileValue.Single
     case ChatInputProto.AcceptFile.MULTIPLE:
       return AcceptFileValue.Multiple
+    case ChatInputProto.AcceptFile.DIRECTORY:
+      return AcceptFileValue.Directory
     default:
       assertNever(value)
       return AcceptFileValue.None
@@ -448,7 +510,7 @@ export function chatInputAcceptFileProtoValueToEnum(
 /**
  * Looks for an IFrame with given className inside given querySet
  */
-export function findAnIFrameWithClassName(
+function findAnIFrameWithClassName(
   qs: NodeListOf<HTMLIFrameElement> | HTMLCollectionOf<HTMLIFrameElement>,
   className: string
 ): HTMLIFrameElement | null {
@@ -464,14 +526,13 @@ export function findAnIFrameWithClassName(
 /**
  * Returns True if IFrame can be accessed otherwise returns False
  */
-export function canAccessIFrame(iframe: HTMLIFrameElement): boolean {
+function canAccessIFrame(iframe: HTMLIFrameElement): boolean {
   try {
     if (iframe.contentWindow === null) return false
     const doc = iframe.contentDocument || iframe.contentWindow.document
     const html = doc.body.innerHTML
     return html !== null && html !== ""
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  } catch (err) {
+  } catch {
     return false
   }
 }
@@ -589,32 +650,55 @@ export function extractPageNameFromPathName(
  * // }
  */
 export function keysToSnakeCase(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  obj: Record<string, any>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-): Record<string, any> {
+  obj: Record<string, unknown>
+): Record<string, unknown> {
   return Object.keys(obj).reduce(
     (acc, key) => {
-      const newKey = decamelize(key, {
-        preserveConsecutiveUppercase: true,
-      }).replace(".", "_")
+      const newKey = decamelizePreservingUppercase(key).replace(".", "_")
       let value = obj[key]
 
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        value = keysToSnakeCase(value)
+        value = keysToSnakeCase(value as Record<string, unknown>)
       }
 
       if (Array.isArray(value)) {
         value = value.map(item =>
-          typeof item === "object" ? keysToSnakeCase(item) : item
+          item !== null && typeof item === "object"
+            ? keysToSnakeCase(item as Record<string, unknown>)
+            : item
         )
       }
 
       acc[newKey] = value
       return acc
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    {} as Record<string, any>
+    {} as Record<string, unknown>
+  )
+}
+
+/** Convert camelCase to snake_case, keeping consecutive uppercase abbreviations intact (`XMLHttpRequest` → `XML_http_request`).
+ *  Adapted from sindresorhus/decamelize (`preserveConsecutiveUppercase: true`), MIT. */
+function decamelizePreservingUppercase(value: string): string {
+  if (value.length < 2) {
+    return value
+  }
+
+  // Insert `_` between a lowercase letter or digit and an uppercase letter.
+  const separated = value.replaceAll(
+    /([\p{Lowercase_Letter}\d])(\p{Uppercase_Letter})/gu,
+    "$1_$2"
+  )
+  // Lowercase isolated uppercase letters/digits so they are not treated as abbreviations.
+  const lowercasedSingleLetters = separated.replaceAll(
+    /((?<![\p{Uppercase_Letter}\d])[\p{Uppercase_Letter}\d](?![\p{Uppercase_Letter}\d]))/gu,
+    character => character.toLowerCase()
+  )
+
+  // Split an abbreviation from the capitalized word that follows it (`XMLHttp` → `XML_http`).
+  return lowercasedSingleLetters.replaceAll(
+    /(?<!\p{Uppercase_Letter})(\p{Uppercase_Letter}+)(\p{Uppercase_Letter}\p{Lowercase_Letter}+)/gu,
+    (_, uppercase: string, trailingWord: string) =>
+      `${uppercase}_${trailingWord.toLowerCase()}`
   )
 }
 

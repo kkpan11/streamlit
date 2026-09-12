@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,53 +15,75 @@
 from __future__ import annotations
 
 import unittest
-from http.cookies import Morsel
 from unittest.mock import MagicMock, patch
 
+import pytest
 from parameterized import parameterized
-from tornado.httputil import HTTPHeaders
 
 import streamlit as st
-from streamlit.runtime.context import _normalize_header
+from streamlit.runtime.context import (
+    _CONTEXT_KEYS,
+    ContextProxy,
+    StreamlitCookies,
+    StreamlitHeaders,
+    StreamlitTheme,
+    _get_client_context,
+    _normalize_header,
+)
+
+
+def _create_mock_client_context(
+    headers: list[tuple[str, str]] | None = None,
+    cookies: dict[str, str] | None = None,
+    remote_ip: str | None = None,
+) -> MagicMock:
+    """Create a mock ClientContext for testing."""
+    mock_context = MagicMock()
+    mock_context.headers = headers or []
+    mock_context.cookies = cookies or {}
+    mock_context.remote_ip = remote_ip
+    return mock_context
 
 
 class StContextTest(unittest.TestCase):
-    mocked_cookie = Morsel()
-    mocked_cookie.set("cookieName", "cookieValue", "cookieValue")
+    """Test st.context API."""
 
-    @patch(
-        "streamlit.runtime.context._get_request",
-        MagicMock(
-            return_value=MagicMock(headers=HTTPHeaders({"the-header": "header-value"}))
-        ),
-    )
-    def test_context_headers(self):
-        """Test that `st.context.headers` returns headers from ScriptRunContext"""
+    @patch("streamlit.runtime.context._get_client_context")
+    def test_context_headers(self, mock_get_client_context: MagicMock) -> None:
+        """Test that `st.context.headers` returns headers from ClientContext."""
+        mock_get_client_context.return_value = _create_mock_client_context(
+            headers=[("the-header", "header-value")]
+        )
         assert st.context.headers.to_dict() == {"The-Header": "header-value"}
 
-    @patch(
-        "streamlit.runtime.context._get_request",
-        MagicMock(return_value=MagicMock(cookies={"cookieName": mocked_cookie})),
-    )
-    def test_context_cookies(self):
-        """Test that `st.context.cookies` returns cookies from ScriptRunContext"""
+    @patch("streamlit.runtime.context._get_client_context")
+    def test_context_cookies(self, mock_get_client_context: MagicMock) -> None:
+        """Test that `st.context.cookies` returns cookies from ClientContext."""
+        mock_get_client_context.return_value = _create_mock_client_context(
+            cookies={"cookieName": "cookieValue"}
+        )
         assert st.context.cookies.to_dict() == {"cookieName": "cookieValue"}
 
-    @patch(
-        "streamlit.runtime.context._get_request",
-        MagicMock(return_value=MagicMock(remote_ip="8.8.8.8")),
+    @parameterized.expand(
+        [
+            ("8.8.8.8", "8.8.8.8"),  # Regular IP address
+            ("192.168.1.1", "192.168.1.1"),  # Private IP address
+            ("127.0.0.1", None),  # IPv4 localhost
+            ("::1", None),  # IPv6 localhost
+        ]
     )
-    def test_ip_address(self):
-        """Test that `st.context.ip_address` returns remote_ip from Tornado request"""
-        assert st.context.ip_address == "8.8.8.8"
-
-    @patch(
-        "streamlit.runtime.context._get_request",
-        MagicMock(return_value=MagicMock(remote_ip="127.0.0.1")),
-    )
-    def test_ip_address_localhost(self):
-        """Test that `st.context.ip_address` returns None if run on localhost"""
-        assert st.context.ip_address is None
+    @patch("streamlit.runtime.context._get_client_context")
+    def test_ip_address_values(
+        self,
+        remote_ip: str,
+        expected_value: str | None,
+        mock_get_client_context: MagicMock,
+    ) -> None:
+        """Test that `st.context.ip_address` handles different IP addresses correctly."""
+        mock_get_client_context.return_value = _create_mock_client_context(
+            remote_ip=remote_ip
+        )
+        assert st.context.ip_address == expected_value
 
     @patch(
         "streamlit.runtime.context.get_script_run_ctx",
@@ -115,6 +137,76 @@ class StContextTest(unittest.TestCase):
             "https://example.com/", mock_ctx.pages_manager
         )
 
+    def test_context_keys_match_public_properties(self) -> None:
+        """Allowlist must stay in sync with ContextProxy public properties."""
+        public_properties = {
+            name
+            for name, value in vars(ContextProxy).items()
+            if isinstance(value, property) and not name.startswith("_")
+        }
+        assert public_properties == _CONTEXT_KEYS
+
+    @parameterized.expand([(key,) for key in sorted(_CONTEXT_KEYS)])
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    @patch("streamlit.runtime.context._get_client_context")
+    def test_getitem_matches_attribute(
+        self,
+        property_name: str,
+        mock_get_client_context: MagicMock,
+        mock_get_script_run_ctx: MagicMock,
+    ) -> None:
+        """Bracket access returns the same populated value as attribute access."""
+        mock_get_client_context.return_value = _create_mock_client_context(
+            headers=[("host", "example.com")],
+            cookies={"session": "abc"},
+            remote_ip="8.8.8.8",
+        )
+        mock_context_info = MagicMock()
+        mock_context_info.timezone = "Europe/Berlin"
+        mock_context_info.timezone_offset = -120
+        mock_context_info.locale = "en-US"
+        mock_context_info.color_scheme = "dark"
+        mock_context_info.is_embedded = True
+        mock_context_info.url = "https://example.com/app"
+        mock_ctx = MagicMock()
+        mock_ctx.context_info = mock_context_info
+        mock_ctx.pages_manager.get_pages.return_value = {}
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        attr_value = getattr(st.context, property_name)
+        item_value = st.context[property_name]
+        if property_name in {"headers", "cookies"}:
+            assert item_value.to_dict() == attr_value.to_dict() != {}
+        elif property_name == "theme":
+            assert item_value.type == attr_value.type == "dark"
+        else:
+            assert item_value == attr_value
+            assert item_value is not None
+
+    def test_getitem_unknown_key(self) -> None:
+        """Unknown keys raise KeyError."""
+        with pytest.raises(KeyError, match=r'st.context has no key "not_a_property"'):
+            st.context["not_a_property"]
+
+    def test_contains_known_and_unknown_keys(self) -> None:
+        """Membership uses the public property allowlist."""
+        assert "timezone" in st.context
+        assert "theme" in st.context
+        assert "not_a_property" not in st.context
+
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    def test_contains_does_not_read_properties(
+        self, mock_get_script_run_ctx: MagicMock
+    ) -> None:
+        """Membership must not trigger property getters such as theme."""
+        assert "theme" in st.context
+        mock_get_script_run_ctx.assert_not_called()
+
+    def test_context_is_not_iterable(self) -> None:
+        """st.context is a property bag, not a sequence."""
+        with pytest.raises(TypeError):
+            iter(st.context)
+
     @parameterized.expand(
         [
             ("coNtent-TYPE", "Content-Type"),
@@ -133,3 +225,241 @@ class StContextTest(unittest.TestCase):
     def test_normalize_header(self, name, expected):
         """Test that `_normalize_header` normalizes header names"""
         assert _normalize_header(name) == expected
+
+
+class StreamlitHeadersTest(unittest.TestCase):
+    """Test StreamlitHeaders class methods."""
+
+    def test_headers_get_all(self):
+        """Test that get_all returns all values for a header."""
+        headers = StreamlitHeaders(
+            [("Content-Type", "text/html"), ("Content-Type", "text/plain")]
+        )
+        assert headers.get_all("content-type") == ["text/html", "text/plain"]
+
+    def test_headers_get_all_empty(self):
+        """Test that get_all returns empty list for non-existent header."""
+        headers = StreamlitHeaders([])
+        assert headers.get_all("non-existent") == []
+
+    def test_headers_len(self):
+        """Test that __len__ returns number of unique headers."""
+        headers = StreamlitHeaders(
+            [("Content-Type", "text/html"), ("Cache-Control", "no-cache")]
+        )
+        assert len(headers) == 2
+
+    def test_headers_iter(self):
+        """Test that __iter__ returns header keys."""
+        headers = StreamlitHeaders(
+            [("Content-Type", "text/html"), ("Cache-Control", "no-cache")]
+        )
+        header_keys = list(headers)
+        assert sorted(header_keys) == ["Cache-Control", "Content-Type"]
+
+    def test_headers_getitem_keyerror(self):
+        """Test that __getitem__ raises KeyError for non-existent header."""
+        headers = StreamlitHeaders([])
+        with pytest.raises(KeyError, match="non-existent"):
+            _ = headers["non-existent"]
+
+
+class StreamlitCookiesTest(unittest.TestCase):
+    """Test StreamlitCookies class methods."""
+
+    def test_cookies_getitem(self):
+        """Test that __getitem__ returns cookie value."""
+        cookies = StreamlitCookies({"session_id": "abc123", "user_id": "456"})
+        assert cookies["session_id"] == "abc123"
+        assert cookies["user_id"] == "456"
+
+    def test_cookies_len(self):
+        """Test that __len__ returns number of cookies."""
+        cookies = StreamlitCookies({"session_id": "abc123", "user_id": "456"})
+        assert len(cookies) == 2
+
+    def test_cookies_iter(self):
+        """Test that __iter__ returns cookie keys."""
+        cookies = StreamlitCookies({"session_id": "abc123", "user_id": "456"})
+        cookie_keys = list(cookies)
+        assert sorted(cookie_keys) == ["session_id", "user_id"]
+
+
+class StreamlitThemeTest(unittest.TestCase):
+    """Test StreamlitTheme class methods."""
+
+    def test_theme_init(self):
+        """Test StreamlitTheme initialization."""
+        theme = StreamlitTheme({"type": "dark", "primary": "#FF0000"})
+        assert theme.type == "dark"
+        assert theme["primary"] == "#FF0000"
+
+    def test_theme_from_context_info(self):
+        """Test StreamlitTheme.from_context_info class method."""
+        theme = StreamlitTheme.from_context_info({"type": "light"})
+        assert theme.type == "light"
+
+
+class ContextPropertiesNoneTest(unittest.TestCase):
+    """Test context properties when context or request is None."""
+
+    @patch(
+        "streamlit.runtime.context._get_client_context", MagicMock(return_value=None)
+    )
+    def test_headers_none_client_context(self) -> None:
+        """Test that headers returns empty when client_context is None."""
+        headers = st.context.headers
+        assert headers.to_dict() == {}
+
+    @patch(
+        "streamlit.runtime.context._get_client_context", MagicMock(return_value=None)
+    )
+    def test_cookies_none_client_context(self) -> None:
+        """Test that cookies returns empty when client_context is None."""
+        cookies = st.context.cookies
+        assert cookies.to_dict() == {}
+
+    @parameterized.expand(
+        [
+            ("theme",),
+            ("timezone",),
+            ("timezone_offset",),
+            ("locale",),
+            ("is_embedded",),
+        ]
+    )
+    @patch("streamlit.runtime.context.get_script_run_ctx", MagicMock(return_value=None))
+    def test_property_none_context(self, property_name):
+        """Test that properties return None when context is None."""
+        if property_name == "theme":
+            assert getattr(st.context, property_name).type is None
+        else:
+            assert getattr(st.context, property_name) is None
+
+    @parameterized.expand(
+        [
+            ("theme",),
+            ("timezone",),
+            ("timezone_offset",),
+            ("locale",),
+            ("is_embedded",),
+        ]
+    )
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    def test_property_none_context_info(self, property_name, mock_get_script_run_ctx):
+        """Test that properties return None when context_info is None."""
+        mock_ctx = MagicMock()
+        mock_ctx.context_info = None
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        if property_name == "theme":
+            assert getattr(st.context, property_name).type is None
+        else:
+            assert getattr(st.context, property_name) is None
+
+    @parameterized.expand(
+        [
+            ("theme", "color_scheme", "dark", "dark"),
+            ("timezone", "timezone", "America/New_York", "America/New_York"),
+            ("timezone_offset", "timezone_offset", -300, -300),
+            ("locale", "locale", "en-US", "en-US"),
+            ("is_embedded", "is_embedded", True, True),
+        ]
+    )
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    def test_property_with_value(
+        self,
+        property_name,
+        attribute_name,
+        test_value,
+        expected_value,
+        mock_get_script_run_ctx,
+    ):
+        """Test that properties return correct values from context_info."""
+        mock_context_info = MagicMock()
+        setattr(mock_context_info, attribute_name, test_value)
+        mock_ctx = MagicMock()
+        mock_ctx.context_info = mock_context_info
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        if property_name == "theme":
+            assert getattr(st.context, property_name).type == expected_value
+        else:
+            assert getattr(st.context, property_name) == expected_value
+
+    @patch(
+        "streamlit.runtime.context._get_client_context", MagicMock(return_value=None)
+    )
+    def test_ip_address_none_client_context(self) -> None:
+        """Test that ip_address returns None when client_context is None."""
+        assert st.context.ip_address is None
+
+
+class GetClientContextTest(unittest.TestCase):
+    """Test _get_client_context function edge cases."""
+
+    @patch("streamlit.runtime.context.get_script_run_ctx", MagicMock(return_value=None))
+    def test_get_client_context_none_context(self) -> None:
+        """Test that _get_client_context returns None when script context is None."""
+        assert _get_client_context() is None
+
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    @patch("streamlit.runtime.context.runtime")
+    def test_get_client_context_none_session_client(
+        self, mock_runtime: MagicMock, mock_get_script_run_ctx: MagicMock
+    ) -> None:
+        """Test that _get_client_context returns None when session_client is None."""
+        mock_ctx = MagicMock()
+        mock_ctx.session_id = "test_session"
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        mock_instance = MagicMock()
+        mock_instance.get_client.return_value = None
+        mock_runtime.get_instance.return_value = mock_instance
+
+        assert _get_client_context() is None
+
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    @patch("streamlit.runtime.context.runtime")
+    def test_get_client_context_no_client_context_property(
+        self, mock_runtime: MagicMock, mock_get_script_run_ctx: MagicMock
+    ) -> None:
+        """Test that _get_client_context returns None when client has no context."""
+        mock_ctx = MagicMock()
+        mock_ctx.session_id = "test_session"
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        # Create a mock session client without a client_context
+        mock_session_client = MagicMock()
+        mock_session_client.client_context = None
+
+        mock_instance = MagicMock()
+        mock_instance.get_client.return_value = mock_session_client
+        mock_runtime.get_instance.return_value = mock_instance
+
+        assert _get_client_context() is None
+
+    @patch("streamlit.runtime.context.get_script_run_ctx")
+    @patch("streamlit.runtime.context.runtime")
+    def test_get_client_context_valid_session_client(
+        self, mock_runtime: MagicMock, mock_get_script_run_ctx: MagicMock
+    ) -> None:
+        """Test that _get_client_context returns client_context from valid client."""
+        mock_ctx = MagicMock()
+        mock_ctx.session_id = "test_session"
+        mock_get_script_run_ctx.return_value = mock_ctx
+
+        # Create a mock session client with a client_context
+        mock_client_context = _create_mock_client_context(
+            headers=[("test-header", "test-value")],
+            cookies={"test": "cookie"},
+            remote_ip="1.2.3.4",
+        )
+        mock_session_client = MagicMock()
+        mock_session_client.client_context = mock_client_context
+
+        mock_instance = MagicMock()
+        mock_instance.get_client.return_value = mock_session_client
+        mock_runtime.get_instance.return_value = mock_instance
+
+        assert _get_client_context() == mock_client_context

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,7 +46,17 @@ st.subheader(
 )
 
 # Test dividers
-colors = ["blue", "gray", "green", "grey", "orange", "rainbow", "red", "violet"]
+colors = [
+    "blue",
+    "gray",
+    "green",
+    "grey",
+    "orange",
+    "rainbow",
+    "red",
+    "violet",
+    "yellow",
+]
 lorem_ipsum_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit"
 # Headers with specified color
 for color in colors:
@@ -59,3 +69,88 @@ for color in colors:
 
 # Empty subheader to test correct anchor behavior:
 st.subheader("")
+
+# Width examples
+st.title("Title with 400px width", width=400)
+st.title("Title with stretch width", width="stretch")
+st.title("Title with content width", width="content")
+
+st.header("Header with 400px width", width=400, divider="blue")
+st.header("Header with stretch width", width="stretch")
+st.header("Header with content width", width="content")
+
+st.subheader("Subheader with 300px width", width=300, divider="blue")
+st.subheader("Subheader with stretch width", width="stretch")
+st.subheader("Subheader with content width", width="content")
+
+st.title(
+    "Centered Title",
+    text_alignment="center",
+    help="This is a help tooltip!",
+)
+st.title(
+    "Right Aligned Title",
+    text_alignment="right",
+    help="This is a help tooltip!",
+)
+
+st.header(
+    "Centered Header with longer text to demonstrate how text wraps and aligns when centered",
+    text_alignment="center",
+    divider="blue",
+    help="This is a help tooltip!",
+)
+st.header(
+    "Right Aligned Header with longer text to demonstrate how text wraps and "
+    "aligns when right-aligned and has a help tooltip",
+    text_alignment="right",
+    help="This is a help tooltip!",
+)
+
+st.subheader(
+    "Centered Subheader",
+    text_alignment="center",
+    help="This is a help tooltip!",
+    divider="blue",
+)
+st.subheader(
+    "Justified Subheader with longer text to demonstrate justification. This text "
+    "should wrap across multiple lines to show how justification distributes spacing "
+    "evenly across the line width.",
+    text_alignment="justify",
+    help="This is a help tooltip!",
+)
+
+# Icon parameter examples (distinct from body-markdown icons above)
+with st.container(key="heading_icons"):
+    st.title("Title with icon param", icon=":material/star:")
+    st.header("Header with emoji icon", icon="🚀", divider="blue")
+    st.subheader("Subheader with icon", icon=":material/bolt:")
+
+# Icon + text_alignment: icon headings must still honor center/right alignment
+with st.container(key="heading_icons_alignment"):
+    st.title(
+        "Centered title with icon",
+        icon=":material/star:",
+        text_alignment="center",
+    )
+    st.header(
+        "Right header with icon",
+        icon="🚀",
+        text_alignment="right",
+    )
+
+_WRAP_TEXT = "Quarterly revenue versus plan for the complete fiscal year dashboard"
+
+with st.container(key="wrap_false_headings", width=200):
+    st.title(_WRAP_TEXT, wrap=False)
+    st.header(_WRAP_TEXT, wrap=False)
+    st.subheader(_WRAP_TEXT, wrap=False)
+
+with st.container(key="wrap_true_headings", width=200):
+    st.title(_WRAP_TEXT, wrap=True)
+    st.header(_WRAP_TEXT, wrap=True)
+    st.subheader(_WRAP_TEXT, wrap=True)
+
+with st.container(key="wrap_false_heading_extra_lines", width=200):
+    st.title("First line\nSecond line that must not appear", wrap=False)

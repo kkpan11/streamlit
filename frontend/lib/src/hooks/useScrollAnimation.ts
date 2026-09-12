@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,16 +80,18 @@ function step(
 export default function useScrollAnimation(
   target: HTMLElement | null,
   onEnd: () => void,
-  isAnimating: boolean
+  isAnimating: boolean,
+  active: boolean
 ): void {
-  const animator = useRef(0)
+  const animatorRef = useRef(0)
 
   const animate = useCallback(
     (from: number, index: number, start = Date.now()) => {
-      cancelAnimationFrame(animator.current)
+      cancelAnimationFrame(animatorRef.current)
 
-      animator.current = requestAnimationFrame(() => {
+      animatorRef.current = requestAnimationFrame(() => {
         if (target) {
+          // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
           const toNumber = target.scrollHeight - target.offsetHeight
           let nextValue = step(
             from,
@@ -102,30 +104,30 @@ export default function useScrollAnimation(
             nextValue = toNumber
           }
 
-          // TODO: Update to match React best practices
-          // eslint-disable-next-line react-hooks/react-compiler
           target.scrollTop = nextValue
 
           if (toNumber === nextValue) {
             onEnd()
           } else {
+            // eslint-disable-next-line react-hooks/immutability -- recursive requestAnimationFrame callback
             animate(from, index + 1, start)
           }
         }
       })
     },
-    [animator, onEnd, target]
+    [animatorRef, onEnd, target]
   )
 
   const handleCancelAnimation = useCallback(() => {
-    cancelAnimationFrame(animator.current)
+    cancelAnimationFrame(animatorRef.current)
     onEnd()
   }, [onEnd])
 
   useLayoutEffect(() => {
-    if (!target || !isAnimating) {
+    if (!target || !isAnimating || !active) {
       return
     }
+    // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
     animate(target.scrollTop, 1)
 
     if (target) {
@@ -139,10 +141,17 @@ export default function useScrollAnimation(
       return () => {
         target.removeEventListener("pointerdown", handleCancelAnimation)
         target.removeEventListener("wheel", handleCancelAnimation)
-        cancelAnimationFrame(animator.current)
+        cancelAnimationFrame(animatorRef.current)
       }
     }
 
-    return () => cancelAnimationFrame(animator.current)
-  }, [animate, animator, handleCancelAnimation, target, isAnimating])
+    return () => cancelAnimationFrame(animatorRef.current)
+  }, [
+    animate,
+    animatorRef,
+    handleCancelAnimation,
+    target,
+    isAnimating,
+    active,
+  ])
 }

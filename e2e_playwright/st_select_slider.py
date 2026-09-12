@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -72,6 +72,7 @@ w6 = st.select_slider(
     "Label 6 (hidden visibility)",
     options=["red", "orange", "yellow", "green", "blue", "indigo", "violet"],
     label_visibility="hidden",
+    key="select_slider_hidden",
 )
 
 st.write("Value 6:", w6)
@@ -81,6 +82,7 @@ w7 = st.select_slider(
     "Label 7 (collapsed visibility)",
     options=["red", "orange", "yellow", "green", "blue", "indigo", "violet"],
     label_visibility="collapsed",
+    key="select_slider_collapsed",
 )
 
 st.write("Value 7:", w7)
@@ -151,3 +153,135 @@ if "runs" not in st.session_state:
     st.session_state.runs = 0
 st.session_state.runs += 1
 st.write("Runs:", st.session_state.runs)
+
+# Markdown text trick to fix firefox sub-pixel flakiness:
+st.write("Dynamic select slider state:")
+
+# Dynamic select slider test - tests changing props AND dynamic options.
+# "green" exists in both option lists at different indices for testing preservation:
+# - Initial: index 3 (out of 5 options: red, orange, yellow, green, blue)
+# - Updated: index 0 (out of 3 options: green, blue, purple) -> slider thumb should move left
+# When user selects "green" and then toggles, it should stay selected but move position.
+if st.toggle("Update select slider props"):
+    dyn_val = st.select_slider(
+        "Updated dynamic select slider",
+        value="blue",
+        width=300,
+        help="updated help",
+        key="dynamic_select_slider_with_key",
+        on_change=lambda a, param: print(
+            f"Updated select slider - callback triggered: {a} {param}"
+        ),
+        args=("Updated select arg",),
+        kwargs={"param": "updated kwarg param"},
+        # After update, "green" is at index 0
+        options=["green", "blue", "purple"],
+    )
+    st.write("Updated select slider value:", dyn_val)
+else:
+    dyn_val = st.select_slider(
+        "Initial dynamic select slider",
+        value="orange",
+        width="stretch",
+        help="initial help",
+        key="dynamic_select_slider_with_key",
+        on_change=lambda a, param: print(
+            f"Initial select slider - callback triggered: {a} {param}"
+        ),
+        args=("Initial select arg",),
+        kwargs={"param": "initial kwarg param"},
+        # In the initial state, "green" is at index 3
+        options=["red", "orange", "yellow", "green", "blue"],
+    )
+    st.write("Initial select slider value:", dyn_val)
+
+
+# Range slider with dynamic options - tests reset behavior.
+# When either range value is invalid after options change, the entire range resets to default.
+# - "alpha" only exists in initial options (invalid after toggle)
+# - Since "alpha" is invalid, the entire range resets to the new default ("charlie", "echo")
+if st.toggle("Enable alternative range options"):
+    range_dyn_val = st.select_slider(
+        "Dynamic range slider",
+        options=["charlie", "delta", "echo"],
+        value=("charlie", "echo"),
+        key="dynamic_range_select_slider",
+    )
+    st.write("Dynamic range selection:", range_dyn_val)
+else:
+    range_dyn_val = st.select_slider(
+        "Dynamic range slider",
+        options=["alpha", "bravo", "charlie", "delta", "echo"],
+        value=("alpha", "echo"),
+        key="dynamic_range_select_slider",
+    )
+    st.write("Dynamic range selection:", range_dyn_val)
+
+
+MARKDOWN_SELECT_SLIDER_OPTIONS = [
+    "~~Strikethrough~~",
+    "*Italics*",
+    "**Bold**",
+    "`Inline code`",
+    ":material/check: Icon option",
+    ":orange-background[Highlighted text]",
+    ":green[Success text]",
+    "[Docs](https://streamlit.io)",
+]
+
+markdown_select_slider_value = st.select_slider(
+    "Label 15 - Markdown in options",
+    options=MARKDOWN_SELECT_SLIDER_OPTIONS,
+    value=MARKDOWN_SELECT_SLIDER_OPTIONS[0],
+    key="markdown_options_select_slider",
+)
+st.write("Markdown option selection:", markdown_select_slider_value)
+
+# --- Query Param Binding Select Sliders ---
+
+COLORS = ["red", "orange", "yellow", "green", "blue", "indigo", "violet"]
+
+# Select Slider 17 - Single value with bind
+bound_color = st.select_slider(
+    "Bound color",
+    options=COLORS,
+    value="green",
+    key="bound_color",
+    bind="query-params",
+)
+st.write("Bound color:", bound_color)
+
+# Select Slider 18 - Range with bind
+bound_color_range = st.select_slider(
+    "Bound color range",
+    options=COLORS,
+    value=("orange", "indigo"),
+    key="bound_color_range",
+    bind="query-params",
+)
+st.write("Bound color range:", bound_color_range)
+
+# Select Slider 19 - With format_func and bind
+bound_formatted = st.select_slider(
+    "Bound formatted",
+    options=["sm", "md", "lg", "xl"],
+    value="md",
+    format_func=str.upper,
+    key="bound_formatted",
+    bind="query-params",
+)
+st.write("Bound formatted:", bound_formatted)
+
+# --- on_change="ignore" select slider ---
+ignore_select_slider = st.select_slider(
+    "Ignore change select slider",
+    options=["red", "orange", "yellow", "green", "blue", "indigo", "violet"],
+    value="red",
+    key="ignore_select_slider",
+    on_change="ignore",
+    bind="query-params",
+)
+st.write("Ignore select slider value:", ignore_select_slider)
+
+if st.button("Apply ignore select slider", key="apply_ignore_select_slider"):
+    st.write("Applied ignore select slider value:", ignore_select_slider)

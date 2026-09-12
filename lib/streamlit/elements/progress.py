@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,12 +15,13 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Union, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
-from typing_extensions import TypeAlias
-
-from streamlit.elements.lib.layout_utils import LayoutConfig, validate_width
-from streamlit.errors import StreamlitAPIException
+from streamlit.elements.lib.layout_utils import create_layout_config
+from streamlit.errors import (
+    StreamlitInvalidParameterTypeError,
+    StreamlitValueOutOfRangeError,
+)
 from streamlit.proto.Progress_pb2 import Progress as ProgressProto
 from streamlit.string_util import clean_text
 
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
 # Currently, equates to just float, but we can't use `numbers.Real` due to
 # https://github.com/python/mypy/issues/3186
-FloatOrInt: TypeAlias = Union[int, float]
+FloatOrInt: TypeAlias = int | float
 
 
 def _check_float_between(value: float, low: float = 0.0, high: float = 1.0) -> bool:
@@ -39,18 +40,18 @@ def _check_float_between(value: float, low: float = 0.0, high: float = 1.0) -> b
     Checks given value is 'between' the bounds of [low, high],
     considering close values around bounds are acceptable input.
 
+    Parameters
+    ----------
+    value : float
+    low : float
+    high : float
+
     Notes
     -----
     This check is required for handling values that are slightly above or below the
     acceptable range, for example -0.0000000000021, 1.0000000000000013.
     These values are little off the conventional 0.0 <= x <= 1.0 condition
     due to floating point operations, but should still be considered acceptable input.
-
-    Parameters
-    ----------
-    value : float
-    low : float
-    high : float
 
     """
     return (
@@ -62,20 +63,18 @@ def _check_float_between(value: float, low: float = 0.0, high: float = 1.0) -> b
 
 def _get_value(value: FloatOrInt) -> int:
     if isinstance(value, int):
-        if 0 <= value <= 100:
-            return value
-        raise StreamlitAPIException(
-            f"Progress Value has invalid value [0, 100]: {value}"
-        )
+        if not 0 <= value <= 100:
+            raise StreamlitValueOutOfRangeError("value", value, 0, 100)
+        return value
 
     if isinstance(value, float):
-        if _check_float_between(value, low=0.0, high=1.0):
-            return int(value * 100)
-        raise StreamlitAPIException(
-            f"Progress Value has invalid value [0.0, 1.0]: {value}"
-        )
-    raise StreamlitAPIException(
-        f"Progress Value has invalid type: {type(value).__name__}"
+        if not _check_float_between(value, low=0.0, high=1.0):
+            raise StreamlitValueOutOfRangeError("value", value, 0.0, 1.0)
+        return int(value * 100)
+    raise StreamlitInvalidParameterTypeError(
+        "value",
+        type(value).__name__,
+        ["int", "float"],
     )
 
 
@@ -84,9 +83,10 @@ def _get_text(text: str | None) -> str | None:
         return None
     if isinstance(text, str):
         return clean_text(text)
-    raise StreamlitAPIException(
-        f"Progress Text is of type {type(text)}, which is not an accepted type."
-        "Text only accepts: str. Please convert the text to an accepted type."
+    raise StreamlitInvalidParameterTypeError(
+        "text",
+        type(text).__name__,
+        ["str"],
     )
 
 
@@ -113,9 +113,9 @@ class ProgressMixin:
             icons, with a max height equal to the font height.
 
             Unsupported Markdown elements are unwrapped so only their children
-            (text contents) render. Display unsupported elements as literal
-            characters by backslash-escaping them. E.g.,
-            ``"1\. Not an ordered list"``.
+            (text contents) render. Common block-level Markdown (headings,
+            lists, blockquotes) is automatically escaped and displays as
+            literal text in labels.
 
             See the ``body`` parameter of |st.markdown|_ for additional,
             supported Markdown directives.
@@ -123,12 +123,18 @@ class ProgressMixin:
             .. |st.markdown| replace:: ``st.markdown``
             .. _st.markdown: https://docs.streamlit.io/develop/api-reference/text/st.markdown
 
-        width : int or str
-            The width of the progress bar. Can be either "stretch" to use the full
-            container width, or an integer for a fixed width in pixels.
+        width : "stretch" or int
+            The width of the progress element. This can be one of the following:
 
-        Example
-        -------
+            - ``"stretch"`` (default): The width of the element matches the
+              width of the parent container.
+            - An integer specifying the width in pixels: The element has a
+              fixed width. If the specified width is greater than the width of
+              the parent container, the width of the element matches the width
+              of the parent container.
+
+        Examples
+        --------
         Here is an example of a progress bar increasing over time and disappearing when it reaches completion:
 
         >>> import streamlit as st
@@ -157,12 +163,11 @@ class ProgressMixin:
         if text is not None:
             progress_proto.text = text
 
-        validate_width(width)
-        layout_config = LayoutConfig(width=width)
+        layout_config = create_layout_config(width=width)
 
         return self.dg._enqueue("progress", progress_proto, layout_config=layout_config)
 
     @property
     def dg(self) -> DeltaGenerator:
-        """Get our DeltaGenerator."""
+        """The associated DeltaGenerator."""
         return cast("DeltaGenerator", self)

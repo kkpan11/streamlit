@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,12 +21,14 @@ import {
 } from "@glideapps/glide-data-grid"
 import { SparklineCellType } from "@glideapps/glide-data-grid-cells"
 
+import { resolveNamedColor } from "~lib/theme/getColors"
+import type { ChartColor, EmotionTheme } from "~lib/theme/types"
+import { formatNumber } from "~lib/util/formatNumber"
 import { isNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
-  formatNumber,
   getEmptyCell,
   getErrorCell,
   mergeColumnParameters,
@@ -40,10 +42,21 @@ export const AREA_CHART_TYPE = "area_chart"
 export const BAR_CHART_TYPE = "bar_chart"
 
 export interface ChartColumnParams {
-  // The minimum value used for plotting the chart. Defaults to 0.
+  /**
+   * The minimum value used for plotting the chart. Defaults to 0.
+   */
   readonly y_min?: number
-  // The maximum value used for plotting the chart. Defaults to 1.
+  /**
+   * The maximum value used for plotting the chart. Defaults to 1.
+   */
   readonly y_max?: number
+  /**
+   * The color to use for the charts. Can be:
+   * - auto & auto-inverse: To color the charts green or red depending on the data.
+   * - red, blue, green, yellow, orange, violet, gray/grey, primary
+   * - a color value compatible with canvas rendering
+   */
+  readonly color?: ChartColor
 }
 
 /**
@@ -53,17 +66,28 @@ export interface ChartColumnParams {
 function BaseChartColumn(
   kind: string,
   props: BaseColumnProps,
-  chart_type: "line" | "bar" | "area"
+  chart_type: "line" | "bar" | "area",
+  theme: EmotionTheme
 ): BaseColumn {
-  const parameters = mergeColumnParameters(
+  const parameters = mergeColumnParameters<ChartColumnParams>(
     // Default parameters:
     {
       y_min: null,
       y_max: null,
+      color: undefined,
     },
     // User parameters:
     props.columnTypeOptions
-  ) as ChartColumnParams
+  )
+
+  let defaultColor: string | undefined
+  if (parameters.color === "auto" || parameters.color === "auto-inverse") {
+    defaultColor = theme.colors.greenColor
+  } else {
+    defaultColor = parameters.color
+      ? resolveNamedColor(parameters.color, theme)
+      : undefined
+  }
 
   const cellTemplate: SparklineCellType = {
     kind: GridCellKind.Custom,
@@ -75,6 +99,7 @@ function BaseChartColumn(
       values: [],
       displayValues: [],
       graphKind: chart_type,
+      color: defaultColor,
       yAxis: [parameters.y_min ?? 0, parameters.y_max ?? 1],
     },
   }
@@ -82,10 +107,15 @@ function BaseChartColumn(
   return {
     ...props,
     kind,
+    typeIcon:
+      kind === LINE_CHART_TYPE
+        ? ":material/show_chart:"
+        : kind === BAR_CHART_TYPE
+          ? ":material/bar_chart:"
+          : ":material/area_chart:",
     sortMode: "default",
     isEditable: false, // Chart column is always read-only
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-    getCell(data?: any): GridCell {
+    getCell(data?: unknown): GridCell {
       if (isNullOrUndefined(data)) {
         // TODO(lukasmasuch): Use a missing cell?
         return getEmptyCell()
@@ -94,7 +124,7 @@ function BaseChartColumn(
       const chartData = toSafeArray(data)
 
       const convertedChartData: number[] = []
-      let normalizedChartData: number[] = []
+      let normalizedChartData: number[]
       if (chartData.length === 0) {
         return getEmptyCell()
       }
@@ -132,14 +162,15 @@ function BaseChartColumn(
       let maxValueDefault: number
       let minValueDefault: number
 
-      if (chartData.length === 1) {
+      // Handle case where all values are identical (including single-element arrays)
+      if (minValue === maxValue) {
         let newMaxValue: number
 
         if (maxValue <= 0) newMaxValue = maxValue === 0 ? 1 : 0
         else newMaxValue = maxValue
 
         maxValueDefault = parameters.y_max ?? newMaxValue
-        minValueDefault = parameters.y_min ?? (maxValue >= 0 ? 0 : maxValue) //maxValue = minValue (only one value in chartData)
+        minValueDefault = parameters.y_min ?? (maxValue >= 0 ? 0 : maxValue)
       } else {
         maxValueDefault = parameters.y_max ?? maxValue
         minValueDefault = parameters.y_min ?? minValue
@@ -177,6 +208,25 @@ function BaseChartColumn(
         normalizedChartData = convertedChartData
       }
 
+      // Check if the first value is larger than the second value
+      let chartColor = defaultColor
+      const lastValue = normalizedChartData.at(-1)
+      if (
+        parameters.color === "auto" &&
+        lastValue !== undefined &&
+        // Chart is pointing down
+        normalizedChartData[0] > lastValue
+      ) {
+        chartColor = theme.colors.redColor
+      } else if (
+        parameters.color === "auto-inverse" &&
+        lastValue !== undefined &&
+        // Chart is pointing up:
+        normalizedChartData[0] < lastValue
+      ) {
+        chartColor = theme.colors.redColor
+      }
+
       return {
         ...cellTemplate,
         copyData: convertedChartData.join(","), // Column sorting is done via the copyData value
@@ -185,6 +235,7 @@ function BaseChartColumn(
           values: normalizedChartData,
           displayValues: convertedChartData.map(v => formatNumber(v)),
           yAxis: [minValueDefault, maxValueDefault],
+          color: chartColor,
         },
         isMissingValue: isNullOrUndefined(data),
       } as SparklineCellType
@@ -207,8 +258,11 @@ function BaseChartColumn(
  *
  * This column type is currently read-only.
  */
-export function LineChartColumn(props: BaseColumnProps): BaseColumn {
-  return BaseChartColumn(LINE_CHART_TYPE, props, "line")
+export function LineChartColumn(
+  props: BaseColumnProps,
+  theme: EmotionTheme
+): BaseColumn {
+  return BaseChartColumn(LINE_CHART_TYPE, props, "line", theme)
 }
 
 LineChartColumn.isEditableType = false
@@ -219,8 +273,11 @@ LineChartColumn.isEditableType = false
  *
  * This column type is currently read-only.
  */
-export function BarChartColumn(props: BaseColumnProps): BaseColumn {
-  return BaseChartColumn(BAR_CHART_TYPE, props, "bar")
+export function BarChartColumn(
+  props: BaseColumnProps,
+  theme: EmotionTheme
+): BaseColumn {
+  return BaseChartColumn(BAR_CHART_TYPE, props, "bar", theme)
 }
 
 BarChartColumn.isEditableType = false
@@ -231,8 +288,11 @@ BarChartColumn.isEditableType = false
  *
  * This column type is currently read-only.
  */
-export function AreaChartColumn(props: BaseColumnProps): BaseColumn {
-  return BaseChartColumn(AREA_CHART_TYPE, props, "area")
+export function AreaChartColumn(
+  props: BaseColumnProps,
+  theme: EmotionTheme
+): BaseColumn {
+  return BaseChartColumn(AREA_CHART_TYPE, props, "area", theme)
 }
 
 AreaChartColumn.isEditableType = false

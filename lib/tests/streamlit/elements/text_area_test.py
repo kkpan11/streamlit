@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,11 +21,19 @@ import pytest
 from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException, StreamlitInvalidWidthError
-from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitInvalidHeightError,
+    StreamlitInvalidWidthError,
+    StreamlitValueError,
+)
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
 from streamlit.testing.v1.app_test import AppTest
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
-from tests.streamlit.elements.layout_test_utils import WidthConfigFields
+from tests.streamlit.elements.layout_test_utils import (
+    HeightConfigFields,
+    WidthConfigFields,
+)
 
 
 class TextAreaTest(DeltaGeneratorTestCase):
@@ -38,8 +46,7 @@ class TextAreaTest(DeltaGeneratorTestCase):
         c = self.get_delta_from_queue().new_element.text_area
         assert c.label == "the label"
         assert (
-            c.label_visibility.value
-            == LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
         assert c.default == ""
         assert c.HasField("default")
@@ -57,7 +64,7 @@ class TextAreaTest(DeltaGeneratorTestCase):
         arg_values = ["some str", 123, {}, SomeObj()]
         proto_values = ["some str", "123", "{}", ".*SomeObj.*"]
 
-        for arg_value, proto_value in zip(arg_values, proto_values):
+        for arg_value, proto_value in zip(arg_values, proto_values, strict=False):
             st.text_area("the label", arg_value)
 
             c = self.get_delta_from_queue().new_element.text_area
@@ -75,25 +82,6 @@ class TextAreaTest(DeltaGeneratorTestCase):
         assert c.default == ""
         assert not c.HasField("default")
 
-    def test_height(self):
-        """Test that it can be called with height"""
-        st.text_area("the label", "", 300)
-
-        c = self.get_delta_from_queue().new_element.text_area
-        assert c.label == "the label"
-        assert c.default == ""
-        assert c.height == 300
-
-    def test_invalid_height(self):
-        """Test that it raises an error when passed an invalid height"""
-        with pytest.raises(StreamlitAPIException) as e:
-            st.text_area("the label", "", height=50)
-
-        assert (
-            str(e.value)
-            == "Invalid height 50px for `st.text_area` - must be at least 68 pixels."
-        )
-
     def test_placeholder(self):
         """Test that it can be called with placeholder"""
         st.text_area("the label", "", placeholder="testing")
@@ -108,7 +96,7 @@ class TextAreaTest(DeltaGeneratorTestCase):
 
         st.text_area("foo")
 
-        proto = self.get_delta_from_queue().new_element.color_picker
+        proto = self.get_delta_from_queue().new_element.text_area
         assert proto.form_id == ""
 
     @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
@@ -127,7 +115,7 @@ class TextAreaTest(DeltaGeneratorTestCase):
 
     def test_inside_column(self):
         """Test that it works correctly inside of a column."""
-        col1, col2, col3 = st.columns([2.5, 1.5, 8.3])
+        col1, _col2, _col3 = st.columns([2.5, 1.5, 8.3])
 
         with col1:
             st.text_area("foo")
@@ -142,9 +130,9 @@ class TextAreaTest(DeltaGeneratorTestCase):
 
     @parameterized.expand(
         [
-            ("visible", LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE),
-            ("hidden", LabelVisibilityMessage.LabelVisibilityOptions.HIDDEN),
-            ("collapsed", LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED),
+            ("visible", LabelVisibility.LabelVisibilityOptions.VISIBLE),
+            ("hidden", LabelVisibility.LabelVisibilityOptions.HIDDEN),
+            ("collapsed", LabelVisibility.LabelVisibilityOptions.COLLAPSED),
         ]
     )
     def test_label_visibility(self, label_visibility_value, proto_value):
@@ -154,11 +142,11 @@ class TextAreaTest(DeltaGeneratorTestCase):
         assert c.label_visibility.value == proto_value
 
     def test_label_visibility_wrong_value(self):
-        with pytest.raises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitValueError) as e:
             st.text_area("the label", label_visibility="wrong_value")
         assert (
             str(e.value)
-            == "Unsupported label_visibility option 'wrong_value'. Valid values are 'visible', 'hidden' or 'collapsed'."
+            == "Invalid `label_visibility` value. Supported values: 'visible', 'hidden', 'collapsed'."
         )
 
     def test_width_config_default(self):
@@ -208,6 +196,60 @@ class TextAreaTest(DeltaGeneratorTestCase):
         with pytest.raises(StreamlitInvalidWidthError):
             st.text_area("the label", width=width)
 
+    def test_height_config_default(self):
+        """Test that default height is 122 pixels."""
+        st.text_area("the label")
+
+        c = self.get_delta_from_queue().new_element
+        # Default height should be set to 122 pixels.
+        assert c.height_config.pixel_height == 122
+
+    def test_height_config_pixel(self):
+        """Test that pixel height works properly."""
+        st.text_area("the label", height=150)
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.height_config.WhichOneof("height_spec")
+            == HeightConfigFields.PIXEL_HEIGHT.value
+        )
+        assert c.height_config.pixel_height == 150
+
+    def test_height_config_content(self):
+        """Test that 'content' height works properly."""
+        st.text_area("the label", height="content")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.height_config.WhichOneof("height_spec")
+            == HeightConfigFields.USE_CONTENT.value
+        )
+        assert c.height_config.use_content
+
+    def test_height_config_stretch(self):
+        """Test that 'stretch' height works properly."""
+        st.text_area("the label", height="stretch")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.height_config.WhichOneof("height_spec")
+            == HeightConfigFields.USE_STRETCH.value
+        )
+        assert c.height_config.use_stretch
+
+    @parameterized.expand(
+        [
+            100.5,
+            "invalid",
+            0,
+            -100,
+        ]
+    )
+    def test_invalid_height(self, height):
+        """Test that invalid height values raise exceptions."""
+        with pytest.raises(StreamlitInvalidHeightError):
+            st.text_area("the label", height=height)
+
     def test_help_dedents(self):
         """Test that help properly dedents"""
         st.text_area(
@@ -231,9 +273,129 @@ class TextAreaTest(DeltaGeneratorTestCase):
         st.cache_data(lambda: st.text_area("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
+        el = self.get_delta_from_queue(-3).new_element.exception
         assert el.type == "CachedWidgetWarning"
         assert el.is_warning
+
+    def test_stable_id_with_key(self):
+        """Test that the widget ID is stable when a stable key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            # First render with certain params
+            st.text_area(
+                label="Label 1",
+                key="text_area_key",
+                value="abc",
+                help="Help 1",
+                disabled=False,
+                width="stretch",
+                on_change=lambda: None,
+                args=("arg1", "arg2"),
+                kwargs={"kwarg1": "kwarg1"},
+                label_visibility="visible",
+                placeholder="placeholder 1",
+                max_chars=50,
+                height=200,
+            )
+            c1 = self.get_delta_from_queue().new_element.text_area
+            id1 = c1.id
+
+            # Second render with different params but same key (keep max_chars the same)
+            st.text_area(
+                label="Label 2",
+                key="text_area_key",
+                value="def",
+                help="Help 2",
+                disabled=True,
+                width=200,
+                on_change=lambda: None,
+                args=("arg_1", "arg_2"),
+                kwargs={"kwarg_1": "kwarg_1"},
+                label_visibility="hidden",
+                placeholder="placeholder 2",
+                max_chars=50,
+                height="content",
+            )
+            c2 = self.get_delta_from_queue().new_element.text_area
+            id2 = c2.id
+            assert id1 == id2
+
+    @parameterized.expand(
+        [
+            ("max_chars", 100, 200),
+        ]
+    )
+    def test_whitelisted_stable_key_kwargs(
+        self, kwarg_name: str, value1: object, value2: object
+    ):
+        """Test that the widget ID changes when a whitelisted kwarg changes even when the key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            st.text_area(
+                label="Label 1",
+                key="text_area_key",
+                **{kwarg_name: value1},
+            )
+            c1 = self.get_delta_from_queue().new_element.text_area
+            id1 = c1.id
+
+            st.text_area(
+                label="Label 2",
+                key="text_area_key",
+                **{kwarg_name: value2},
+            )
+            c2 = self.get_delta_from_queue().new_element.text_area
+            id2 = c2.id
+            assert id1 != id2
+
+    def test_bind_query_params_sets_query_param_key(self) -> None:
+        """Test that bind='query-params' with a key sets query_param_key in proto."""
+        st.text_area("the label", key="my_text", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.text_area
+        assert c.query_param_key == "my_text"
+
+    def test_bind_query_params_without_key_raises_exception(self) -> None:
+        """Test that bind='query-params' without a key raises an exception."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.text_area("the label", bind="query-params")
+
+        assert "must have a unique 'key' parameter" in str(exc.value)
+
+    def test_no_bind_does_not_set_query_param_key(self) -> None:
+        """Test that without bind parameter, query_param_key is not set."""
+        st.text_area("the label", key="my_text")
+
+        c = self.get_delta_from_queue().new_element.text_area
+        assert c.query_param_key == ""
+
+    def test_invalid_bind_value_raises_exception(self) -> None:
+        """Test that an invalid bind value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as exc:
+            st.text_area("the label", key="my_text", bind="invalid-value")
+
+        assert "Invalid `bind` value" in str(exc.value)
+        assert "query-params" in str(exc.value)
+
+    def test_bind_query_params_with_default_value(self) -> None:
+        """Test that bind works with a default value."""
+        st.text_area("the label", value="hello", key="my_text", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.text_area
+        assert c.query_param_key == "my_text"
+        assert c.default == "hello"
+
+    def test_bind_query_params_with_max_chars(self) -> None:
+        """Test that bind works with max_chars."""
+        st.text_area("the label", key="my_text", bind="query-params", max_chars=5)
+
+        c = self.get_delta_from_queue().new_element.text_area
+        assert c.query_param_key == "my_text"
+        assert c.max_chars == 5
 
 
 class SomeObj:

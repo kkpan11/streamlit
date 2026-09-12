@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,13 +23,17 @@ from streamlit.delta_generator_singletons import get_dg_singleton_instance
 from streamlit.elements.lib.form_utils import current_form_id
 from streamlit.elements.lib.policies import check_cache_replay_rules
 from streamlit.elements.lib.utils import compute_and_register_element_id
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitInvalidParameterTypeError,
+    StreamlitValueError,
+)
 from streamlit.proto.Components_pb2 import ArrowTable as ArrowTableProto
 from streamlit.proto.Components_pb2 import SpecialArg
 from streamlit.proto.Element_pb2 import Element
 from streamlit.runtime.metrics_util import gather_metrics
 from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
-from streamlit.runtime.state import register_widget
+from streamlit.runtime.state import register_widget, validate_on_change_mode
 from streamlit.type_util import is_bytes_like, to_bytes
 
 if TYPE_CHECKING:
@@ -39,8 +43,6 @@ if TYPE_CHECKING:
 
 class MarshallComponentException(StreamlitAPIException):
     """Class for exceptions generated during custom component marshalling."""
-
-    pass
 
 
 class CustomComponent(BaseCustomComponent):
@@ -109,28 +111,37 @@ class CustomComponent(BaseCustomComponent):
         if len(args) > 0:
             raise MarshallComponentException(f"Argument '{args[0]}' needs a label")
 
-        # Validate tab_index according to web specifications
-        if tab_index is not None and not (
-            isinstance(tab_index, int)
-            and not isinstance(tab_index, bool)
-            and tab_index >= -1
-        ):
-            raise StreamlitAPIException(
-                "tab_index must be None, -1, or a non-negative integer."
-            )
+        on_change = validate_on_change_mode(
+            on_change,
+            supported_modes=(),
+        )
+
+        # -1 is valid per the HTML tabindex spec: focusable, but not tab-reachable.
+        if tab_index is not None:
+            if isinstance(tab_index, bool) or not isinstance(tab_index, int):
+                raise StreamlitInvalidParameterTypeError(
+                    "tab_index",
+                    type(tab_index).__name__,
+                    ["int"],
+                )
+            if tab_index < -1:
+                raise StreamlitValueError(
+                    "tab_index", ["None", "-1", "a non-negative integer"]
+                )
 
         try:
             import pyarrow  # noqa: F401, ICN001
 
             from streamlit.components.v1 import component_arrow
-        except ImportError:
+        except ImportError:  # pragma: no cover - optional dep
             raise StreamlitAPIException(
                 """To use Custom Components in Streamlit, you need to install
 PyArrow. To do so locally:
 
 `pip install pyarrow`
 
-And if you're using Streamlit Cloud, add "pyarrow" to your requirements.txt."""
+And if you're using Streamlit Cloud, add "pyarrow" to your requirements.txt.""",
+                error_id="custom-component-missing-pyarrow",
             )
 
         check_cache_replay_rules()
@@ -170,44 +181,22 @@ And if you're using Streamlit Cloud, add "pyarrow" to your requirements.txt."""
             if tab_index is not None:
                 element.component_instance.tab_index = tab_index
 
-            # Normally, a widget's element_hash (which determines
-            # its identity across multiple runs of an app) is computed
-            # by hashing its arguments. This means that, if any of the arguments
-            # to the widget are changed, Streamlit considers it a new widget
-            # instance and it loses its previous state.
-            #
-            # However! If a *component* has a `key` argument, then the
-            # component's hash identity is determined by entirely by
-            # `component_name + url + key`. This means that, when `key`
-            # exists, the component will maintain its identity even when its
-            # other arguments change, and the component's iframe won't be
-            # remounted on the frontend.
+            element.component_instance.json_args = serialized_json_args
+            element.component_instance.special_args.extend(special_args)
 
-            def marshall_element_args() -> None:
-                element.component_instance.json_args = serialized_json_args
-                element.component_instance.special_args.extend(special_args)
-
-            ctx = get_script_run_ctx()
-
-            if key is None:
-                marshall_element_args()
-                computed_id = compute_and_register_element_id(
-                    "component_instance",
-                    user_key=key,
-                    form_id=current_form_id(dg),
-                    name=self.name,
-                    url=self.url,
-                    json_args=serialized_json_args,
-                    special_args=special_args,
-                )
-            else:
-                computed_id = compute_and_register_element_id(
-                    "component_instance",
-                    user_key=key,
-                    form_id=current_form_id(dg),
-                    name=self.name,
-                    url=self.url,
-                )
+            computed_id = compute_and_register_element_id(
+                "component_instance",
+                user_key=key,
+                # Ensure that the component identity is kept stable when key is provided,
+                # Only the name and url are whitelisted to result in a new identity
+                # if they are changed.
+                key_as_main_identity={"name", "url"},
+                dg=dg,
+                name=self.name,
+                url=self.url,
+                json_args=serialized_json_args,
+                special_args=special_args,
+            )
             element.component_instance.id = computed_id
 
             def deserialize_component(ui_value: Any) -> Any:
@@ -218,14 +207,11 @@ And if you're using Streamlit Cloud, add "pyarrow" to your requirements.txt."""
                 element.component_instance.id,
                 deserializer=deserialize_component,
                 serializer=lambda x: x,
-                ctx=ctx,
+                ctx=get_script_run_ctx(),
                 on_change_handler=on_change,
                 value_type="json_value",
             )
             widget_value = component_state.value
-
-            if key is not None:
-                marshall_element_args()
 
             if widget_value is None:
                 widget_value = default
@@ -252,6 +238,8 @@ And if you're using Streamlit Cloud, add "pyarrow" to your requirements.txt."""
             and self.url == other.url
             and self.module_name == other.module_name
         )
+
+    __hash__ = BaseCustomComponent.__hash__
 
     def __ne__(self, other: object) -> bool:
         """Inequality operator."""

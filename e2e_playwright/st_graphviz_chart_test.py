@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import pytest
 from playwright.sync_api import Locator, Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run, wait_until
@@ -22,19 +22,51 @@ def get_first_graph_svg(app: Page) -> Locator:
     return app.get_by_test_id("stGraphVizChart").nth(0).locator("svg")
 
 
-def click_fullscreen(app: Page):
-    fullscreen_button = app.get_by_role("button", name="Fullscreen").nth(0)
-    expect(fullscreen_button).to_be_visible()
+def get_first_fullscreen_frame(app: Page) -> Locator:
+    return app.get_by_test_id("stFullScreenFrame").nth(0)
+
+
+def enter_fullscreen(app: Page) -> None:
+    """Enter fullscreen mode for the first chart by clicking the fullscreen toolbar button."""
+    fullscreen_frame = get_first_fullscreen_frame(app)
+    chart_toolbar = fullscreen_frame.get_by_test_id("stElementToolbar")
+
+    # Hover on the fullscreen frame to activate toolbar
+    fullscreen_frame.hover()
+    # Wait for toolbar to be fully visible (animation complete)
+    expect(chart_toolbar).to_have_css("opacity", "1")
+
+    # Click the fullscreen button
+    fullscreen_button = chart_toolbar.get_by_role("button", name="Fullscreen")
     fullscreen_button.click()
-    # Wait for the animation to finish
-    app.wait_for_timeout(1000)
+
+    # Wait for fullscreen mode to be active by checking the button changed to "Close fullscreen"
+    expect(chart_toolbar.get_by_role("button", name="Close fullscreen")).to_be_visible()
+
+
+def exit_fullscreen(app: Page) -> None:
+    """Exit fullscreen mode for the first chart by clicking the close fullscreen button."""
+    fullscreen_frame = get_first_fullscreen_frame(app)
+    chart_toolbar = fullscreen_frame.get_by_test_id("stElementToolbar")
+
+    # Hover on the fullscreen frame to activate toolbar (same behavior as enter_fullscreen)
+    fullscreen_frame.hover()
+    # Wait for toolbar to be fully visible (animation complete)
+    expect(chart_toolbar).to_have_css("opacity", "1")
+
+    # Click the close fullscreen button
+    close_button = chart_toolbar.get_by_role("button", name="Close fullscreen")
+    close_button.click()
+
+    # Wait for fullscreen mode to be exited by checking the button changed back to "Fullscreen"
+    expect(chart_toolbar.get_by_role("button", name="Fullscreen")).to_be_visible()
 
 
 def test_initial_setup(app: Page):
     """Initial setup: ensure charts are loaded."""
     expect(
         app.get_by_test_id("stGraphVizChart").locator("svg > g > title")
-    ).to_have_count(7)
+    ).to_have_count(15)
 
 
 def test_shows_left_and_right_graph(app: Page):
@@ -60,14 +92,9 @@ def test_first_graph_fullscreen(app: Page, assert_snapshot: ImageCompareFunction
     """Test if the first graph shows in fullscreen."""
     first_graph_svg = get_first_graph_svg(app)
     expect(first_graph_svg).to_have_attribute("width", "79pt")
-    first_graph_svg.hover()
 
     # Enter fullscreen
-    click_fullscreen(app)
-
-    # The width and height unset on the element on fullscreen
-    expect(first_graph_svg).not_to_have_attribute("width", "79pt")
-    expect(first_graph_svg).not_to_have_attribute("height", "116pt")
+    enter_fullscreen(app)
 
     def check_dimensions() -> bool:
         svg_dimensions = first_graph_svg.bounding_box()
@@ -86,14 +113,12 @@ def test_first_graph_after_exit_fullscreen(
 
     first_graph_svg = get_first_graph_svg(app)
     expect(first_graph_svg).to_have_attribute("width", "79pt")
-    first_graph_svg.hover()
 
-    # Enter and exit fullscreen
-    click_fullscreen(app)
-    # in fullscreen mode, the width attribute is removed. Wait for this to
-    # avoid flakiness.
-    expect(first_graph_svg).not_to_have_attribute("width", "79pt")
-    click_fullscreen(app)
+    # Enter fullscreen
+    enter_fullscreen(app)
+
+    # Exit fullscreen
+    exit_fullscreen(app)
 
     expect(first_graph_svg).to_have_attribute("width", "79pt")
     expect(first_graph_svg).to_have_attribute("height", "116pt")
@@ -152,3 +177,114 @@ def test_with_themed_app(themed_app: Page, assert_snapshot: ImageCompareFunction
         themed_app.get_by_test_id("stGraphVizChart").nth(1).locator("svg"),
         name="st_graphviz_chart-theming",
     )
+
+
+def test_width_content(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with width='content'."""
+    width_content_chart = app.get_by_test_id("stGraphVizChart").nth(7)
+    assert_snapshot(
+        width_content_chart.locator("svg"),
+        name="st_graphviz_chart_width_content",
+    )
+
+
+def test_width_stretch(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with width='stretch'."""
+    width_stretch_chart = app.get_by_test_id("stGraphVizChart").nth(8)
+    assert_snapshot(
+        width_stretch_chart.locator("svg"),
+        name="st_graphviz_chart_width_stretch",
+    )
+
+
+def test_width_pixels(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with width=300."""
+    width_pixels_chart = app.get_by_test_id("stGraphVizChart").nth(9)
+    assert_snapshot(
+        width_pixels_chart.locator("svg"),
+        name="st_graphviz_chart_width_pixels",
+    )
+
+
+def test_height_content(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with height='content'."""
+    height_content_chart = app.get_by_test_id("stGraphVizChart").nth(10)
+    assert_snapshot(
+        height_content_chart.locator("svg"),
+        name="st_graphviz_chart_height_content",
+    )
+
+
+# Test that it renders correctly with height='stretch'.
+# Note: Verified manually in Safari but webkit headless seems to handle width calculation incorrectly.
+@pytest.mark.skip_browser("webkit")
+def test_height_stretch(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with height='stretch'."""
+    height_stretch_chart = app.get_by_test_id("stGraphVizChart").nth(11)
+    svg_element = height_stretch_chart.locator("svg")
+
+    def check_stretched_dimensions() -> bool:
+        svg_dimensions = svg_element.bounding_box()
+        print(f"Current SVG dimensions during wait: {svg_dimensions}")
+        if svg_dimensions is None:
+            return False
+        # The container has height=400px, so the SVG should be significantly larger than default
+        # Default height is typically much smaller (around 116pt ≈ 155px from the first graph test)
+        # We need both height stretched AND width properly settled for a good snapshot
+        # Width should be similar to what we see in other browsers (~400px range)
+        height_stretched = svg_dimensions["height"] > 300
+        width_settled = (
+            svg_dimensions["width"] > 200
+        )  # Wait for width to actually settle
+        return height_stretched and width_settled
+
+    wait_until(app, check_stretched_dimensions)
+
+    assert_snapshot(
+        svg_element,
+        name="st_graphviz_chart_height_stretch",
+    )
+
+
+def test_height_pixels(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with height=200."""
+    height_pixels_chart = app.get_by_test_id("stGraphVizChart").nth(12)
+    assert_snapshot(
+        height_pixels_chart.locator("svg"),
+        name="st_graphviz_chart_height_pixels",
+    )
+
+
+def test_width_height_combined(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that it renders correctly with width=300, height=150."""
+    combined_chart = app.get_by_test_id("stGraphVizChart").nth(13)
+    assert_snapshot(
+        combined_chart.locator("svg"),
+        name="st_graphviz_chart_width_height_combined",
+    )
+
+
+def test_sanitizes_dangerous_link_urls(app: Page):
+    """Test that dangerous javascript: link URLs are neutralized to '#'.
+
+    This relies on real-browser URL normalization that jsdom cannot fully
+    replicate, so it complements the frontend unit tests.
+    """
+    malicious_chart = app.get_by_test_id("stGraphVizChart").nth(14)
+    link = malicious_chart.locator("a").first
+    expect(link).to_be_attached()
+
+    def link_is_sanitized() -> bool:
+        # Graphviz may emit the link target as "href" and/or "xlink:href"
+        # depending on version; all present values must be neutralized to "#".
+        values = [
+            value
+            for value in (
+                link.get_attribute("href"),
+                link.get_attribute("xlink:href"),
+            )
+            if value is not None
+        ]
+        return len(values) > 0 and all(value == "#" for value in values)
+
+    wait_until(app, link_is_sanitized)

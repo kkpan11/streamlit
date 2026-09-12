@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +19,17 @@ are executed.
 
 from __future__ import annotations
 
+import logging
 import os
+from typing import TYPE_CHECKING, Final
 from unittest.mock import mock_open, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from streamlit.runtime.pages_manager import PagesManager
+
+_LOGGER: Final = logging.getLogger(__name__)
 
 # Do not import any Streamlit modules here! See below for details.
 
@@ -49,9 +56,12 @@ with (
     import streamlit as st  # noqa: F401
     from streamlit import config, file_util
 
-    assert not config._config_options, (
-        "config.get_option() should not be called on file import!"
-    )
+    if config._config_options:
+        _LOGGER.warning(
+            "The config options have been populated already. This can happen if there "
+            "is a config file in a supported path. This can lead to unreliable test "
+            "execution."
+        )
 
     config_path = file_util.get_streamlit_file_path("config.toml")
     path_exists.side_effect = lambda path: path == config_path
@@ -126,6 +136,15 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture
+def anyio_backend() -> str:
+    """Pin `@pytest.mark.anyio` tests to the asyncio backend."""
+    # Streamlit only runs on asyncio. Without this pin, the anyio pytest plugin
+    # parametrizes tests over undeclared backends (like trio), which causes
+    # errors in the minimum-dependency test environment.
+    return "asyncio"
+
+
+@pytest.fixture
 def benchmark(
     benchmark,
     request: pytest.FixtureRequest,
@@ -145,3 +164,16 @@ def benchmark(
     # For pytest functions, return the benchmark function so that it can be
     # accessed via the fixture.
     return benchmark
+
+
+def enable_mpa_v2_mode(pages_manager: PagesManager) -> None:
+    """Enable MPA v2 mode on a PagesManager for test setup.
+
+    In MPA v1 (legacy), pages are auto-discovered from a ``pages/`` directory.
+    In MPA v2, pages are explicitly set via ``st.navigation()``. The distinction
+    is signaled by ``_pages`` being non-None (even if empty).
+
+    This helper documents the intent when tests need MPA v2 mode as a
+    precondition, without testing PagesManager functionality itself.
+    """
+    pages_manager._set_pages({})

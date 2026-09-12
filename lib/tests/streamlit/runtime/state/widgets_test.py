@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@
 
 import inspect
 import unittest
-from dataclasses import dataclass
 from typing import get_args
 from unittest.mock import ANY, MagicMock, call, patch
 
@@ -32,13 +31,17 @@ from streamlit.elements.lib.utils import (
 from streamlit.proto.Common_pb2 import ChatInputValue as ChatInputValueProto
 from streamlit.proto.WidgetStates_pb2 import WidgetState, WidgetStates
 from streamlit.runtime.scriptrunner_utils.script_requests import _coalesce_widget_states
-from streamlit.runtime.scriptrunner_utils.script_run_context import get_script_run_ctx
+from streamlit.runtime.scriptrunner_utils.script_run_context import (
+    ThreadState,
+    get_script_run_ctx,
+)
 from streamlit.runtime.state.common import (
     GENERATED_ELEMENT_ID_PREFIX,
     ValueFieldName,
 )
 from streamlit.runtime.state.session_state import SessionState, WidgetMetadata
 from streamlit.runtime.state.widgets import (
+    register_widget,
     register_widget_from_metadata,
     user_key_from_element_id,
 )
@@ -60,6 +63,11 @@ def identity(x):
 
 
 class WidgetManagerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # call_callback uses ThreadState.scoped(), which requires an initialized
+        # FragmentThreadState on this thread.
+        ThreadState.initialize()
+
     def test_get(self):
         states = WidgetStates()
 
@@ -319,7 +327,11 @@ class WidgetManagerTests(unittest.TestCase):
 class WidgetHelperTests(unittest.TestCase):
     def test_get_widget_with_generated_key(self):
         element_id = compute_and_register_element_id(
-            "button", label="the label", user_key="my_key", form_id=None
+            "button",
+            label="the label",
+            user_key="my_key",
+            dg=None,
+            key_as_main_identity=False,
         )
         assert element_id.startswith(GENERATED_ELEMENT_ID_PREFIX)
 
@@ -332,6 +344,8 @@ EXCLUDED_KWARGS_FOR_ELEMENT_ID_COMPUTATION = {
     "disabled",
     "format_func",
     "label_visibility",
+    # wrap only controls label text wrapping, not widget identity.
+    "wrap",
     # on_change callbacks and similar/related parameters.
     "args",
     "kwargs",
@@ -340,6 +354,10 @@ EXCLUDED_KWARGS_FOR_ELEMENT_ID_COMPUTATION = {
     "on_submit",
     # Key should be provided via `user_key` instead.
     "key",
+    # bind controls URL syncing, not widget identity
+    "bind",
+    # persist_state controls server-side value retention, not widget identity
+    "persist_state",
 }
 
 
@@ -357,7 +375,7 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
 
         # Add some kwargs that are passed to compute element ID
         # but don't appear in widget signatures.
-        for kwarg in ["form_id", "user_key", "dg"]:
+        for kwarg in ["user_key", "dg", "key_as_main_identity"]:
             kwargs[kwarg] = ANY
 
         return kwargs
@@ -388,27 +406,11 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         """Test that active_script_hash and form ID are always included in
         element ID calculation."""
 
-        expected_form_id: str | None = "form_id"
-
-        @dataclass
-        class MockForm:
-            form_id = expected_form_id
-
         with patch(
             "streamlit.elements.lib.utils._compute_element_id",
             wraps=_compute_element_id,
         ) as patched_compute_element_id:
-            # Some elements cannot be used in a form:
-            if element_name not in ["button", "chat_input", "download_button"]:
-                with patch(
-                    "streamlit.elements.lib.form_utils._current_form",
-                    return_value=MockForm(),
-                ):
-                    widget_func()
-            else:
-                widget_func()
-                expected_form_id = None
-
+            widget_func()
         # Get call kwargs from patched_compute_element_id
         call_kwargs = patched_compute_element_id.call_args[1]
         assert "active_script_hash" in call_kwargs, (
@@ -416,10 +418,12 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         )
         "in element ID calculation."
 
-        # Elements that don't set a form ID
-        assert call_kwargs.get("form_id") == expected_form_id, (
-            "form_id is expected to be included in element ID calculation."
-        )
+        # Some elements cannot be used in a form
+        if element_name not in {"button", "chat_input", "download_button"}:
+            # For all other check that form_id is set:
+            assert call_kwargs.get("form_id") == "", (
+                "form_id is expected to be included in element ID calculation."
+            )
 
     @parameterized.expand(WIDGET_ELEMENTS)
     def test_triggers_duplicate_id_error(self, _element_name: str, widget_func):
@@ -465,6 +469,11 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         sig = inspect.signature(widget_func)
         expected_sig = self.signature_to_expected_kwargs(sig)
 
+        # time_input excludes format from the ID because format is display-only
+        # and does not require a widget reset.
+        if widget_func == st.time_input:
+            del expected_sig["format"]
+
         patched_compute_and_register_element_id.assert_called_with(ANY, **expected_sig)
 
         # Double check that we get a DuplicateWidgetID error since the `disabled`
@@ -492,6 +501,10 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         sig = inspect.signature(widget_func)
         expected_sig = self.signature_to_expected_kwargs(sig)
 
+        # use_container_width is being deprecated and is not used for element ID calculation
+        if "use_container_width" in expected_sig:
+            del expected_sig["use_container_width"]
+
         if widget_func == st.button:
             expected_sig["is_form_submitter"] = ANY
         # we exclude `data` for `st.download_button` here and not
@@ -506,39 +519,32 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         [
             (
                 # define a lambda that matches the signature of what button_group is
-                # passing to compute_and_register_element_id, because st.feedback does
-                # not take a label and its arguments are different.
-                lambda key,
-                options,
-                disabled=False,
-                default=[],
-                click_mode=0,
-                style="": st.feedback("stars", disabled=disabled),
-                "button_group",
-            ),
-            (
-                # define a lambda that matches the signature of what button_group is
                 # passing to compute_and_register_element_id, because st.pills does
                 # not take a label and its arguments are different.
-                lambda key,
+                lambda label,
                 options,
                 disabled=False,
                 default=[],
                 click_mode=0,
-                style="": st.pills("some_label", options, disabled=disabled),
+                style="",
+                key="",
+                help="",  # noqa: A006
+                width="content": st.pills(label, options, disabled=disabled),
                 "button_group",
             ),
             (
                 # define a lambda that matches the signature of what button_group is
-                # passing to compute_and_register_element_id, because st.feedback does
-                # not take a label and its arguments are different.
-                lambda key,
+                # passing to compute_and_register_element_id.
+                lambda label,
                 options,
                 disabled=False,
                 default=[],
                 click_mode=0,
-                style="": st.segmented_control(
-                    "some_label", options, disabled=disabled
+                style="",
+                key="",
+                help="",  # noqa: A006
+                width="content": st.segmented_control(
+                    label, options, disabled=disabled
                 ),
                 "button_group",
             ),
@@ -589,6 +595,25 @@ class ComputeElementIdTests(DeltaGeneratorTestCase):
         with pytest.raises(errors.DuplicateWidgetID):
             st.data_editor(data=[], disabled=True)
 
+    def test_duplicate_id_error_uses_element_type(self) -> None:
+        """Test that duplicate ID error uses element_type when style is None."""
+        with pytest.raises(
+            errors.StreamlitDuplicateElementId,
+            match="There are multiple `button` elements with the same",
+        ):
+            compute_and_register_element_id(
+                element_type="button",
+                user_key=None,
+                dg=None,
+                key_as_main_identity=False,
+            )
+            compute_and_register_element_id(
+                element_type="button",
+                user_key=None,
+                dg=None,
+                key_as_main_identity=False,
+            )
+
 
 class RegisterWidgetsTest(DeltaGeneratorTestCase):
     @parameterized.expand(WIDGET_ELEMENTS)
@@ -607,6 +632,162 @@ class RegisterWidgetsTest(DeltaGeneratorTestCase):
         assert widget_metadata_arg.value_type in get_args(ValueFieldName)
         # test that the value_type also maps to a protobuf field
         assert widget_metadata_arg.value_type in WidgetState.DESCRIPTOR.fields_by_name
+
+    def test_raises_exception_with_on_change_and_callbacks(self):
+        """Test that `register_widget` raises an exception when both `on_change`
+        and `callbacks` are provided.
+        """
+        with pytest.raises(errors.StreamlitIncompatibleParametersError):
+            register_widget(
+                "el_id",
+                deserializer=lambda x: x,
+                serializer=lambda x: x,
+                ctx=None,
+                on_change_handler=lambda: None,
+                callbacks={"change": lambda: None},
+                value_type="bool_value",
+            )
+
+    def test_bind_query_params_requires_key(self):
+        """Test that bind='query-params' raises if widget has no key."""
+        # Element ID format for widgets without user key is "$$ID-<hash>-None"
+        with pytest.raises(
+            errors.StreamlitAPIException, match="must have a unique 'key' parameter"
+        ):
+            register_widget(
+                element_id="$$ID-some_hash-None",  # No user key (ends with -None)
+                ctx=None,
+                on_change_handler=None,
+                args=None,
+                kwargs=None,
+                deserializer=lambda x: x,
+                serializer=lambda x: x,
+                value_type="string_value",
+                bind="query-params",
+            )
+
+    def test_bind_query_params_with_key_succeeds(self):
+        """Test that bind='query-params' works when widget has a key and clearable.
+
+        Note: With ctx=None, the function returns early with a fallback result.
+        The important thing is that it doesn't raise the validation error.
+        """
+        # Widget with user key and clearable should not raise the validation error
+        # (it will return early due to ctx=None, but that's expected)
+        result = register_widget(
+            element_id="$$ID-some_hash-my_widget_key",  # Has user key
+            ctx=None,
+            on_change_handler=None,
+            args=None,
+            kwargs=None,
+            deserializer=lambda x: x if x is not None else "default",
+            serializer=lambda x: x,
+            value_type="string_value",
+            bind="query-params",
+            clearable=True,
+        )
+        # Should return a fallback result without raising
+        assert result is not None
+
+    def test_bind_query_params_requires_clearable(self):
+        """Test that bind='query-params' raises if clearable is not set."""
+        with pytest.raises(ValueError, match="clearable must be explicitly set"):
+            register_widget(
+                element_id="$$ID-some_hash-my_widget_key",  # Has user key
+                ctx=None,
+                on_change_handler=None,
+                args=None,
+                kwargs=None,
+                deserializer=lambda x: x if x is not None else "default",
+                serializer=lambda x: x,
+                value_type="string_value",
+                bind="query-params",
+                # clearable intentionally not provided
+            )
+
+    def test_bind_invalid_value_raises(self) -> None:
+        """Invalid bind values raise StreamlitValueError."""
+        with pytest.raises(errors.StreamlitValueError, match="Invalid `bind` value"):
+            register_widget(
+                element_id="$$ID-some_hash-my_widget_key",
+                ctx=None,
+                on_change_handler=None,
+                args=None,
+                kwargs=None,
+                deserializer=lambda x: x if x is not None else "default",
+                serializer=lambda x: x,
+                value_type="string_value",
+                bind="not-a-valid-binding",
+                clearable=True,
+            )
+
+    def test_bind_none_does_not_require_key(self):
+        """Test that bind=None (default) doesn't require a key."""
+        # Should not raise even without a user key
+        result = register_widget(
+            element_id="$$ID-some_hash-None",  # No user key
+            ctx=None,
+            on_change_handler=None,
+            args=None,
+            kwargs=None,
+            deserializer=lambda x: x if x is not None else "default",
+            serializer=lambda x: x,
+            value_type="string_value",
+            bind=None,
+        )
+        assert result is not None
+
+    def test_register_widget_persist_state_requires_key(self) -> None:
+        """persist_state requires a user key so the value can be preserved."""
+        with pytest.raises(
+            errors.StreamlitAPIException, match="must have a unique 'key' parameter"
+        ):
+            register_widget(
+                element_id="$$ID-some_hash-None",  # No user key (ends with -None)
+                ctx=None,
+                on_change_handler=None,
+                args=None,
+                kwargs=None,
+                deserializer=lambda x: x,
+                serializer=lambda x: x,
+                value_type="string_value",
+                persist_state="session",
+            )
+
+    def test_register_widget_invalid_persist_state_raises(self) -> None:
+        """Invalid persist_state values raise StreamlitValueError."""
+        with pytest.raises(
+            errors.StreamlitValueError,
+            match="Invalid `persist_state` value",
+        ):
+            register_widget(
+                element_id="$$ID-some_hash-my_widget_key",
+                ctx=None,
+                on_change_handler=None,
+                args=None,
+                kwargs=None,
+                deserializer=lambda x: x if x is not None else "default",
+                serializer=lambda x: x,
+                value_type="string_value",
+                persist_state="forever",
+            )
+
+    def test_register_widget_persist_state_none_is_noop(self) -> None:
+        """persist_state=None does not record any persisted-id tracking."""
+        register_widget(
+            element_id="$$ID-some_hash-my_widget_key",
+            ctx=self.script_run_ctx,
+            on_change_handler=None,
+            args=None,
+            kwargs=None,
+            deserializer=lambda x: x if x is not None else "default",
+            serializer=lambda x: x,
+            value_type="string_value",
+            persist_state=None,
+        )
+        session_state = self.script_run_ctx.session_state._state
+        assert session_state._persist_tracker._scopes == {}
+        assert session_state._persist_tracker._widget_pages == {}
 
 
 @patch("streamlit.runtime.Runtime.exists", new=MagicMock(return_value=True))

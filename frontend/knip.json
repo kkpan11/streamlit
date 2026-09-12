@@ -1,0 +1,23 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "tags": ["-lintignore"],
+  "ignoreBinaries": ["streamlit"],
+  "ignoreIssues": {
+    "component-lib/src/ArrowTable.ts": ["exports", "types"]
+  },
+  "ignoreDependencies": [
+    "@bufbuild/buf",
+    "@playwright/cli",
+    "@swc/plugin-emotion",
+    "eslint-plugin-streamlit-custom",
+    "oxfmt",
+    "protobufjs",
+    "protobufjs-cli",
+    "typescript-v7"
+  ],
+  "workspaces": {
+    ".": {
+      "entry": ["vitest.setup.ts", "vitest-jest-dom.d.ts"]
+    }
+  }
+}

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,35 @@
  * limitations under the License.
  */
 
-import { Block as BlockProto, streamlit } from "@streamlit/protobuf"
+import { Block as BlockProto, Element, streamlit } from "@streamlit/protobuf"
 
 import { BlockNode, ElementNode } from "~lib/AppNode"
+import { ElementsSetVisitor } from "~lib/render-tree/visitors/ElementsSetVisitor"
 import { ScriptRunState } from "~lib/ScriptRunState"
+import { getDividerColors } from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
 
 import {
-  backwardsCompatibleColumnGapSize,
+  assignDividerColor,
   checkFlexContainerBackwardsCompatibile,
   convertKeyToClassName,
-  getActivateScrollToBottomBackwardsCompatible,
   getBorderBackwardsCompatible,
-  getHeightBackwardsCompatible,
+  getColumnGapConfig,
   getKeyFromId,
   isElementStale,
+  shouldActivateScrollToBottom,
+  shouldHideStaleDialog,
 } from "./utils"
+
+vi.mock("~lib/render-tree/visitors/ElementsSetVisitor", () => ({
+  ElementsSetVisitor: {
+    collectElements: vi.fn(),
+  },
+}))
+
+vi.mock("~lib/theme/getColors", () => ({
+  getDividerColors: vi.fn(),
+}))
 
 describe("isElementStale", () => {
   const node = new ElementNode(
@@ -51,51 +65,162 @@ describe("isElementStale", () => {
     ).toBe(true)
   })
 
-  // When running in a fragment, the only elements that should be set to stale
-  // are those belonging to the fragment that's currently running and only if the script run id is different.
-  // If the script run id is the same, the element has just been updated and is not stale.
-  it("if running and currentFragmentId is set, compares with node's fragmentId and scriptrunId", () => {
-    expect(
-      isElementStale(node, ScriptRunState.RUNNING, "myScriptRunId", [
-        "myFragmentId",
-      ])
-    ).toBe(false)
+  // A pending stop does not end the script run, so STOP_REQUESTED uses the
+  // same staleness rules as RUNNING.
+  describe.each([ScriptRunState.RUNNING, ScriptRunState.STOP_REQUESTED])(
+    "while the script is executing (%s)",
+    state => {
+      // When running in a fragment, the only elements that should be set to stale
+      // are those belonging to the fragment that's currently running and only if the script run id is different.
+      // If the script run id is the same, the element has just been updated and is not stale.
+      it("if fragmentIdsThisRun is set, compares the node's fragmentId and scriptRunId", () => {
+        expect(
+          isElementStale(node, state, "myScriptRunId", ["myFragmentId"])
+        ).toBe(false)
 
-    expect(
-      isElementStale(node, ScriptRunState.RUNNING, "otherScriptRunId", [
-        "myFragmentId",
-      ])
-    ).toBe(true)
+        expect(
+          isElementStale(node, state, "otherScriptRunId", ["myFragmentId"])
+        ).toBe(true)
 
-    expect(
-      isElementStale(node, ScriptRunState.RUNNING, "myScriptRunId", [
-        "someFragmentId",
-        "someOtherFragmentId",
-      ])
-    ).toBe(false)
-  })
+        expect(
+          isElementStale(node, state, "myScriptRunId", [
+            "someFragmentId",
+            "someOtherFragmentId",
+          ])
+        ).toBe(false)
 
-  // When not running in a fragment, all elements from script runs aside from
-  // the current one should be set to stale.
-  it("if running and currentFragmentId is not set, compares with node's scriptRunId", () => {
-    expect(
-      isElementStale(node, ScriptRunState.RUNNING, "someOtherScriptRunId", [])
-    ).toBe(true)
+        // A fragment that is not running this time is not stale, even when its
+        // scriptRunId differs.
+        expect(
+          isElementStale(node, state, "otherScriptRunId", ["someFragmentId"])
+        ).toBe(false)
+      })
 
-    expect(
-      isElementStale(node, ScriptRunState.RUNNING, "myScriptRunId", [])
-    ).toBe(false)
-  })
+      // When not running in a fragment, all elements from script runs aside from
+      // the current one should be set to stale.
+      it("if fragmentIdsThisRun is not set, compares the node's scriptRunId", () => {
+        expect(isElementStale(node, state, "someOtherScriptRunId", [])).toBe(
+          true
+        )
+
+        expect(isElementStale(node, state, "myScriptRunId", [])).toBe(false)
+      })
+
+      // fragmentIdsThisRun is optional, so omitting it has to behave like
+      // passing no fragment ids rather than throwing.
+      it("if fragmentIdsThisRun is omitted, compares the node's scriptRunId", () => {
+        expect(isElementStale(node, state, "someOtherScriptRunId")).toBe(true)
+
+        expect(isElementStale(node, state, "myScriptRunId")).toBe(false)
+      })
+    }
+  )
 
   it("returns false for all other script run states", () => {
     const states = [
       ScriptRunState.NOT_RUNNING,
-      ScriptRunState.STOP_REQUESTED,
       ScriptRunState.COMPILATION_ERROR,
     ]
     states.forEach(s => {
       expect(isElementStale(node, s, "someOtherScriptRunId", [])).toBe(false)
     })
+  })
+})
+
+describe("shouldHideStaleDialog", () => {
+  const node = new ElementNode(
+    // @ts-expect-error
+    null,
+    null,
+    "myScriptRunId",
+    "activeScriptHash",
+    "myFragmentId"
+  )
+
+  it("hides a leftover dialog during a full-app run", () => {
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.RUNNING,
+        "someOtherScriptRunId",
+        []
+      )
+    ).toBe(true)
+  })
+
+  it("hides a leftover dialog while stop is requested", () => {
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.STOP_REQUESTED,
+        "someOtherScriptRunId",
+        []
+      )
+    ).toBe(true)
+  })
+
+  it("keeps the dialog when it belongs to the current run", () => {
+    expect(
+      shouldHideStaleDialog(node, ScriptRunState.RUNNING, "myScriptRunId", [])
+    ).toBe(false)
+  })
+
+  it("keeps the dialog during a fragment run", () => {
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.RUNNING,
+        "someOtherScriptRunId",
+        ["myFragmentId"]
+      )
+    ).toBe(false)
+  })
+
+  it("keeps the dialog during an unrelated fragment run", () => {
+    // NewSession still assigns a new scriptRunId for fragment reruns, so any
+    // non-empty fragmentIdsThisRun must keep the dialog — not only the
+    // dialog's own fragment.
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.RUNNING,
+        "someOtherScriptRunId",
+        ["otherFragmentId"]
+      )
+    ).toBe(false)
+  })
+
+  it("keeps the dialog while a rerun is only requested", () => {
+    // RERUN_REQUESTED is set before we know whether this is a fragment or
+    // full-app rerun. Hiding here would unmount the dialog on every widget
+    // interaction inside it.
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.RERUN_REQUESTED,
+        "someOtherScriptRunId",
+        []
+      )
+    ).toBe(false)
+  })
+
+  it("keeps the dialog when the script is not executing", () => {
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.NOT_RUNNING,
+        "someOtherScriptRunId",
+        []
+      )
+    ).toBe(false)
+    expect(
+      shouldHideStaleDialog(
+        node,
+        ScriptRunState.COMPILATION_ERROR,
+        "someOtherScriptRunId",
+        []
+      )
+    ).toBe(false)
   })
 })
 
@@ -115,12 +240,9 @@ describe("convertKeyToClassName", () => {
     { input: "another$Test_case", expected: "st-key-another-Test_case" },
   ]
 
-  test.each(testCases)(
-    "converts $input to $expected",
-    ({ input, expected }) => {
-      expect(convertKeyToClassName(input)).toBe(expected)
-    }
-  )
+  it.each(testCases)("converts $input to $expected", ({ input, expected }) => {
+    expect(convertKeyToClassName(input)).toBe(expected)
+  })
 })
 
 describe("getKeyFromId", () => {
@@ -160,24 +282,39 @@ describe("getKeyFromId", () => {
     },
   ]
 
-  test.each(testCases)(
-    "extracts the key from $input",
-    ({ input, expected }) => {
-      expect(getKeyFromId(input)).toBe(expected)
-    }
-  )
+  it.each(testCases)("extracts the key from $input", ({ input, expected }) => {
+    expect(getKeyFromId(input)).toBe(expected)
+  })
 })
 
-describe("backwardsCompatibleColumnGapSize", () => {
+describe("getColumnGapConfig", () => {
   it("returns gapSize when it exists", () => {
     const columnProto = {
       gapConfig: {
         gapSize: streamlit.GapSize.MEDIUM,
       },
     }
-    expect(backwardsCompatibleColumnGapSize(columnProto)).toBe(
-      streamlit.GapSize.MEDIUM
-    )
+    expect(getColumnGapConfig(columnProto)).toEqual({
+      gapSize: streamlit.GapSize.MEDIUM,
+    })
+  })
+
+  it("returns pixelGap when it exists", () => {
+    const columnProto = {
+      gapConfig: {
+        pixelGap: 20,
+      },
+    }
+    expect(getColumnGapConfig(columnProto)).toEqual({ pixelGap: 20 })
+  })
+
+  it("returns pixelGap of 0 when set", () => {
+    const columnProto = {
+      gapConfig: {
+        pixelGap: 0,
+      },
+    }
+    expect(getColumnGapConfig(columnProto)).toEqual({ pixelGap: 0 })
   })
 
   it("returns default gapSize when gapSize is undefined", () => {
@@ -186,55 +323,16 @@ describe("backwardsCompatibleColumnGapSize", () => {
         gapSize: streamlit.GapSize.GAP_UNDEFINED,
       },
     }
-    expect(backwardsCompatibleColumnGapSize(columnProto)).toBe(
-      streamlit.GapSize.SMALL
-    )
+    expect(getColumnGapConfig(columnProto)).toEqual({
+      gapSize: streamlit.GapSize.SMALL,
+    })
   })
 
-  const gapStringCases = [
-    { gap: "small", expected: streamlit.GapSize.SMALL },
-    { gap: "medium", expected: streamlit.GapSize.MEDIUM },
-    { gap: "large", expected: streamlit.GapSize.LARGE },
-  ]
-
-  test.each(gapStringCases)(
-    "converts '$gap' gap to corresponding GapSize",
-    ({ gap, expected }) => {
-      const columnProto = { gap }
-      expect(backwardsCompatibleColumnGapSize(columnProto)).toBe(expected)
-    }
-  )
-
-  const fallbackCases = [
-    {
-      description: "when neither gapSize nor gap exists",
-      proto: {},
-      expected: streamlit.GapSize.SMALL,
-    },
-    {
-      description: "with unrecognized gap string",
-      proto: { gap: "unrecognized" },
-      expected: streamlit.GapSize.SMALL,
-    },
-  ]
-
-  test.each(fallbackCases)(
-    "returns GapSize.SMALL $description",
-    ({ proto, expected }) => {
-      expect(backwardsCompatibleColumnGapSize(proto)).toBe(expected)
-    }
-  )
-
-  it("prioritizes gapSize when both gapSize and gap exist", () => {
-    const columnProto = {
-      gapConfig: {
-        gapSize: streamlit.GapSize.LARGE,
-      },
-      gap: "small",
-    }
-    expect(backwardsCompatibleColumnGapSize(columnProto)).toBe(
-      streamlit.GapSize.LARGE
-    )
+  it("returns GapSize.SMALL when gapConfig does not exist", () => {
+    const columnProto = {}
+    expect(getColumnGapConfig(columnProto)).toEqual({
+      gapSize: streamlit.GapSize.SMALL,
+    })
   })
 })
 
@@ -262,7 +360,7 @@ describe("checkFlexContainerBackwardsCompatibile", () => {
     },
   ]
 
-  test.each(testCases)("$description", ({ blockProto, expected }) => {
+  it.each(testCases)("$description", ({ blockProto, expected }) => {
     expect(
       checkFlexContainerBackwardsCompatibile(blockProto as BlockProto)
     ).toBe(expected)
@@ -304,54 +402,17 @@ describe("getBorderBackwardsCompatible", () => {
     },
   ]
 
-  test.each(testCases)("$description", ({ blockProto, expected }) => {
+  it.each(testCases)("$description", ({ blockProto, expected }) => {
     expect(getBorderBackwardsCompatible(blockProto as BlockProto)).toBe(
       expected
     )
   })
 })
 
-describe("getHeightBackwardsCompatible", () => {
-  const testCases = [
-    {
-      description:
-        "returns pixelHeight when flexContainer.heightConfig.pixelHeight exists",
-      blockProto: { heightConfig: { pixelHeight: 100 } },
-      expected: 100,
-    },
-    {
-      description: "returns height when vertical.height exists",
-      blockProto: { vertical: { height: 200 } },
-      expected: 200,
-    },
-    {
-      description: "returns undefined when none exist",
-      blockProto: {},
-      expected: undefined,
-    },
-    {
-      description:
-        "prioritizes flexContainer.heightConfig.pixelHeight when both exist",
-      blockProto: {
-        heightConfig: { pixelHeight: 300 },
-        vertical: { height: 400 },
-      },
-      expected: 300,
-    },
-  ]
-
-  test.each(testCases)("$description", ({ blockProto, expected }) => {
-    expect(getHeightBackwardsCompatible(blockProto as BlockProto)).toBe(
-      expected
-    )
-  })
-})
-
-describe("getActivateScrollToBottomBackwardsCompatible", () => {
+describe("shouldActivateScrollToBottom", () => {
   // Helper function to create a proper BlockNode instance for testing
   const createBlockNode = (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    parentDeltaBlock: any,
+    parentDeltaBlock: BlockProto.$Properties,
     hasChatMessageChild: boolean = false
   ): BlockNode => {
     const children = []
@@ -387,22 +448,31 @@ describe("getActivateScrollToBottomBackwardsCompatible", () => {
     )
   }
 
-  it("returns true when flexContainer has heightConfig and has chatMessage child", () => {
+  it("returns true when flexContainer has pixelHeight and has chatMessage child", () => {
     const mockNode = createBlockNode(
       { heightConfig: { pixelHeight: 100 } },
       true // Has chatMessage child
     )
 
-    expect(getActivateScrollToBottomBackwardsCompatible(mockNode)).toBe(true)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(true)
   })
 
-  it("returns true when vertical has height and has chatMessage child", () => {
+  it("returns false when has useStretch height and chatMessage child", () => {
     const mockNode = createBlockNode(
-      { vertical: { height: 100 } },
+      { heightConfig: { useStretch: true } },
       true // Has chatMessage child
     )
 
-    expect(getActivateScrollToBottomBackwardsCompatible(mockNode)).toBe(true)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(false)
+  })
+
+  it("returns false when has useContent height and chatMessage child", () => {
+    const mockNode = createBlockNode(
+      { heightConfig: { useContent: true } },
+      true // Has chatMessage child
+    )
+
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(false)
   })
 
   it("returns false when has height but no chatMessage child", () => {
@@ -411,7 +481,7 @@ describe("getActivateScrollToBottomBackwardsCompatible", () => {
       false // No chatMessage child
     )
 
-    expect(getActivateScrollToBottomBackwardsCompatible(mockNode)).toBe(false)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(false)
   })
 
   it("returns false when has chatMessage child but no height", () => {
@@ -420,12 +490,12 @@ describe("getActivateScrollToBottomBackwardsCompatible", () => {
       true // Has chatMessage child
     )
 
-    expect(getActivateScrollToBottomBackwardsCompatible(mockNode)).toBe(false)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(false)
   })
 
-  it("returns false when vertical has height but no children", () => {
+  it("returns false when has heightConfig but no children", () => {
     // Create parent node directly without children for this test
-    const parentBlock = new BlockProto({ vertical: { height: 100 } })
+    const parentBlock = new BlockProto({ heightConfig: { pixelHeight: 100 } })
 
     const mockNode = new BlockNode(
       "test-script-hash",
@@ -434,6 +504,158 @@ describe("getActivateScrollToBottomBackwardsCompatible", () => {
       "test-script-run-id"
     )
 
-    expect(getActivateScrollToBottomBackwardsCompatible(mockNode)).toBe(false)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(false)
+  })
+
+  it.each([
+    {
+      description: "autoscroll=true with fixed height",
+      config: { heightConfig: { pixelHeight: 100 }, autoscroll: true },
+      hasChatChild: false,
+      expected: true,
+    },
+    {
+      description: "autoscroll=false overrides chat message presence",
+      config: { heightConfig: { pixelHeight: 100 }, autoscroll: false },
+      hasChatChild: true,
+      expected: false,
+    },
+    {
+      description: "autoscroll=true without fixed height",
+      config: { heightConfig: { useContent: true }, autoscroll: true },
+      hasChatChild: false,
+      expected: false,
+    },
+    {
+      description: "autoscroll=null with chat message uses default (true)",
+      config: { heightConfig: { pixelHeight: 100 }, autoscroll: null },
+      hasChatChild: true,
+      expected: true,
+    },
+    {
+      description: "autoscroll=null without chat message uses default (false)",
+      config: { heightConfig: { pixelHeight: 100 }, autoscroll: null },
+      hasChatChild: false,
+      expected: false,
+    },
+  ])("$description", ({ config, hasChatChild, expected }) => {
+    const mockNode = createBlockNode(config, hasChatChild)
+    expect(shouldActivateScrollToBottom(mockNode)).toBe(expected)
+  })
+})
+
+describe("assignDividerColor", () => {
+  const theme = {} as EmotionTheme
+  const dividerColorMap = {
+    red: "#c-red",
+    orange: "#c-orange",
+    yellow: "#c-yellow",
+    blue: "#c-blue",
+    green: "#c-green",
+    violet: "#c-violet",
+    gray: "#c-gray",
+    grey: "#c-grey",
+    rainbow: "#c-rainbow",
+  }
+
+  const blockNode = {} as BlockNode
+
+  beforeEach(() => {
+    vi.mocked(getDividerColors).mockReturnValue(dividerColorMap)
+  })
+
+  it("assigns auto divider colors in order and cycles", () => {
+    const headings = Array.from({ length: 7 }, () => ({
+      type: "heading" as const,
+      heading: { divider: "auto" },
+    }))
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set(headings) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(headings.map(h => h.heading.divider)).toEqual([
+      "#c-blue",
+      "#c-green",
+      "#c-orange",
+      "#c-red",
+      "#c-violet",
+      "#c-yellow",
+      "#c-blue",
+    ])
+  })
+
+  it("maps named divider colors from the theme map", () => {
+    const heading = {
+      type: "heading" as const,
+      heading: { divider: "blue" },
+    }
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set([heading]) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(heading.heading.divider).toBe("#c-blue")
+  })
+
+  it("does not modify non-heading elements", () => {
+    const el = {
+      type: "text" as const,
+      heading: { divider: "blue" },
+    }
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set([el]) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(el.heading.divider).toBe("blue")
+  })
+
+  it("does not modify headings without a divider", () => {
+    const noDivider = {
+      type: "heading" as const,
+      heading: {} as { divider?: string },
+    }
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set([noDivider]) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(noDivider.heading.divider).toBeUndefined()
+  })
+
+  it("does not modify headings with an unknown divider string", () => {
+    const heading = {
+      type: "heading" as const,
+      heading: { divider: "neon-pink" },
+    }
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set([heading]) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(heading.heading.divider).toBe("neon-pink")
+  })
+
+  it("handles mixed auto and named dividers without breaking index", () => {
+    const elements = [
+      { type: "heading" as const, heading: { divider: "auto" } },
+      { type: "heading" as const, heading: { divider: "red" } },
+      { type: "heading" as const, heading: { divider: "auto" } },
+    ]
+    vi.mocked(ElementsSetVisitor.collectElements).mockReturnValue(
+      new Set(elements) as Set<Element>
+    )
+
+    assignDividerColor(blockNode, theme)
+
+    expect(elements[0].heading.divider).toBe("#c-blue")
+    expect(elements[1].heading.divider).toBe("#c-red")
+    expect(elements[2].heading.divider).toBe("#c-green")
   })
 })

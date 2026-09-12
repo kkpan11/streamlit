@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ st.scatter_chart(df)
 st.scatter_chart(df, x="a")
 st.scatter_chart(df, y="a")
 st.scatter_chart(df, y=["a", "b"])
-st.scatter_chart(df, x="a", y="b", height=500, width=300, use_container_width=False)
+st.scatter_chart(df, x="a", y="b", height=500, width=300)
 st.scatter_chart(df, x="b", y="a")
 st.scatter_chart(df, x="a", y=["b", "c"])
 st.scatter_chart(utc_df)
@@ -72,30 +72,3 @@ st.scatter_chart(color_df, x="a", y="b", color="e")
 st.scatter_chart(color_df, x="a", y="b", size="d", color="e")
 st.scatter_chart(color_df, x="a", y="b", size="d", color="c")
 st.scatter_chart(df, x_label="X Axis Label", y_label="Y Axis Label")
-
-# Test that add_rows maintains original styling params:
-# color, width, height, use_container_width
-scatter_data = pd.DataFrame(
-    {
-        "Value 1": [],
-        "Value 2": [],
-    }
-)
-
-empty_scatter = st.scatter_chart(
-    scatter_data,
-    y=["Value 1", "Value 2"],
-    color=["#800080", "#0000FF"],  # Purple and Blue
-    width=600,
-    height=300,
-    use_container_width=False,
-)
-
-if st.button("Add data to Scatter Chart"):
-    new_data = pd.DataFrame(
-        {
-            "Value 1": np.random.randn(10),
-            "Value 2": np.random.randn(10),
-        }
-    )
-    empty_scatter.add_rows(new_data)

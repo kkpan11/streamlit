@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-import React from "react"
-
 import { screen } from "@testing-library/react"
 
 import { render } from "~lib/test_util"
@@ -23,8 +21,7 @@ import { render } from "~lib/test_util"
 import FileDropzoneInstructions, { Props } from "./FileDropzoneInstructions"
 
 const getProps = (props: Partial<Props> = {}): Props => ({
-  multiple: true,
-  acceptedExtensions: [],
+  acceptedTypes: [],
   maxSizeBytes: 2000,
   ...props,
 })
@@ -43,12 +40,12 @@ describe("FileDropzoneInstructions widget", () => {
     const props = getProps({ maxSizeBytes: 2000 })
     render(<FileDropzoneInstructions {...props} />)
 
-    expect(screen.getByText("Limit 2KB per file")).toBeInTheDocument()
+    expect(screen.getByText("2KB per file")).toBeInTheDocument()
   })
 
   it("renders without extensions", () => {
     const props = getProps({
-      acceptedExtensions: [],
+      acceptedTypes: [],
     })
     render(<FileDropzoneInstructions {...props} />)
     expect(screen.getByText(/per file$/)).toBeInTheDocument()
@@ -56,9 +53,50 @@ describe("FileDropzoneInstructions widget", () => {
 
   it("renders with extensions", () => {
     const props = getProps({
-      acceptedExtensions: ["jpg", "csv.gz", ".png", ".tar.gz"],
+      acceptedTypes: ["jpg", "csv.gz", ".png", ".tar.gz"],
     })
     render(<FileDropzoneInstructions {...props} />)
     expect(screen.getByText(/• JPG, CSV.GZ, PNG, TAR.GZ/)).toBeInTheDocument()
+  })
+
+  it("renders MIME wildcards as category names", () => {
+    const props = getProps({
+      acceptedTypes: ["image/*", "audio/*"],
+    })
+    render(<FileDropzoneInstructions {...props} />)
+
+    expect(screen.getByText(/• image, audio/)).toBeInTheDocument()
+  })
+
+  it("renders full MIME types as-is", () => {
+    const props = getProps({
+      acceptedTypes: ["application/pdf", "image/jpeg"],
+    })
+    render(<FileDropzoneInstructions {...props} />)
+
+    expect(
+      screen.getByText(/• application\/pdf, image\/jpeg/)
+    ).toBeInTheDocument()
+  })
+
+  it("renders mixed MIME types and extensions correctly", () => {
+    const props = getProps({
+      acceptedTypes: ["image/*", "application/pdf", ".json"],
+    })
+    render(<FileDropzoneInstructions {...props} />)
+
+    expect(
+      screen.getByText(/• image, application\/pdf, JSON/)
+    ).toBeInTheDocument()
+  })
+
+  it("renders correctly when disabled", () => {
+    const props = getProps({ disabled: true })
+    render(<FileDropzoneInstructions {...props} />)
+
+    expect(
+      screen.getByTestId("stFileUploaderDropzoneInstructions")
+    ).toBeInTheDocument()
+    expect(screen.getByText(/per file/)).toBeInTheDocument()
   })
 })

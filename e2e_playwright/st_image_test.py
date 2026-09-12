@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,18 +17,28 @@ import re
 import pytest
 from playwright.sync_api import Locator, Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction, wait_until
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    build_app_url,
+    wait_until,
+)
 from e2e_playwright.shared.app_utils import (
     check_top_level_class,
+    expect_no_skeletons,
     get_element_by_key,
     get_image,
+    goto_app,
 )
 
-IMAGE_ELEMENTS_USING_MEDIA_ENDPOINT = 37
+IMAGE_ELEMENTS_USING_MEDIA_ENDPOINT = 36
 
 
 def check_image_source_error_count(messages: list[str], expected_count: int):
-    """Check that the expected number of image source error messages are logged."""
+    """Check that at least the expected number of image source error messages are logged.
+
+    We use >= instead of == because browsers may retry failed image loads,
+    which can result in more error messages than images.
+    """
     assert (
         len(
             [
@@ -37,7 +47,7 @@ def check_image_source_error_count(messages: list[str], expected_count: int):
                 if "Client Error: Image source error" in message
             ]
         )
-        == expected_count
+        >= expected_count
     )
 
 
@@ -95,22 +105,17 @@ def test_image_formats(app: Page):
     )
 
 
-def test_use_column_width_parameter(app: Page, assert_snapshot: ImageCompareFunction):
-    columns_container = app.get_by_test_id("stHorizontalBlock").first
-    columns_container.scroll_into_view_if_needed()
-    assert_snapshot(columns_container, name="st_image-use_column_width")
-
-    expect(app.get_by_test_id("stMainBlockContainer")).to_contain_text(
-        "The use_column_width parameter has been deprecated and will be removed in a "
-        "future release. Please utilize the use_container_width parameter instead."
-    )
-
-
 def test_st_image_use_container_width_parameter(
     app: Page, assert_snapshot: ImageCompareFunction
 ):
-    columns_container = app.get_by_test_id("stHorizontalBlock").nth(1)
+    columns_container = (
+        get_element_by_key(app, "use_container_width")
+        .get_by_test_id("stHorizontalBlock")
+        .first
+    )
+    expect(columns_container).to_be_visible()
     columns_container.scroll_into_view_if_needed()
+    expect_no_skeletons(columns_container)
     assert_snapshot(columns_container, name="st_image-use_container_width")
 
 
@@ -195,14 +200,26 @@ def test_svg_images(app: Page, assert_snapshot: ImageCompareFunction):
     assert_snapshot(ygr_100_300, name="st_image-svg_yellow_green_rectangle_100_300")
 
 
-def set_fullscreen(app: Page, image_wrapper: Locator, open: bool):
+def set_fullscreen(image_wrapper: Locator, open: bool):
+    toolbar = image_wrapper.get_by_test_id("stElementToolbar")
     fullscreen_button = image_wrapper.get_by_role(
         "button", name="Fullscreen" if open else "Close fullscreen"
     )
+    # The toolbar (and its fullscreen button) only becomes interactive on hover
+    # and fades in via an opacity transition. In webkit a click dispatched while
+    # the toolbar is still fading in can be swallowed, leaving fullscreen
+    # un-toggled. Hover first and wait for the toolbar to be fully opaque before
+    # clicking (mirrors the pattern in shared/toolbar_utils.py).
+    image_wrapper.hover()
+    expect(toolbar).to_have_css("opacity", "1")
     expect(fullscreen_button).to_be_visible()
     fullscreen_button.click()
-    # Wait for the animation to finish
-    app.wait_for_timeout(1000)
+    # Wait for the toolbar button to flip to its opposite label, which confirms
+    # the fullscreen state has finished toggling before we take a snapshot.
+    toggled_button = image_wrapper.get_by_role(
+        "button", name="Close fullscreen" if open else "Fullscreen"
+    )
+    expect(toggled_button).to_be_visible()
 
 
 # SVGs without width or height are not rendered correctly in Firefox
@@ -217,13 +234,13 @@ def test_svg_viewbox_only(app: Page, assert_snapshot: ImageCompareFunction):
         image = all_images.nth(i).get_by_test_id("stImageContainer")
         assert_snapshot(image, name=f"st_image-svg_viewbox_only_{i - start_index}")
 
-        set_fullscreen(app, all_images.nth(i).locator(".."), True)
+        set_fullscreen(all_images.nth(i).locator(".."), True)
         image = all_images.nth(i).get_by_test_id("stImageContainer").locator("img")
         assert_snapshot(
             image, name=f"st_image-svg_viewbox_only_fullscreen_{i - start_index}"
         )
 
-        set_fullscreen(app, all_images.nth(i).locator(".."), False)
+        set_fullscreen(all_images.nth(i).locator(".."), False)
 
 
 def test_channels_parameter(app: Page, assert_snapshot: ImageCompareFunction):
@@ -255,16 +272,47 @@ def test_markdown_caption_support(app: Page, assert_snapshot: ImageCompareFuncti
     assert_snapshot(image_element, name="st_image-markdown_caption_support")
 
 
+def test_width_parameter(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test the new width parameter options: content, stretch, and pixel values."""
+    # Test content width with small image
+    small_content = get_image(app, "Small image with width='content' (default)")
+    assert_snapshot(small_content, name="st_image-width_content_small")
+
+    # Test content width with large image
+    large_content = get_image(app, "Large image with width='content'")
+    assert_snapshot(large_content, name="st_image-width_content_large")
+
+    # Test stretch width with small image
+    small_stretch = get_image(app, "Small image with width='stretch'")
+    assert_snapshot(small_stretch, name="st_image-width_stretch_small")
+
+    # Test stretch width with large image
+    large_stretch = get_image(app, "Large image with width='stretch'")
+    assert_snapshot(large_stretch, name="st_image-width_stretch_large")
+
+
+def test_width_stretch_fullscreen(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that width='stretch' works correctly in fullscreen mode."""
+    small_stretch_image = get_image(app, "Small image with width='stretch'")
+
+    set_fullscreen(small_stretch_image.locator(".."), True)
+
+    fullscreen_image = small_stretch_image.locator("img")
+    assert_snapshot(fullscreen_image, name="st_image-width_stretch_fullscreen")
+
+    set_fullscreen(small_stretch_image.locator(".."), False)
+
+
 def test_check_top_level_class(app: Page):
     """Check that the top level class is correctly set."""
     check_top_level_class(app, "stImage")
 
 
-def test_image_source_error(app: Page, app_port: int):
+def test_image_source_error(app: Page, app_base_url: str):
     """Test `st.image` source error."""
     # Ensure image source request return a 404 status
     app.route(
-        f"http://localhost:{app_port}/media/**",
+        build_app_url(app_base_url, path="/media/**"),
         lambda route: route.fulfill(
             status=404, headers={"Content-Type": "text/plain"}, body="Not Found"
         ),
@@ -275,12 +323,47 @@ def test_image_source_error(app: Page, app_port: int):
     app.on("console", lambda msg: messages.append(msg.text))
 
     # Navigate to the app
-    app.goto(f"http://localhost:{app_port}")
+    goto_app(app, app_base_url)
 
     # Wait until the expected error is logged, indicating CLIENT_ERROR was sent
+    # Use a longer timeout for Firefox which can be slower at logging console messages
     wait_until(
         app,
         lambda: check_image_source_error_count(
             messages, IMAGE_ELEMENTS_USING_MEDIA_ENDPOINT
         ),
+        timeout=60000,
     )
+
+
+def test_image_link_parameter(app: Page):
+    """Test that the link parameter works correctly for images."""
+    # Test image WITH link renders correctly
+    linked_image = get_image(app, "Image with link.")
+    link = linked_image.get_by_test_id("stImageLink")
+
+    expect(link).to_be_visible()
+    expect(link).to_have_attribute("href", "https://streamlit.io")
+    expect(link).to_have_attribute("target", "_blank")
+    expect(link).to_have_attribute("rel", "noreferrer")
+
+    # The image should be wrapped inside the link
+    img = link.locator("img")
+    expect(img).to_be_visible()
+
+    # Test image WITHOUT link does not have a link wrapper
+    unlinked_image = get_image(app, "Black Square as JPEG.")
+    expect(unlinked_image.get_by_test_id("stImageLink")).to_have_count(0)
+
+
+def test_image_sanitizes_dangerous_link(app: Page):
+    """Test that a dangerous javascript: link URL is neutralized to '#'.
+
+    This relies on real-browser URL normalization that jsdom cannot fully
+    replicate, so it complements the frontend unit tests.
+    """
+    dangerous_image = get_image(app, "Image with dangerous link.")
+    link = dangerous_image.get_by_test_id("stImageLink")
+
+    expect(link).to_have_attribute("href", "#")
+    expect(link).to_have_attribute("target", "_self")

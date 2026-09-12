@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,13 @@
 import datetime
 import unittest
 
+import pytest
+
 from streamlit.elements.lib.column_types import (
+    AudioColumn,
     BarChartColumn,
+    ButtonColumn,
+    ButtonColumnResult,
     CheckboxColumn,
     Column,
     DateColumn,
@@ -26,13 +31,18 @@ from streamlit.elements.lib.column_types import (
     LineChartColumn,
     LinkColumn,
     ListColumn,
+    MarkdownColumn,
+    MultiselectColumn,
     NumberColumn,
     ProgressColumn,
     SelectboxColumn,
     TextColumn,
     TimeColumn,
+    VideoColumn,
+    _validate_chart_color,
 )
 from streamlit.elements.lib.dicttools import remove_none_values
+from streamlit.errors import StreamlitValueError
 
 
 class ColumnTypesTest(unittest.TestCase):
@@ -70,7 +80,7 @@ class ColumnTypesTest(unittest.TestCase):
         assert remove_none_values(
             NumberColumn(
                 "Col1",
-                width="small",
+                width=100,
                 help="Help text",
                 disabled=False,
                 required=True,
@@ -83,7 +93,7 @@ class ColumnTypesTest(unittest.TestCase):
             )
         ) == {
             "label": "Col1",
-            "width": "small",
+            "width": 100,
             "help": "Help text",
             "disabled": False,
             "required": True,
@@ -184,6 +194,21 @@ class ColumnTypesTest(unittest.TestCase):
             "default": "a",
             "type_config": {"type": "selectbox", "options": ["a", "b", "c"]},
         }, "Should have all the properties defined."
+
+    def test_selectbox_column_with_format_func(self):
+        """Test SelectboxColumn creation with format_func applied to options."""
+
+        assert remove_none_values(
+            SelectboxColumn(options=["a", "b"], format_func=str.upper)
+        ) == {
+            "type_config": {
+                "type": "selectbox",
+                "options": [
+                    {"value": "a", "label": "A"},
+                    {"value": "b", "label": "B"},
+                ],
+            }
+        }, "Options should be transformed into value/label pairs via format_func."
 
     def test_datetime_column(self):
         """Test DatetimeColumn creation."""
@@ -315,6 +340,7 @@ class ColumnTypesTest(unittest.TestCase):
                 min_value=0,
                 max_value=100,
                 format="%.1f%%",
+                color="red",
             )
         ) == {
             "label": "Col1",
@@ -326,6 +352,7 @@ class ColumnTypesTest(unittest.TestCase):
                 "format": "%.1f%%",
                 "min_value": 0,
                 "max_value": 100,
+                "color": "red",
             },
         }, "Should have all the properties defined."
 
@@ -411,12 +438,23 @@ class ColumnTypesTest(unittest.TestCase):
         )
 
         assert remove_none_values(
-            ListColumn("Col1", width="small", help="Help text", pinned=True)
+            ListColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                pinned=True,
+                disabled=False,
+                required=True,
+                default=["a", "b", "c"],
+            )
         ) == {
             "label": "Col1",
             "width": "small",
             "help": "Help text",
             "pinned": True,
+            "disabled": False,
+            "required": True,
+            "default": ["a", "b", "c"],
             "type_config": {"type": "list"},
         }, "Should have all the properties defined."
 
@@ -437,6 +475,40 @@ class ColumnTypesTest(unittest.TestCase):
             "type_config": {"type": "image"},
         }, "Should have all the properties defined."
 
+    def test_audio_column(self):
+        """Test AudioColumn creation."""
+
+        assert remove_none_values(AudioColumn()) == {
+            "type_config": {"type": "audio"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            AudioColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "audio"},
+        }, "Should have all the properties defined."
+
+    def test_video_column(self):
+        """Test VideoColumn creation."""
+
+        assert remove_none_values(VideoColumn()) == {
+            "type_config": {"type": "video"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            VideoColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "video"},
+        }, "Should have all the properties defined."
+
     def test_json_column(self):
         """Test JsonColumn creation."""
 
@@ -453,3 +525,291 @@ class ColumnTypesTest(unittest.TestCase):
             "pinned": True,
             "type_config": {"type": "json"},
         }, "Should have all the properties defined."
+
+    def test_multiselect_column(self):
+        """Test MultiselectColumn creation (basic)."""
+
+        assert remove_none_values(MultiselectColumn()) == {
+            "type_config": {"type": "multiselect"}
+        }, "Should only have the type defined and nothing else."
+
+    def test_multiselect_column_full(self):
+        """Test MultiselectColumn creation with common properties and simple options."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=["a", "b"],
+                options=["a", "b", "c"],
+                accept_new_options=True,
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": ["a", "b"],
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "a"},
+                    {"value": "b"},
+                    {"value": "c"},
+                ],
+                "accept_new_options": True,
+            },
+        }, "Should have all the properties defined."
+
+    def test_multiselect_column_with_format_and_single_color(self):
+        """Test MultiselectColumn options transformed via format_func and colored uniformly."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                options=["exploration", "visualization", "llm"],
+                color="orange",
+                format_func=lambda x: x.capitalize(),
+            )
+        ) == {
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "exploration", "label": "Exploration", "color": "orange"},
+                    {
+                        "value": "visualization",
+                        "label": "Visualization",
+                        "color": "orange",
+                    },
+                    {"value": "llm", "label": "Llm", "color": "orange"},
+                ],
+            }
+        }, "Options should include formatted labels and a single repeated color."
+
+    def test_multiselect_column_with_color_iterable(self):
+        """Test MultiselectColumn color cycling when an iterable of colors is provided."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                options=["a", "b", "c", "d"],
+                color=["red", "blue"],
+            )
+        ) == {
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "a", "color": "red"},
+                    {"value": "b", "color": "blue"},
+                    {"value": "c", "color": "red"},
+                    {"value": "d", "color": "blue"},
+                ],
+            }
+        }, "Colors should cycle through the provided iterable."
+
+    def test_markdown_column(self):
+        """Test MarkdownColumn creation."""
+
+        assert remove_none_values(MarkdownColumn()) == {
+            "type_config": {"type": "markdown"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            MarkdownColumn(
+                "Col1",
+                width="large",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default="# Default",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "large",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "# Default",
+            "type_config": {"type": "markdown"},
+        }, "Should have all the properties defined."
+
+
+@pytest.mark.parametrize(
+    "color",
+    [
+        # Supported named colors
+        "auto",
+        "auto-inverse",
+        "red",
+        "blue",
+        "green",
+        "yellow",
+        "violet",
+        "orange",
+        "gray",
+        "grey",
+        "primary",
+        # CSS-like colors accepted by is_css_color_like
+        "#fff",
+        "#ffff",
+        "#ffffff",
+        "#ffffffff",
+        "rgb(255, 0, 0)",
+        "rgba(0, 0, 0, 0.5)",
+    ],
+)
+def test__validate_chart_color_valid(color: str) -> None:
+    """Validate that supported names and CSS-like colors do not raise."""
+    _validate_chart_color(color)
+
+
+@pytest.mark.parametrize(
+    "color",
+    [
+        "purple",
+        "hsl(0,0%,0%)",
+        "#12",
+        "#12345",
+        "#1234567",
+        "auto-invers",
+        "",
+        " ",
+        "not-a-color",
+        ":material/open_in_new:",
+    ],
+)
+def test__validate_chart_color_invalid(color: str) -> None:
+    """Validate that unsupported names and non CSS-like strings raise StreamlitValueError."""
+    with pytest.raises(StreamlitValueError):
+        _validate_chart_color(color)
+
+
+@pytest.mark.parametrize(
+    "alignment",
+    ["left", "center", "right"],
+)
+def test_column_alignment(alignment: str) -> None:
+    """Test that alignment parameter is correctly set on columns that support it."""
+    # Test generic Column
+    result = Column(alignment=alignment)
+    assert result["alignment"] == alignment
+
+    # Test typed columns that support alignment
+    assert TextColumn(alignment=alignment)["alignment"] == alignment
+    assert NumberColumn(alignment=alignment)["alignment"] == alignment
+    assert CheckboxColumn(alignment=alignment)["alignment"] == alignment
+    assert DateColumn(alignment=alignment)["alignment"] == alignment
+    assert TimeColumn(alignment=alignment)["alignment"] == alignment
+    assert DatetimeColumn(alignment=alignment)["alignment"] == alignment
+    assert LinkColumn(alignment=alignment)["alignment"] == alignment
+    assert ImageColumn(alignment=alignment)["alignment"] == alignment
+    assert AudioColumn(alignment=alignment)["alignment"] == alignment
+    assert VideoColumn(alignment=alignment)["alignment"] == alignment
+    assert JsonColumn(alignment=alignment)["alignment"] == alignment
+    assert MarkdownColumn(alignment=alignment)["alignment"] == alignment
+
+
+def test_column_alignment_none_by_default() -> None:
+    """Test that alignment is None by default and not included in output."""
+    # When alignment is None (default), it should not appear in the result
+    result = remove_none_values(Column())
+    assert "alignment" not in result
+
+    result = remove_none_values(TextColumn())
+    assert "alignment" not in result
+
+
+def test_button_column_basic() -> None:
+    """Test ButtonColumn creation with default parameters."""
+
+    result = remove_none_values(ButtonColumn())
+    assert result == {
+        "disabled": True,
+        "type_config": {"type": "button", "button_type": "secondary"},
+    }, "Should have disabled=True and type_config with button type."
+
+
+def test_button_column_full() -> None:
+    """Test ButtonColumn creation with all common parameters."""
+
+    result = remove_none_values(
+        ButtonColumn(
+            "Actions",
+            width="small",
+            help="Click to perform action",
+            pinned=True,
+            alignment="center",
+            type="primary",
+        )
+    )
+    assert result == {
+        "label": "Actions",
+        "width": "small",
+        "help": "Click to perform action",
+        "pinned": True,
+        "alignment": "center",
+        "disabled": True,
+        "type_config": {"type": "button", "button_type": "primary"},
+    }, "Should have all properties defined."
+
+
+def test_button_column_with_key_returns_wrapper() -> None:
+    """Test ButtonColumn returns ButtonColumnResult when key is provided."""
+
+    def my_callback():
+        pass
+
+    result = ButtonColumn(
+        "Click",
+        type="tertiary",
+        on_click=my_callback,
+        args=(1, 2),
+        kwargs={"a": "b"},
+        key="test_key",
+    )
+
+    assert isinstance(result, ButtonColumnResult), (
+        "Should return ButtonColumnResult when key is provided."
+    )
+    assert result.key == "test_key"
+    assert result.on_click is my_callback
+    assert result.args == (1, 2)
+    assert result.kwargs == {"a": "b"}
+    assert result.config["type_config"]["button_type"] == "tertiary"
+
+
+def test_button_column_without_key_returns_config() -> None:
+    """Test ButtonColumn returns ColumnConfig (dict) when no key is provided."""
+
+    result = ButtonColumn("Click", type="primary")
+
+    assert not isinstance(result, ButtonColumnResult), (
+        "Should return ColumnConfig dict when no key is provided."
+    )
+    assert isinstance(result, dict)
+    assert result["type_config"]["type"] == "button"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"on_click": lambda: None},
+        {"args": (1, 2)},
+        {"kwargs": {"foo": "bar"}},
+    ],
+    ids=["on_click", "args", "kwargs"],
+)
+def test_button_column_raises_error_for_callback_without_key(
+    kwargs: dict[str, object],
+) -> None:
+    """Test ButtonColumn raises error when callbacks provided without key."""
+    from streamlit.errors import StreamlitAPIException
+
+    with pytest.raises(StreamlitAPIException, match=r"key.*parameter is required"):
+        ButtonColumn("Click", **kwargs)

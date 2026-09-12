@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,6 @@ import pandas as pd
 import streamlit as st
 
 if TYPE_CHECKING:
-    import numpy.typing as npt
     from pandas.io.formats.style import Styler
 
 # Explicitly seed the RNG for deterministic results
@@ -33,43 +32,54 @@ random.seed(0)
 
 st.header("Pandas Styler: Value formatting")
 df = pd.DataFrame({"test": [3.1423424, 3.1]})
-st.dataframe(df.style.format({"test": "{:.2f}"}), use_container_width=False)
+st.dataframe(df.style.format({"test": "{:.2f}"}), width="content")
 
 st.header("Pandas Styler: Background color")
 
 
 def highlight_first(value: float) -> str:
-    return "background-color: yellow" if value == 0 else ""
+    return "background-color: yellow;" if value == 0 else ""
 
 
 df = pd.DataFrame(np.arange(0, 100, 1).reshape(10, 10))
-st.dataframe(df.style.map(highlight_first))
+st.dataframe(df.style.map(highlight_first))  # type: ignore[arg-type] # ty: ignore[no-matching-overload]
 
 st.header("Pandas Styler: Background and font styling")
 
 df = pd.DataFrame(np.random.randn(20, 4), columns=["A", "B", "C", "D"])
 
 
-def style_negative(v: float, props: str = "") -> str | None:
-    return props if v < 0 else None
+def color_negative(v: float) -> str | None:
+    return "color:#FF0000;" if v < 0 else None
 
 
-def highlight_max(s: Any, props: str = "") -> npt.NDArray[Any]:
-    return np.where(s == np.nanmax(s.values), props, "")
+def fade_near_zero(v: float) -> str | None:
+    return "opacity: 20%;" if (v < 0.3) and (v > -0.3) else None
+
+
+def highlight_max(s: pd.Series | pd.DataFrame, style: str) -> Any:
+    # Styler callbacks receive object-dtype values; cast for nanmax typing.
+    max_val = np.nanmax(s.to_numpy(dtype=float))
+    return np.where(s == max_val, style, "")
 
 
 # Passing style values w/ all color formats to test css-style-string parsing robustness.
-styled_df = df.style.map(style_negative, props="color:#FF0000;").map(
-    lambda v: "opacity: 20%;" if (v < 0.3) and (v > -0.3) else None
+styled_df = df.style.map(color_negative).map(fade_near_zero)  # type: ignore[arg-type] # ty: ignore[no-matching-overload]
+
+styled_df.apply(
+    lambda s: highlight_max(
+        s, "color:white;background-color:rgb(255, 0, 0);font-weight:800;"
+    ),
+    axis=0,
 )
 
 styled_df.apply(
-    highlight_max, props="color:white;background-color:rgb(255, 0, 0)", axis=0
+    lambda s: highlight_max(s, "color:white;background-color:hsl(273, 98%, 60%);"),
+    axis=1,
+).apply(
+    lambda s: highlight_max(s, "color:white;background-color:purple"),
+    axis=None,
 )
-
-styled_df.apply(
-    highlight_max, props="color:white;background-color:hsl(273, 98%, 60%);", axis=1
-).apply(highlight_max, props="color:white;background-color:purple", axis=None)
 
 st.dataframe(styled_df)
 
@@ -82,7 +92,7 @@ weather_df = pd.DataFrame(
 )
 
 
-def rain_condition(v: float) -> str:
+def rain_condition(v: Any) -> str:
     if v < 1.75:
         return "Dry"
     if v < 2.75:
@@ -154,6 +164,27 @@ st.dataframe(
         "number": st.column_config.NumberColumn(),
         "url": st.column_config.LinkColumn(),
         "datetime": st.column_config.DatetimeColumn(),
+    },
+    hide_index=True,
+)
+
+st.header("Pandas Styler: text color support")
+
+st.dataframe(
+    pd.DataFrame(
+        {
+            "text": ["a", "b"],
+            "number": [1, 2],
+            "link": ["streamlit.io", "docs.streamlit.io"],
+            "list": [["a", "b", "c"], ["a", "d", "e"]],
+            "datetime": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")],
+        }
+    ).style.apply(
+        lambda x: x.apply(lambda _: "color: green"),
+    ),
+    column_config={
+        "list": st.column_config.ListColumn(),
+        "link": st.column_config.LinkColumn(),
     },
     hide_index=True,
 )

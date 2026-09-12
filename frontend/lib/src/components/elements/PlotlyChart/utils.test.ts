@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+import { waitFor } from "@testing-library/react"
+import Plotly from "plotly.js"
+
 import { PlotlyChart as PlotlyChartProto } from "@streamlit/protobuf"
 
 import { mockTheme } from "~lib/mocks/mockTheme"
@@ -22,6 +25,7 @@ import { WidgetStateManager } from "~lib/WidgetStateManager"
 import { applyStreamlitTheme, layoutWithThemeDefaults } from "./CustomTheme"
 import {
   applyTheming,
+  handleClickEvent,
   handleSelection,
   parseBoxSelection,
   parseLassoPath,
@@ -152,8 +156,10 @@ describe("PlotlyChart utils", () => {
     })
 
     it("should handle an event with no points or selections", () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      const event = { points: undefined, selections: undefined } as any
+      const event = {
+        points: undefined,
+        selections: undefined,
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
@@ -169,20 +175,19 @@ describe("PlotlyChart utils", () => {
             pointIndex: 1,
             data: { legendgroup: "group1" },
             pointIndices: [1],
+            customdata: [10, null, { extraInfo: 7 }],
           },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
 
       handleSelection(event, widgetMgr, proto, mockFragmentId)
       expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-        { id: "plotly_chart", selectionMode: [0, 1, 2] },
-        '{"selection":{"points":[{"point_index":1,"point_indices":[1],"legendgroup":"group1"}],"point_indices":[1],"box":[],"lasso":[]}}',
-        { fromUi: true },
-        "testFragment"
+        "plotly_chart",
+        '{"selection":{"points":[{"point_index":1,"point_indices":[1],"customdata":[10,null,{"extra_info":7}],"legendgroup":"group1"}],"point_indices":[1],"box":[],"lasso":[]}}',
+        { formId: undefined, fragmentId: "testFragment", fromUser: true }
       )
     })
 
@@ -199,18 +204,16 @@ describe("PlotlyChart utils", () => {
             y1: "1",
           },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
 
       handleSelection(event, widgetMgr, proto, undefined)
       expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-        { id: "plotly_chart", selectionMode: [0, 1, 2] },
+        "plotly_chart",
         '{"selection":{"points":[],"point_indices":[],"box":[{"xref":"x","yref":"y","x":["0","1"],"y":["0","1"]}],"lasso":[]}}',
-        { fromUi: true },
-        undefined
+        { formId: undefined, fragmentId: undefined, fromUser: true }
       )
     })
 
@@ -219,18 +222,16 @@ describe("PlotlyChart utils", () => {
         selections: [
           { type: "path", xref: "x", yref: "y", path: "M4.0,8.0L4.0,7.8Z" },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
 
       handleSelection(event, widgetMgr, proto, mockFragmentId)
       expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-        { id: "plotly_chart", selectionMode: [0, 1, 2] },
+        "plotly_chart",
         '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[{"xref":"x","yref":"y","x":[4,4],"y":[8,7.8]}]}}',
-        { fromUi: true },
-        "testFragment"
+        { formId: undefined, fragmentId: "testFragment", fromUser: true }
       )
     })
 
@@ -239,8 +240,7 @@ describe("PlotlyChart utils", () => {
         selections: [
           { type: "path", xref: "x", yref: "y", path: "M4.0,8.0L4.0,7.8Z" },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
@@ -268,8 +268,7 @@ describe("PlotlyChart utils", () => {
             y1: "1",
           },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
@@ -288,17 +287,15 @@ describe("PlotlyChart utils", () => {
       const event = {
         points: [],
         selections: [],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
       const widgetMgr = getWidgetMgr()
 
       vi.spyOn(widgetMgr, "setStringValue")
 
       widgetMgr.setStringValue(
-        proto,
+        proto.id,
         '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
-        { fromUi: true },
-        undefined
+        { formId: proto.formId, fragmentId: undefined, fromUser: true }
       )
 
       handleSelection(event, widgetMgr, proto, mockFragmentId)
@@ -327,8 +324,7 @@ describe("PlotlyChart utils", () => {
             y1: "1",
           },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
 
       const widgetMgr = getWidgetMgr()
 
@@ -370,8 +366,7 @@ describe("PlotlyChart utils", () => {
             y1: "1",
           },
         ],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-      } as any
+      } as unknown as Plotly.PlotSelectionEvent
 
       handleSelection(
         lassoEventAndBoxEvent,
@@ -381,16 +376,15 @@ describe("PlotlyChart utils", () => {
       )
       expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(2)
       expect(widgetMgr.setStringValue).toHaveBeenLastCalledWith(
-        { id: "plotly_chart", selectionMode: [1, 2] },
+        "plotly_chart",
         '{"selection":{"points":[{"point_index":1,"point_indices":[1],"x":1,"y":1,"legendgroup":"group1"},{"point_index":0,"point_indices":[0],"x":0,"y":0,"legendgroup":"group2"}],"point_indices":[1,0],"box":[{"xref":"x","yref":"y","x":["0","1"],"y":["0","1"]}],"lasso":[{"xref":"x","yref":"y","x":[4,4],"y":[8,7]}]}}',
-        { fromUi: true },
-        undefined
+        { formId: undefined, fragmentId: undefined, fromUser: true }
       )
     })
   })
 
   describe("sendEmptySelection", () => {
-    it("sets empty selection state", () => {
+    it("sets empty selection state", async () => {
       const sendRerunBackMsg = vi.fn()
       const widgetMgr = new WidgetStateManager({
         sendRerunBackMsg,
@@ -406,24 +400,26 @@ describe("PlotlyChart utils", () => {
         '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}'
       )
 
-      // Verify rerun message is sent with correct widget states
-      expect(sendRerunBackMsg).toHaveBeenCalledWith(
-        {
-          widgets: [
-            {
-              id: "plotly_chart",
-              stringValue:
-                '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
-            },
-          ],
-        },
-        undefined,
-        undefined,
-        undefined
-      )
+      await waitFor(() => {
+        // Verify rerun message is sent with correct widget states
+        expect(sendRerunBackMsg).toHaveBeenCalledWith(
+          {
+            widgets: [
+              {
+                id: "plotly_chart",
+                stringValue:
+                  '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
+              },
+            ],
+          },
+          undefined,
+          undefined,
+          undefined
+        )
+      })
     })
 
-    it("sets empty selection state and sends rerun with fragmentId", () => {
+    it("sets empty selection state and sends rerun with fragmentId", async () => {
       const sendRerunBackMsg = vi.fn()
       const widgetMgr = new WidgetStateManager({
         sendRerunBackMsg,
@@ -441,20 +437,138 @@ describe("PlotlyChart utils", () => {
       )
 
       // Verify rerun message is sent with correct widget states and fragmentId
-      expect(sendRerunBackMsg).toHaveBeenCalledWith(
-        {
-          widgets: [
-            {
-              id: "plotly_chart",
-              stringValue:
-                '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
-            },
-          ],
-        },
-        fragmentId,
-        undefined,
-        undefined
+      await waitFor(() => {
+        expect(sendRerunBackMsg).toHaveBeenCalledWith(
+          {
+            widgets: [
+              {
+                id: "plotly_chart",
+                stringValue:
+                  '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
+              },
+            ],
+          },
+          fragmentId,
+          undefined,
+          undefined
+        )
+      })
+    })
+  })
+
+  describe("handleClickEvent", () => {
+    const mockFragmentId = "testFragment"
+    const proto = {
+      id: "plotly_chart",
+      selectionMode: [0, 1, 2],
+    } as PlotlyChartProto
+
+    it.each([
+      ["undefined event", undefined],
+      ["event with empty points array", { points: [] }],
+      [
+        "non-hierarchical chart click (no id/parent)",
+        { points: [{ x: 100, y: 200, pointIndex: 1 }] },
+      ],
+    ])("should return early for %s", (_desc, event) => {
+      const widgetMgr = getWidgetMgr()
+      vi.spyOn(widgetMgr, "setStringValue")
+
+      handleClickEvent(
+        event as unknown as Plotly.PlotMouseEvent,
+        widgetMgr,
+        proto,
+        mockFragmentId
       )
+      expect(widgetMgr.setStringValue).not.toHaveBeenCalled()
+    })
+
+    it("should process treemap/sunburst clicks correctly", () => {
+      const event = {
+        points: [
+          {
+            label: "China",
+            id: "Asia/China",
+            parent: "Asia",
+            value: 1318683096,
+            currentPath: "/Asia/",
+            percentRoot: 0.21,
+            percentEntry: 0.21,
+            percentParent: 0.35,
+            pointNumber: 25,
+            curveNumber: 0,
+          },
+        ],
+      } as unknown as Plotly.PlotMouseEvent
+      const widgetMgr = getWidgetMgr()
+      vi.spyOn(widgetMgr, "setStringValue")
+
+      handleClickEvent(event, widgetMgr, proto, mockFragmentId)
+
+      expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
+        proto.id,
+        '{"selection":{"points":[{"label":"China","id":"Asia/China","parent":"Asia","value":1318683096,"current_path":"/Asia/","percent_root":0.21,"percent_entry":0.21,"percent_parent":0.35,"point_number":25,"curve_number":0}],"point_indices":[25],"box":[],"lasso":[]}}',
+        { formId: proto.formId, fragmentId: mockFragmentId, fromUser: true }
+      )
+    })
+
+    it("should handle treemap click with undefined pointNumber", () => {
+      const event = {
+        points: [
+          {
+            label: "Root",
+            id: "",
+            parent: "",
+            value: 1000,
+          },
+        ],
+      } as unknown as Plotly.PlotMouseEvent
+      const widgetMgr = getWidgetMgr()
+      vi.spyOn(widgetMgr, "setStringValue")
+
+      handleClickEvent(event, widgetMgr, proto, mockFragmentId)
+
+      expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
+        proto.id,
+        expect.stringContaining('"point_indices":[]'),
+        { formId: proto.formId, fragmentId: mockFragmentId, fromUser: true }
+      )
+    })
+
+    it("should not rerun if selection state is unchanged", () => {
+      const event = {
+        points: [
+          {
+            label: "China",
+            id: "Asia/China",
+            parent: "Asia",
+            value: 1318683096,
+            currentPath: "/Asia/",
+            percentRoot: 0.21,
+            percentEntry: 0.21,
+            percentParent: 0.35,
+            pointNumber: 25,
+            curveNumber: 0,
+          },
+        ],
+      } as unknown as Plotly.PlotMouseEvent
+      const widgetMgr = getWidgetMgr()
+      vi.spyOn(widgetMgr, "setStringValue")
+
+      // Pre-set the state to match what the click would produce
+      widgetMgr.setStringValue(
+        proto.id,
+        '{"selection":{"points":[{"label":"China","id":"Asia/China","parent":"Asia","value":1318683096,"current_path":"/Asia/","percent_root":0.21,"percent_entry":0.21,"percent_parent":0.35,"point_number":25,"curve_number":0}],"point_indices":[25],"box":[],"lasso":[]}}',
+        { formId: proto.formId, fragmentId: mockFragmentId, fromUser: true }
+      )
+
+      // Clear the mock to only count the handleClickEvent call
+      vi.clearAllMocks()
+
+      handleClickEvent(event, widgetMgr, proto, mockFragmentId)
+
+      // Should not call setStringValue again since state is unchanged
+      expect(widgetMgr.setStringValue).not.toHaveBeenCalled()
     })
   })
 })

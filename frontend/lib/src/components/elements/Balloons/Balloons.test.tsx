@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,22 @@
  * limitations under the License.
  */
 
-import React from "react"
-
 import { screen } from "@testing-library/react"
 
-import { render } from "~lib/test_util"
+import { render, renderWithContexts } from "~lib/test_util"
 
 import Balloons, { NUM_BALLOONS } from "./Balloons"
+
+// Mock StreamlitConfig using global mock state (see vitest.setup.ts)
+vi.mock("@streamlit/utils", async () => {
+  const actual = await vi.importActual("@streamlit/utils")
+  return {
+    ...actual,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 describe("Balloons element", () => {
   vi.useFakeTimers()
@@ -50,5 +59,68 @@ describe("Balloons element", () => {
 
     const balloonElement = screen.getByTestId("stBalloons")
     expect(balloonElement).toHaveClass("stBalloons")
+  })
+
+  describe("crossOrigin attribute", () => {
+    afterEach(() => {
+      globalThis.__mockStreamlitConfig = {}
+    })
+
+    it("sets crossOrigin when BACKEND_BASE_URL is configured", () => {
+      // Setup StreamlitConfig.BACKEND_BASE_URL
+      globalThis.__mockStreamlitConfig.BACKEND_BASE_URL =
+        "http://localhost:8501"
+
+      renderWithContexts(<Balloons scriptRunId="51522269" />, {
+        libConfigContext: {
+          resourceCrossOriginMode: "anonymous",
+        },
+      })
+
+      const balloonImages = screen.getAllByRole("img")
+      balloonImages.forEach(node => {
+        expect(node).toHaveAttribute("crossOrigin", "anonymous")
+      })
+    })
+
+    it("does not set crossOrigin when BACKEND_BASE_URL is not configured (same-origin)", () => {
+      renderWithContexts(<Balloons scriptRunId="51522269" />, {
+        libConfigContext: {
+          resourceCrossOriginMode: "anonymous",
+        },
+      })
+
+      const balloonImages = screen.getAllByRole("img")
+      balloonImages.forEach(node => {
+        expect(node).not.toHaveAttribute("crossOrigin")
+      })
+    })
+
+    it.each([
+      { backendBaseUrl: undefined, description: "without BACKEND_BASE_URL" },
+      {
+        backendBaseUrl: "http://localhost:8501",
+        description: "with BACKEND_BASE_URL",
+      },
+    ])(
+      "does not set crossOrigin attribute when resourceCrossOriginMode is undefined ($description)",
+      ({ backendBaseUrl }) => {
+        // Setup StreamlitConfig.BACKEND_BASE_URL if specified
+        if (backendBaseUrl) {
+          globalThis.__mockStreamlitConfig.BACKEND_BASE_URL = backendBaseUrl
+        }
+
+        renderWithContexts(<Balloons scriptRunId="51522269" />, {
+          libConfigContext: {
+            resourceCrossOriginMode: undefined,
+          },
+        })
+
+        const balloonImages = screen.getAllByRole("img")
+        balloonImages.forEach(node => {
+          expect(node).not.toHaveAttribute("crossOrigin")
+        })
+      }
+    )
   })
 })

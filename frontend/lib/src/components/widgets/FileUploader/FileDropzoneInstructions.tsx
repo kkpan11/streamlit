@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,50 +14,52 @@
  * limitations under the License.
  */
 
-import React, { memo } from "react"
+import { memo } from "react"
 
-import { CloudUpload } from "@emotion-icons/material-outlined"
-
-import Icon from "~lib/components/shared/Icon"
-import { FileSize, getSizeDisplay } from "~lib/util/FileHelper"
-import { Small } from "~lib/components/shared/TextElements"
+import {
+  FileSize,
+  formatTypesForDisplay,
+  getSizeDisplay,
+} from "~lib/util/FileHelper"
 
 import {
   StyledFileDropzoneInstructions,
   StyledFileDropzoneInstructionsColumn,
-  StyledFileDropzoneInstructionsFileUploaderIcon,
-  StyledFileDropzoneInstructionsStyledSpan,
+  StyledFileDropzoneInstructionsSubtext,
 } from "./styled-components"
 
 export interface Props {
-  multiple: boolean
-  acceptedExtensions: string[]
+  acceptedTypes: string[]
   maxSizeBytes: number
+  disabled?: boolean
 }
 
 const FileDropzoneInstructions = ({
-  multiple,
-  acceptedExtensions,
+  acceptedTypes,
   maxSizeBytes,
-}: Props): React.ReactElement => (
-  <StyledFileDropzoneInstructions data-testid="stFileUploaderDropzoneInstructions">
-    <StyledFileDropzoneInstructionsFileUploaderIcon>
-      <Icon content={CloudUpload} size="threeXL" />
-    </StyledFileDropzoneInstructionsFileUploaderIcon>
-    <StyledFileDropzoneInstructionsColumn>
-      <StyledFileDropzoneInstructionsStyledSpan>
-        Drag and drop file{multiple ? "s" : ""} here
-      </StyledFileDropzoneInstructionsStyledSpan>
-      <Small>
-        {`Limit ${getSizeDisplay(maxSizeBytes, FileSize.Byte, 0)} per file`}
-        {acceptedExtensions.length
-          ? ` • ${acceptedExtensions
-              .map(ext => ext.replace(/^\./, "").toUpperCase())
-              .join(", ")}`
-          : null}
-      </Small>
-    </StyledFileDropzoneInstructionsColumn>
-  </StyledFileDropzoneInstructions>
-)
+  disabled,
+}: Props): React.ReactElement => {
+  const getFileTypeInfo = (): string | null => {
+    if (acceptedTypes.length) {
+      return ` • ${formatTypesForDisplay(acceptedTypes)}`
+    }
+    return null
+  }
+
+  const getSizeLimit = (): string => {
+    return `${getSizeDisplay(maxSizeBytes, FileSize.Byte, 0)} per file`
+  }
+
+  return (
+    <StyledFileDropzoneInstructions data-testid="stFileUploaderDropzoneInstructions">
+      <StyledFileDropzoneInstructionsColumn>
+        <StyledFileDropzoneInstructionsSubtext disabled={disabled}>
+          {getSizeLimit()}
+          {getFileTypeInfo()}
+        </StyledFileDropzoneInstructionsSubtext>
+      </StyledFileDropzoneInstructionsColumn>
+    </StyledFileDropzoneInstructions>
+  )
+}
 
 export default memo(FileDropzoneInstructions)

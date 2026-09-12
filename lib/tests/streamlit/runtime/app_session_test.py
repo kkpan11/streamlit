@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,22 +18,33 @@ import asyncio
 import gc
 import threading
 import unittest
-from asyncio import AbstractEventLoop
-from typing import Any, Callable, cast
-from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock, patch
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from parameterized import parameterized
 
 from streamlit import config
+from streamlit.elements.exception import _GENERIC_UNCAUGHT_EXCEPTION_TEXT
+from streamlit.errors import StreamlitAPIException
 from streamlit.proto.AppPage_pb2 import AppPage
 from streamlit.proto.BackMsg_pb2 import BackMsg
 from streamlit.proto.ClientState_pb2 import ClientState
 from streamlit.proto.Common_pb2 import FileURLs, FileURLsRequest, FileURLsResponse
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
-from streamlit.proto.NewSession_pb2 import FontFace
-from streamlit.runtime import Runtime, app_session
-from streamlit.runtime.app_session import AppSession, AppSessionState
+from streamlit.proto.GitInfo_pb2 import GitInfo
+from streamlit.proto.NewSession_pb2 import (
+    Config,
+    CustomThemeConfig,
+    FontFace,
+    FontSource,
+)
+from streamlit.runtime import Runtime, app_session, caching
+from streamlit.runtime.app_session import (
+    AppSession,
+    AppSessionState,
+    _close_script_event_loop,
+)
 from streamlit.runtime.caching.storage.dummy_cache_storage import (
     MemoryCacheStorageManager,
 )
@@ -52,12 +63,21 @@ from streamlit.runtime.scriptrunner import (
     get_script_run_ctx,
 )
 from streamlit.runtime.state import SessionState
+from streamlit.runtime.state.query_params import (
+    _CLIENT_STATE_QUERY_STRING_MAX_FIELDS,
+    _CLIENT_STATE_QUERY_STRING_MAX_LENGTH,
+)
 from streamlit.runtime.uploaded_file_manager import (
     UploadedFileManager,
     UploadFileUrlInfo,
 )
 from streamlit.watcher.local_sources_watcher import LocalSourcesWatcher
 from tests.testutil import patch_config_options
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from streamlit.proto.BackMsg_pb2 import BackendOperationRequest
 
 
 @pytest.fixture
@@ -66,8 +86,9 @@ def del_path(monkeypatch):
 
 
 def _create_test_session(
-    event_loop: AbstractEventLoop | None = None,
+    event_loop: asyncio.AbstractEventLoop | None = None,
     session_id_override: str | None = None,
+    is_hello: bool = False,
 ) -> AppSession:
     """Create an AppSession instance with some default mocked data."""
     if event_loop is None:
@@ -84,7 +105,7 @@ def _create_test_session(
         ),
     ):
         return AppSession(
-            script_data=ScriptData("/fake/script_path.py", is_hello=False),
+            script_data=ScriptData("/fake/script_path.py", is_hello=is_hello),
             uploaded_file_manager=MagicMock(spec=UploadedFileManager),
             script_cache=MagicMock(),
             message_enqueued_callback=None,
@@ -125,21 +146,33 @@ class AppSessionTest(unittest.TestCase):
     )
     def test_shutdown(self, patched_disconnect):
         """Test that AppSession.shutdown behaves sanely."""
-        session = _create_test_session()
+        with (
+            patch.object(
+                caching, "clear_session_data_cache"
+            ) as mock_clear_session_data,
+            patch.object(
+                caching, "clear_session_resource_cache"
+            ) as mock_clear_session_resource,
+        ):
+            session = _create_test_session()
 
-        mock_file_mgr = MagicMock(spec=UploadedFileManager)
-        session._uploaded_file_mgr = mock_file_mgr
+            mock_file_mgr = MagicMock(spec=UploadedFileManager)
+            session._uploaded_file_mgr = mock_file_mgr
 
-        session.shutdown()
-        assert session._state == AppSessionState.SHUTDOWN_REQUESTED
-        mock_file_mgr.remove_session_files.assert_called_once_with(session.id)
-        patched_disconnect.assert_called_once_with(session._on_secrets_file_changed)
+            session.shutdown()
+            assert session._state == AppSessionState.SHUTDOWN_REQUESTED
+            mock_file_mgr.remove_session_files.assert_called_once_with(session.id)
+            mock_clear_session_data.assert_called_once_with(session.id)
+            mock_clear_session_resource.assert_called_once_with(session.id)
+            patched_disconnect.assert_called_once_with(session._on_secrets_file_changed)
 
-        # A 2nd shutdown call should have no effect.
-        session.shutdown()
-        assert session._state == AppSessionState.SHUTDOWN_REQUESTED
+            # A 2nd shutdown call should have no effect.
+            session.shutdown()
+            assert session._state == AppSessionState.SHUTDOWN_REQUESTED
 
-        mock_file_mgr.remove_session_files.assert_called_once_with(session.id)
+            mock_file_mgr.remove_session_files.assert_called_once_with(session.id)
+            mock_clear_session_data.assert_called_once_with(session.id)
+            mock_clear_session_resource.assert_called_once_with(session.id)
 
     def test_shutdown_with_running_scriptrunner(self):
         """If we have a running ScriptRunner, shutting down should stop it."""
@@ -161,9 +194,14 @@ class AppSessionTest(unittest.TestCase):
         session = _create_test_session()
         mock_scriptrunner = MagicMock(spec=ScriptRunner)
         session._scriptrunner = mock_scriptrunner
+        loop = session._script_event_loop
 
-        session.request_script_stop()
-        mock_scriptrunner.request_stop.assert_called()
+        try:
+            session.request_script_stop()
+            mock_scriptrunner.request_stop.assert_called_once_with()
+            assert not loop.is_closed()
+        finally:
+            loop.close()
 
     def test_request_script_stop_no_scriptrunner(self):
         """Test that calling request_script_stop when there is no scriptrunner doesn't
@@ -288,7 +326,7 @@ class AppSessionTest(unittest.TestCase):
     ):
         session = _create_test_session()
         fragment_id = "my_fragment_id"
-        session._fragment_storage.set(fragment_id, lambda: None)
+        session._fragment_storage.register(fragment_id, lambda: None)
 
         mock_active_scriptrunner = MagicMock(spec=ScriptRunner)
         session._scriptrunner = mock_active_scriptrunner
@@ -315,7 +353,7 @@ class AppSessionTest(unittest.TestCase):
 
         # leaving the following code line in to show that the fragment id
         # is not set in the fragment storage!
-        # session._fragment_storage.set(fragment_id, lambda: None)  # noqa: ERA001
+        # session._fragment_storage.register(fragment_id, lambda: None)  # noqa: ERA001
 
         mock_active_scriptrunner = MagicMock(spec=ScriptRunner)
         session._scriptrunner = mock_active_scriptrunner
@@ -331,13 +369,14 @@ class AppSessionTest(unittest.TestCase):
 
     @patch("streamlit.runtime.app_session.ScriptRunner")
     def test_create_scriptrunner(self, mock_scriptrunner: MagicMock):
-        """Test that _create_scriptrunner does what it should."""
+        """Verify that ScriptRunner receives the session-owned script event loop."""
         session = _create_test_session()
         assert session._scriptrunner is None
 
         session._create_scriptrunner(initial_rerun_data=RerunData())
 
-        # Assert that the ScriptRunner constructor was called.
+        # Assert that the ScriptRunner constructor was called, including the
+        # session-owned event_loop forwarded to the runner.
         mock_scriptrunner.assert_called_once_with(
             session_id=session.id,
             main_script_path=session._script_data.main_script_path,
@@ -348,6 +387,9 @@ class AppSessionTest(unittest.TestCase):
             user_info={"email": "test@example.com"},
             fragment_storage=session._fragment_storage,
             pages_manager=session._pages_manager,
+            on_script_error=None,
+            local_sources_watcher=session._local_sources_watcher,
+            event_loop=session._script_event_loop,
         )
 
         assert session._scriptrunner is not None
@@ -358,6 +400,194 @@ class AppSessionTest(unittest.TestCase):
             session._on_scriptrunner_event
         )
         scriptrunner.start.assert_called_once()
+
+    @patch("streamlit.runtime.app_session.ScriptRunner")
+    def test_closed_script_event_loop_is_replaced_with_warning(
+        self, mock_scriptrunner: MagicMock
+    ):
+        """A closed session loop is replaced and its invalidation is diagnosed."""
+        session = _create_test_session()
+        closed_loop = session._script_event_loop
+        closed_loop.close()
+        assert closed_loop.is_closed()
+
+        try:
+            with self.assertLogs(
+                "streamlit.runtime.app_session", level="WARNING"
+            ) as logs:
+                session._create_scriptrunner(initial_rerun_data=RerunData())
+
+            replacement_loop = session._script_event_loop
+            assert replacement_loop is not closed_loop
+            assert not replacement_loop.is_closed()
+            assert mock_scriptrunner.call_args.kwargs["event_loop"] is replacement_loop
+
+            warning = " ".join(logs.output)
+            assert "creating a replacement" in warning
+            assert "objects bound to the previous loop may no longer work" in warning
+            assert "must not close it" in warning
+        finally:
+            if not session._script_event_loop.is_closed():
+                session._script_event_loop.close()
+
+    def test_script_event_loop_created_on_init(self):
+        """AppSession creates a non-running event loop for the script thread."""
+        session = _create_test_session()
+        loop = session._script_event_loop
+        assert isinstance(loop, asyncio.AbstractEventLoop)
+        assert not loop.is_running()
+        assert not loop.is_closed()
+        loop.close()
+
+    @patch("streamlit.runtime.app_session.ScriptRunner")
+    def test_same_event_loop_forwarded_to_each_scriptrunner(
+        self, mock_scriptrunner: MagicMock
+    ):
+        """Every ScriptRunner created by the session receives the same loop."""
+        session = _create_test_session()
+        expected_loop = session._script_event_loop
+
+        session._create_scriptrunner(initial_rerun_data=RerunData())
+
+        # Clear the first runner reference so AppSession creates a second one.
+        session._scriptrunner = None
+
+        session._create_scriptrunner(initial_rerun_data=RerunData())
+
+        # Both ScriptRunner constructors must have received the same loop object.
+        for call in mock_scriptrunner.call_args_list:
+            assert call.kwargs.get("event_loop") is expected_loop
+
+        expected_loop.close()
+
+    @patch("streamlit.runtime.app_session.AppSession.request_script_stop")
+    def test_shutdown_closes_script_event_loop_when_no_runner_is_active(
+        self, mock_stop: MagicMock
+    ):
+        """AppSession closes the script-thread event loop immediately on shutdown
+        when no ScriptRunner is active (no runner to wait for)."""
+        session = _create_test_session()
+        loop = session._script_event_loop
+        assert not loop.is_closed()
+
+        session.shutdown()
+
+        assert loop.is_closed()
+
+    @patch("streamlit.runtime.app_session.AppSession.request_script_stop")
+    def test_script_event_loop_not_closed_during_shutdown_with_runner(
+        self, mock_stop: MagicMock
+    ):
+        """When a ScriptRunner is active, shutdown() must not close the loop;
+        closure is deferred to the SHUTDOWN event so we don't race with the
+        script thread."""
+        session = _create_test_session()
+        mock_scriptrunner = MagicMock(spec=ScriptRunner)
+        session._scriptrunner = mock_scriptrunner
+        loop = session._script_event_loop
+
+        session.shutdown()
+
+        assert not loop.is_closed()
+        loop.close()
+
+    @patch("streamlit.runtime.app_session.AppSession.request_script_stop")
+    def test_shutdown_without_client_state_completes_cleanup(
+        self, mock_stop: MagicMock
+    ):
+        """Shutdown cleanup does not depend on a final client-state snapshot."""
+        session = _create_test_session()
+        mock_scriptrunner = MagicMock(spec=ScriptRunner)
+        session._scriptrunner = mock_scriptrunner
+        loop = session._script_event_loop
+        original_client_state = session._client_state
+
+        # Simulate a full shutdown: shutdown() sets state but defers loop close.
+        session.shutdown()
+        assert not loop.is_closed(), "Loop must still be open before SHUTDOWN event"
+
+        # Script execution has unwound and the runner has detached the loop.
+        with patch(
+            "streamlit.runtime.app_session.asyncio.get_running_loop",
+            return_value=session._event_loop,
+        ):
+            session._handle_scriptrunner_event_on_event_loop(
+                sender=mock_scriptrunner,
+                event=ScriptRunnerEvent.SHUTDOWN,
+                client_state=None,
+            )
+
+        assert loop.is_closed()
+        assert session._scriptrunner is None
+        assert session._client_state is original_client_state
+
+    def test_shutdown_defers_closure_while_script_loop_is_running(self):
+        """SHUTDOWN releases the runner without closing a loop in use elsewhere."""
+        session = _create_test_session()
+        mock_scriptrunner = MagicMock(spec=ScriptRunner)
+        session._scriptrunner = mock_scriptrunner
+        session._state = AppSessionState.SHUTDOWN_REQUESTED
+        loop = session._script_event_loop
+        loop_started = threading.Event()
+        loop.call_soon(loop_started.set)
+        loop_thread = threading.Thread(target=loop.run_forever)
+        loop_thread.start()
+
+        try:
+            assert loop_started.wait(timeout=5)
+            with (
+                patch(
+                    "streamlit.runtime.app_session.asyncio.get_running_loop",
+                    return_value=session._event_loop,
+                ),
+                self.assertLogs(
+                    "streamlit.runtime.app_session", level="WARNING"
+                ) as logs,
+            ):
+                session._handle_scriptrunner_event_on_event_loop(
+                    sender=mock_scriptrunner,
+                    event=ScriptRunnerEvent.SHUTDOWN,
+                    client_state=ClientState(),
+                )
+
+            assert session._scriptrunner is None
+            assert loop.is_running()
+            assert not loop.is_closed()
+            assert any("still running" in message for message in logs.output)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            loop_thread.join(timeout=5)
+            assert not loop_thread.is_alive()
+            loop.close()
+
+    def test_shutdown_releases_runner_when_loop_closure_raises(self):
+        """Final SHUTDOWN state is retained if best-effort loop closure fails."""
+        session = _create_test_session()
+        mock_scriptrunner = MagicMock(spec=ScriptRunner)
+        session._scriptrunner = mock_scriptrunner
+        session._state = AppSessionState.SHUTDOWN_REQUESTED
+        final_client_state = ClientState()
+
+        with (
+            patch(
+                "streamlit.runtime.app_session.asyncio.get_running_loop",
+                return_value=session._event_loop,
+            ),
+            patch(
+                "streamlit.runtime.app_session._close_script_event_loop",
+                side_effect=RuntimeError("unrelated close failure"),
+            ),
+            pytest.raises(RuntimeError, match="unrelated close failure"),
+        ):
+            session._handle_scriptrunner_event_on_event_loop(
+                sender=mock_scriptrunner,
+                event=ScriptRunnerEvent.SHUTDOWN,
+                client_state=final_client_state,
+            )
+
+        assert session._client_state is final_client_state
+        assert session._scriptrunner is None
+        session._script_event_loop.close()
 
     @patch("streamlit.runtime.app_session.ScriptRunner", MagicMock(spec=ScriptRunner))
     @patch("streamlit.runtime.app_session.AppSession._enqueue_forward_msg")
@@ -625,43 +855,202 @@ class AppSessionTest(unittest.TestCase):
 
         mock_enqueue.assert_called_once_with(expected_msg)
 
+    def test_manual_rerun_preserves_context_info(self):
+        """Test that manual reruns preserve context info."""
+        session = _create_test_session()
+
+        # Create a client state with context info (simulating a manual rerun from frontend)
+        client_state = ClientState()
+        client_state.context_info.timezone = "Europe/Berlin"
+        client_state.context_info.locale = "de-DE"
+        client_state.query_string = "test_query"
+        client_state.page_script_hash = "test_hash"
+        client_state.is_auto_rerun = False
+
+        session._create_scriptrunner = MagicMock()
+        session.request_rerun(client_state)
+
+        # Verify that _create_scriptrunner was called
+        session._create_scriptrunner.assert_called_once()
+
+        # Get the RerunData that was passed to _create_scriptrunner
+        rerun_data = session._create_scriptrunner.call_args[0][0]
+
+        # Verify that context_info was preserved
+        assert rerun_data.context_info is not None
+        assert rerun_data.context_info.timezone == "Europe/Berlin"
+        assert rerun_data.context_info.locale == "de-DE"
+        assert rerun_data.query_string == "test_query"
+        assert rerun_data.page_script_hash == "test_hash"
+        assert rerun_data.is_auto_rerun is False
+
+    @parameterized.expand(
+        [
+            ("too_long", "foo=" + ("x" * (_CLIENT_STATE_QUERY_STRING_MAX_LENGTH + 1))),
+            (
+                "too_many_fields",
+                "&".join(
+                    f"key_{idx}=value"
+                    for idx in range(_CLIENT_STATE_QUERY_STRING_MAX_FIELDS + 1)
+                ),
+            ),
+        ]
+    )
+    def test_manual_rerun_ignores_unsafe_query_string(
+        self, _name: str, query_string: str
+    ):
+        """Test manual reruns drop query strings that exceed safe limits."""
+        session = _create_test_session()
+        self.addCleanup(session.shutdown)
+
+        client_state = ClientState()
+        client_state.query_string = query_string
+
+        session._create_scriptrunner = MagicMock()
+        session.request_rerun(client_state)
+
+        rerun_data = session._create_scriptrunner.call_args[0][0]
+        assert rerun_data.query_string == ""
+
+    def test_context_info_preserved_in_client_state_on_shutdown(self):
+        """Test that context_info is preserved in client_state during SHUTDOWN event."""
+        session = _create_test_session()
+
+        # Set up initial context info in client state
+        session._client_state.context_info.timezone = "America/New_York"
+        session._client_state.context_info.locale = "en-US"
+        session._client_state.query_string = "initial_query"
+        session._client_state.page_script_hash = "initial_hash"
+
+        # Create a mock ScriptRunner and simulate SHUTDOWN event
+        mock_scriptrunner = MagicMock(spec=ScriptRunner)
+        session._scriptrunner = mock_scriptrunner
+
+        # Create client state with context info (as would be sent in SHUTDOWN event)
+        shutdown_client_state = ClientState()
+        shutdown_client_state.context_info.timezone = "Europe/London"
+        shutdown_client_state.context_info.locale = "en-GB"
+        shutdown_client_state.query_string = "shutdown_query"
+        shutdown_client_state.page_script_hash = "shutdown_hash"
+
+        with patch(
+            "streamlit.runtime.app_session.asyncio.get_running_loop",
+            return_value=session._event_loop,
+        ):
+            session._handle_scriptrunner_event_on_event_loop(
+                sender=mock_scriptrunner,
+                event=ScriptRunnerEvent.SHUTDOWN,
+                client_state=shutdown_client_state,
+            )
+
+        # Verify that the client state was updated with the shutdown data
+        assert session._client_state.context_info.timezone == "Europe/London"
+        assert session._client_state.context_info.locale == "en-GB"
+        assert session._client_state.query_string == "shutdown_query"
+        assert session._client_state.page_script_hash == "shutdown_hash"
+
+    def test_clear_session_caches(self) -> None:
+        """Tests clear_session_caches."""
+
+        test_session = _create_test_session()
+
+        with patch.object(app_session, "caching") as mock_caching:
+            test_session.clear_session_caches()
+
+        mock_caching.clear_session_data_cache.assert_called_with(test_session.id)
+        mock_caching.clear_session_resource_cache.assert_called_with(test_session.id)
+
 
 def _mock_get_options_for_section(
     overrides: dict[str, Any] | None = None,
 ) -> Callable[..., Any]:
+    """Mock config.get_options_for_section for testing.
+
+    Expected override structure:
+        {
+            "sidebar": {...},        # Options for theme.sidebar
+            "light": {               # Options for theme.light
+                "sidebar": {...},    # Options for theme.light.sidebar
+                ...other options...
+            },
+            "dark": {                # Options for theme.dark
+                "sidebar": {...},    # Options for theme.dark.sidebar
+                ...other options...
+            },
+            ...other theme options...
+        }
+    """
     if not overrides:
         overrides = {}
 
-    sidebar_theme_opts = {
+    # Default options for sections (excluding main theme which has unique options like base)
+    section_default_opts = {
         "backgroundColor": "white",
         "baseRadius": "1.2rem",
         "buttonRadius": "medium",
         "borderColor": "#ff0000",
         "dataframeBorderColor": "#280f63",
         "codeFont": "Monaspace Argon",
+        "codeFontSize": "12px",
+        "codeFontWeight": 500,
         "font": "Inter",
         "headingFont": "Inter Bold",
+        "headingFontSizes": ["2.125rem", "2rem", "1.875rem"],
+        "headingFontWeights": [700, 700, 600],
         "linkColor": "#2EC163",
+        "linkUnderline": False,
         "primaryColor": "red",
         "secondaryBackgroundColor": "blue",
         "showWidgetBorder": True,
         "textColor": "black",
         "codeBackgroundColor": "blue",
+        "dataframeHeaderBackgroundColor": "purple",
+        "redColor": "red",
+        "orangeColor": "orange",
+        "yellowColor": "yellow",
+        "blueColor": "blue",
+        "greenColor": "green",
+        "violetColor": "violet",
+        "grayColor": "gray",
+        "redBackgroundColor": "#ff8c8c",
+        "orangeBackgroundColor": "#ffd16a",
+        "yellowBackgroundColor": "#ffff59",
+        "blueBackgroundColor": "#60b4ff",
+        "greenBackgroundColor": "#5ce488",
+        "violetBackgroundColor": "#b27eff",
+        "grayBackgroundColor": "#bfc5d3",
+        "redTextColor": "#ffabab",
+        "orangeTextColor": "#ffe08e",
+        "yellowTextColor": "#ffff7d",
+        "blueTextColor": "#83c9ff",
+        "greenTextColor": "#7defa1",
+        "violetTextColor": "#c89dff",
+        "grayTextColor": "#d5dae5",
+        "codeTextColor": "#7defa1",
     }
 
-    if overrides.get("sidebar") is not None:
-        for k, v in overrides.get("sidebar").items():
-            sidebar_theme_opts[k] = v
-
-    theme_opts = {
+    # Main theme options (includes unique options like base, baseFontSize, etc.)
+    theme_default_opts = {
         "backgroundColor": "white",
         "base": "dark",
         "baseFontSize": 14,
+        "baseFontWeight": 300,
         "baseRadius": "1.2rem",
         "buttonRadius": "medium",
         "borderColor": "#ff0000",
         "dataframeBorderColor": "#280f63",
         "codeFont": "Monaspace Argon",
+        "codeFontSize": "12px",
+        "codeFontWeight": 300,
+        "headingFontSizes": [
+            "2.875rem",
+            "2.75rem",
+            "2rem",
+            "1.75rem",
+            "1.5rem",
+            "1.25rem",
+        ],
+        "headingFontWeights": [700, 700, 600, 600],
         "font": "Inter",
         "fontFaces": [
             {
@@ -671,39 +1060,132 @@ def _mock_get_options_for_section(
             {
                 "family": "Inter",
                 "url": "https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-Regular.woff2",
-                "weight": 400,
+                "weight_range": "400",
             },
             {
                 "family": "Monaspace Argon",
-                "url": "https://raw.githubusercontent.com/githubnext/monaspace/refs/heads/main/fonts/webfonts/MonaspaceArgon-Regular.woff2",
-                "weight": 400,
+                "url": "https://raw.githubusercontent.com/githubnext/monaspace/052b3c4eb409e7f026edf5f0609de4ff54db7e23/fonts/Web%20Fonts/Static%20Web%20Fonts/Monaspace%20Argon/MonaspaceArgon-Regular.woff2",
+                "weight_range": "400",
             },
         ],
         "headingFont": "Inter Bold",
         "linkColor": "#2EC163",
+        "linkUnderline": False,
         "primaryColor": "coral",
         "secondaryBackgroundColor": "blue",
         "showWidgetBorder": True,
         "showSidebarBorder": True,
         "textColor": "black",
+        "codeTextColor": "#09ab3b",
         "codeBackgroundColor": "blue",
+        "dataframeHeaderBackgroundColor": "purple",
+        "chartCategoricalColors": [
+            "#7fc97f",
+            "#beaed4",
+            "#fdc086",
+            "#ffff99",
+            "#386cb0",
+            "#f0027f",
+            "#bf5b17",
+            "#666666",
+        ],
+        "chartSequentialColors": [
+            "#dffde9",
+            "#c0fcd3",
+            "#9ef6bb",
+            "#7defa1",
+            "#5ce488",
+            "#3dd56d",
+            "#21c354",
+            "#09ab3b",
+            "#158237",
+            "#177233",
+        ],
+        "chartDivergingColors": [
+            "#7d353b",
+            "#bd4043",
+            "#ff4b4b",
+            "#ff8c8c",
+            "#ffc7c7",
+            "#a6dcff",
+            "#60b4ff",
+            "#1c83e1",
+            "#0054a3",
+            "#004280",
+        ],
+        "redColor": "#7d353b",
+        "orangeColor": "#d95a00",
+        "yellowColor": "#916e10",
+        "blueColor": "#004280",
+        "greenColor": "#177233",
+        "violetColor": "#3f3163",
+        "grayColor": "#0e1117",
+        "redBackgroundColor": "#ff4b4b",
+        "orangeBackgroundColor": "#ffa421",
+        "yellowBackgroundColor": "#ffe312",
+        "blueBackgroundColor": "#1c83e1",
+        "greenBackgroundColor": "#21c354",
+        "violetBackgroundColor": "#803df5",
+        "grayBackgroundColor": "#808495",
+        "redTextColor": "#ffabab",
+        "orangeTextColor": "#ffe08e",
+        "yellowTextColor": "#ffff7d",
+        "blueTextColor": "#83c9ff",
+        "greenTextColor": "#7defa1",
+        "violetTextColor": "#c89dff",
+        "grayTextColor": "#d5dae5",
     }
 
-    for k, v in overrides.items():
-        if k != "sidebar":
-            theme_opts[k] = v
+    def _apply_overrides(base: dict, overrides_dict: dict, exclude_keys: set) -> dict:
+        """Apply overrides to base dict, excluding specified keys."""
+        result = base.copy()
+        for k, v in overrides_dict.items():
+            if k not in exclude_keys:
+                result[k] = v
+        return result
 
-    def get_options_for_section(section):
+    def get_options_for_section(section: str) -> dict:
         if section == "theme":
-            return theme_opts
+            # Apply root-level overrides, excluding nested sections
+            return _apply_overrides(
+                theme_default_opts, overrides, {"sidebar", "light", "dark"}
+            )
+
         if section == "theme.sidebar":
-            return sidebar_theme_opts
+            # Apply sidebar overrides if present
+            return _apply_overrides(
+                section_default_opts, overrides.get("sidebar", {}), set()
+            )
+
+        if section == "theme.light":
+            # Apply light overrides, excluding nested sidebar
+            return _apply_overrides(
+                section_default_opts, overrides.get("light", {}), {"sidebar"}
+            )
+
+        if section == "theme.dark":
+            # Apply dark overrides, excluding nested sidebar
+            return _apply_overrides(
+                section_default_opts, overrides.get("dark", {}), {"sidebar"}
+            )
+
+        if section == "theme.light.sidebar":
+            # Apply light.sidebar overrides if present
+            light_sidebar = overrides.get("light", {}).get("sidebar", {})
+            return _apply_overrides(section_default_opts, light_sidebar, set())
+
+        if section == "theme.dark.sidebar":
+            # Apply dark.sidebar overrides if present
+            dark_sidebar = overrides.get("dark", {}).get("sidebar", {})
+            return _apply_overrides(section_default_opts, dark_sidebar, set())
+
+        # Fallback to real config for any other sections
         return config.get_options_for_section(section)
 
     return get_options_for_section
 
 
-class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
+class AppSessionScriptEventTest(unittest.IsolatedAsyncioTestCase):
     """Tests for AppSession's ScriptRunner event handling."""
 
     @patch(
@@ -893,6 +1375,46 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
 
         handle_event_spy.assert_called_once()
 
+    def test_on_scriptrunner_event_when_event_loop_closed(self):
+        """A late ScriptRunner event after the loop is closed is dropped."""
+        loop = asyncio.new_event_loop()
+        loop.close()
+        session = _create_test_session(loop)
+        handle_event = MagicMock()
+        session._handle_scriptrunner_event_on_event_loop = handle_event
+
+        session._on_scriptrunner_event(
+            sender=MagicMock(),
+            event=ScriptRunnerEvent.SCRIPT_STOPPED_WITH_SUCCESS,
+        )
+
+        handle_event.assert_not_called()
+
+    def test_handle_backmsg_exception_when_event_loop_closed(self):
+        """A late backmsg exception after the loop is closed is dropped."""
+        loop = asyncio.new_event_loop()
+        loop.close()
+        session = _create_test_session(loop)
+        handle_event = MagicMock()
+        enqueue = MagicMock()
+        session._handle_scriptrunner_event_on_event_loop = handle_event
+        session._enqueue_forward_msg = enqueue
+
+        session.handle_backmsg_exception(RuntimeError("late exception"))
+
+        handle_event.assert_not_called()
+        enqueue.assert_not_called()
+
+    def test_call_soon_on_event_loop_reraises_when_loop_open(self):
+        """Unexpected RuntimeError from call_soon_threadsafe is not swallowed."""
+        loop = MagicMock()
+        loop.is_closed.return_value = False
+        loop.call_soon_threadsafe.side_effect = RuntimeError("unexpected")
+        session = _create_test_session(loop)
+
+        with pytest.raises(RuntimeError, match="unexpected"):
+            session._call_soon_on_event_loop(lambda: None)
+
     async def test_event_handler_asserts_if_called_off_event_loop(self):
         """AppSession._handle_scriptrunner_event_on_event_loop will assert
         if it's called from another event loop (or no event loop).
@@ -908,8 +1430,8 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
             ),
             pytest.raises(
                 RuntimeError,
-                match="This function must only be called on the eventloop thread "
-                "the AppSession was created on. This should never happen.",
+                match=r"This function must only be called on the eventloop thread "
+                r"the AppSession was created on. This should never happen.",
             ),
         ):
             session._handle_scriptrunner_event_on_event_loop(
@@ -941,8 +1463,9 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
             side_effect=lambda msg: forward_msg_queue_events.append(msg)
         )
         mock_queue.clear = MagicMock(
-            side_effect=lambda retain_lifecycle_msgs,
-            fragment_ids_this_run: forward_msg_queue_events.append(CLEAR_QUEUE)
+            side_effect=lambda retain_lifecycle_msgs, fragment_ids_this_run: (
+                forward_msg_queue_events.append(CLEAR_QUEUE)
+            )
         )
 
         session._browser_queue = mock_queue
@@ -1010,6 +1533,69 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
             handle_clear_cache_request.assert_called_once()
             handle_backmsg_exception.assert_called_once_with(error)
 
+    @parameterized.expand(
+        [
+            ("full", "boom", "RuntimeError", True),
+            (True, "boom", "RuntimeError", True),
+            ("true", "boom", "RuntimeError", True),
+            ("stacktrace", _GENERIC_UNCAUGHT_EXCEPTION_TEXT, "RuntimeError", True),
+            (False, _GENERIC_UNCAUGHT_EXCEPTION_TEXT, "RuntimeError", True),
+            ("type", _GENERIC_UNCAUGHT_EXCEPTION_TEXT, "RuntimeError", False),
+            ("none", _GENERIC_UNCAUGHT_EXCEPTION_TEXT, "", False),
+        ]
+    )
+    async def test_handle_backmsg_exception_redacts_per_show_error_details(
+        self,
+        show_error_details: str | bool,
+        expected_message: str,
+        expected_type: str,
+        expect_stack_trace: bool,
+    ):
+        """Test that client.showErrorDetails redacts the Exception ForwardMsg
+        that a BackMsg failure produces.
+        """
+        session = _create_test_session(asyncio.get_running_loop())
+
+        enqueued_msgs: list[ForwardMsg] = []
+        mock_queue = MagicMock(spec=ForwardMsgQueue)
+        mock_queue.enqueue = MagicMock(side_effect=enqueued_msgs.append)
+        session._browser_queue = mock_queue
+
+        with patch_config_options({"client.showErrorDetails": show_error_details}):
+            # Raise the error inside handle_backmsg. The traceback then contains
+            # Streamlit-internal frames, as it does in production.
+            with patch.object(
+                session,
+                "_handle_clear_cache_request",
+                side_effect=RuntimeError("boom"),
+            ):
+                msg = BackMsg()
+                msg.clear_cache = True
+                session.handle_backmsg(msg)
+
+            # An eventloop callback enqueues the Exception ForwardMsg.
+            await asyncio.sleep(0)
+
+        exception_msgs = [
+            msg
+            for msg in enqueued_msgs
+            if msg.WhichOneof("type") == "delta"
+            and msg.delta.new_element.WhichOneof("type") == "exception"
+        ]
+        assert len(exception_msgs) == 1
+        exception_proto = exception_msgs[0].delta.new_element.exception
+
+        assert exception_proto.message == expected_message
+        assert exception_proto.type == expected_type
+        assert bool(exception_proto.stack_trace) == expect_stack_trace
+
+        # No other field of the payload leaks the error.
+        serialized = exception_msgs[0].SerializeToString()
+        if expected_message != "boom":
+            assert b"boom" not in serialized
+        if not expect_stack_trace:
+            assert b"app_session.py" not in serialized
+
     @patch("streamlit.runtime.app_session.AppSession._create_scriptrunner", MagicMock())
     async def test_handle_backmsg_handles_debug_ids(self):
         session = _create_test_session(asyncio.get_running_loop())
@@ -1038,6 +1624,20 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
             handle_backmsg_exception.assert_not_called()
             patched_logger.warning.assert_not_called()
 
+    async def test_app_heartbeat_sends_ack(self) -> None:
+        """Test that _handle_app_heartbeat_request sends a heartbeat_ack ForwardMsg."""
+        session = _create_test_session(asyncio.get_running_loop())
+        with patch.object(session, "_enqueue_forward_msg") as enqueue_mock:
+            session._handle_app_heartbeat_request()
+
+            # Verify that a ForwardMsg with heartbeat_ack was enqueued
+            enqueue_mock.assert_called_once()
+            msg = enqueue_mock.call_args[0][0]
+            assert isinstance(msg, ForwardMsg)
+            assert msg.heartbeat_ack is True
+            # Verify it's not some other message type
+            assert msg.WhichOneof("type") == "heartbeat_ack"
+
     async def test_event_handler_raises_error_if_page_hash_none_on_script_started(
         self,
     ):
@@ -1050,7 +1650,7 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
 
         with pytest.raises(
             RuntimeError,
-            match="page_script_hash must be set for the SCRIPT_STARTED event. This should never happen.",
+            match=r"page_script_hash must be set for the SCRIPT_STARTED event. This should never happen.",
         ):
             session._handle_scriptrunner_event_on_event_loop(
                 sender=mock_scriptrunner,
@@ -1070,7 +1670,7 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
 
         with pytest.raises(
             RuntimeError,
-            match="exception must be set for the SCRIPT_STOPPED_WITH_COMPILE_ERROR event. This should never happen.",
+            match=r"exception must be set for the SCRIPT_STOPPED_WITH_COMPILE_ERROR event. This should never happen.",
         ):
             session._handle_scriptrunner_event_on_event_loop(
                 sender=mock_scriptrunner,
@@ -1078,25 +1678,26 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
                 exception=None,  # This is the condition we're testing
             )
 
-    async def test_event_handler_raises_error_if_client_state_none_on_shutdown(
-        self,
-    ):
-        """Test that _handle_scriptrunner_event_on_event_loop raises RuntimeError
-        if client_state is None when event is SHUTDOWN.
-        """
+    async def test_shutdown_without_client_state_preserves_existing_state(self):
+        """An early runner failure clears lifecycle state without fabricating data."""
         session = _create_test_session(asyncio.get_running_loop())
         mock_scriptrunner = MagicMock(spec=ScriptRunner)
         session._scriptrunner = mock_scriptrunner
+        original_client_state = session._client_state
 
-        with pytest.raises(
-            RuntimeError,
-            match="client_state must be set for the SHUTDOWN event. This should never happen.",
-        ):
+        try:
             session._handle_scriptrunner_event_on_event_loop(
                 sender=mock_scriptrunner,
                 event=ScriptRunnerEvent.SHUTDOWN,
-                client_state=None,  # This is the condition we're testing
+                client_state=None,
             )
+            # Runner replacement SHUTDOWN must not close the session-owned loop.
+            assert not session._script_event_loop.is_closed()
+        finally:
+            session._script_event_loop.close()
+
+        assert session._scriptrunner is None
+        assert session._client_state is original_client_state
 
     async def test_event_handler_raises_error_if_forward_msg_none_on_enqueue(
         self,
@@ -1110,7 +1711,7 @@ class AppSessionScriptEventTest(IsolatedAsyncioTestCase):
 
         with pytest.raises(
             RuntimeError,
-            match="null forward_msg in ENQUEUE_FORWARD_MSG event. This should never happen.",
+            match=r"null forward_msg in ENQUEUE_FORWARD_MSG event. This should never happen.",
         ):
             session._handle_scriptrunner_event_on_event_loop(
                 sender=mock_scriptrunner,
@@ -1128,22 +1729,54 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
                     "backgroundColor": None,
                     "base": None,
                     "baseFontSize": None,
+                    "baseFontWeight": None,
                     "baseRadius": None,
                     "buttonRadius": None,
                     "borderColor": None,
                     "dataframeBorderColor": None,
                     "codeFont": None,
+                    "codeFontSize": None,
+                    "codeFontWeight": None,
                     "font": None,
                     "fontFaces": None,
                     "headingFont": None,
+                    "headingFontSizes": None,
+                    "headingFontWeights": None,
                     "linkColor": None,
+                    "linkUnderline": None,
                     "primaryColor": None,
                     "secondaryBackgroundColor": None,
                     "showWidgetBorder": None,
                     "showSidebarBorder": None,
                     "textColor": None,
                     "sidebar": None,
+                    "codeTextColor": None,
                     "codeBackgroundColor": None,
+                    "dataframeHeaderBackgroundColor": None,
+                    "chartCategoricalColors": None,
+                    "chartSequentialColors": None,
+                    "chartDivergingColors": None,
+                    "redColor": None,
+                    "orangeColor": None,
+                    "yellowColor": None,
+                    "blueColor": None,
+                    "greenColor": None,
+                    "violetColor": None,
+                    "grayColor": None,
+                    "redBackgroundColor": None,
+                    "orangeBackgroundColor": None,
+                    "yellowBackgroundColor": None,
+                    "blueBackgroundColor": None,
+                    "greenBackgroundColor": None,
+                    "violetBackgroundColor": None,
+                    "grayBackgroundColor": None,
+                    "redTextColor": None,
+                    "orangeTextColor": None,
+                    "yellowTextColor": None,
+                    "blueTextColor": None,
+                    "greenTextColor": None,
+                    "violetTextColor": None,
+                    "grayTextColor": None,
                 }
             )
         )
@@ -1162,22 +1795,54 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
                     "backgroundColor": None,
                     "base": None,
                     "baseFontSize": None,
+                    "baseFontWeight": None,
                     "baseRadius": None,
                     "buttonRadius": None,
                     "borderColor": None,
                     "dataframeBorderColor": None,
                     "codeFont": None,
+                    "codeFontSize": None,
+                    "codeFontWeight": None,
                     "font": None,
                     "fontFaces": None,
                     "headingFont": None,
+                    "headingFontSizes": None,
+                    "headingFontWeights": None,
                     "linkColor": None,
+                    "linkUnderline": None,
                     "primaryColor": None,
                     "secondaryBackgroundColor": None,
                     "showWidgetBorder": False,
                     "showSidebarBorder": None,
                     "textColor": None,
                     "sidebar": None,
+                    "codeTextColor": None,
                     "codeBackgroundColor": None,
+                    "dataframeHeaderBackgroundColor": None,
+                    "chartCategoricalColors": None,
+                    "chartSequentialColors": None,
+                    "chartDivergingColors": None,
+                    "redColor": None,
+                    "orangeColor": None,
+                    "yellowColor": None,
+                    "blueColor": None,
+                    "greenColor": None,
+                    "violetColor": None,
+                    "grayColor": None,
+                    "redBackgroundColor": None,
+                    "orangeBackgroundColor": None,
+                    "yellowBackgroundColor": None,
+                    "blueBackgroundColor": None,
+                    "greenBackgroundColor": None,
+                    "violetBackgroundColor": None,
+                    "grayBackgroundColor": None,
+                    "redTextColor": None,
+                    "orangeTextColor": None,
+                    "yellowTextColor": None,
+                    "blueTextColor": None,
+                    "greenTextColor": None,
+                    "violetTextColor": None,
+                    "grayTextColor": None,
                 }
             )
         )
@@ -1200,18 +1865,50 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
                     "baseRadius": None,
                     "buttonRadius": None,
                     "baseFontSize": None,
+                    "baseFontWeight": None,
                     "borderColor": None,
                     "dataframeBorderColor": None,
                     "codeFont": None,
+                    "codeFontSize": None,
+                    "codeFontWeight": None,
+                    "headingFontSizes": None,
+                    "headingFontWeights": None,
                     "font": None,
                     "fontFaces": None,
                     "headingFont": None,
                     "linkColor": None,
+                    "linkUnderline": None,
                     "secondaryBackgroundColor": None,
                     "showWidgetBorder": None,
                     "showSidebarBorder": None,
                     "textColor": None,
+                    "codeTextColor": None,
                     "codeBackgroundColor": None,
+                    "dataframeHeaderBackgroundColor": None,
+                    "chartCategoricalColors": None,
+                    "chartSequentialColors": None,
+                    "chartDivergingColors": None,
+                    "redColor": None,
+                    "orangeColor": None,
+                    "yellowColor": None,
+                    "blueColor": None,
+                    "greenColor": None,
+                    "violetColor": None,
+                    "grayColor": None,
+                    "redBackgroundColor": None,
+                    "orangeBackgroundColor": None,
+                    "yellowBackgroundColor": None,
+                    "blueBackgroundColor": None,
+                    "greenBackgroundColor": None,
+                    "violetBackgroundColor": None,
+                    "grayBackgroundColor": None,
+                    "redTextColor": None,
+                    "orangeTextColor": None,
+                    "yellowTextColor": None,
+                    "blueTextColor": None,
+                    "greenTextColor": None,
+                    "violetTextColor": None,
+                    "grayTextColor": None,
                     "sidebar": {
                         # primaryColor not set to None
                         "backgroundColor": None,
@@ -1220,13 +1917,41 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
                         "borderColor": None,
                         "dataframeBorderColor": None,
                         "codeFont": None,
+                        "codeFontSize": None,
+                        "codeFontWeight": None,
                         "font": None,
                         "headingFont": None,
+                        "headingFontSizes": None,
+                        "headingFontWeights": None,
                         "linkColor": None,
+                        "linkUnderline": None,
                         "secondaryBackgroundColor": None,
                         "showWidgetBorder": None,
                         "textColor": None,
+                        "codeTextColor": None,
                         "codeBackgroundColor": None,
+                        "dataframeHeaderBackgroundColor": None,
+                        "redColor": None,
+                        "orangeColor": None,
+                        "yellowColor": None,
+                        "blueColor": None,
+                        "greenColor": None,
+                        "violetColor": None,
+                        "grayColor": None,
+                        "redBackgroundColor": None,
+                        "orangeBackgroundColor": None,
+                        "yellowBackgroundColor": None,
+                        "blueBackgroundColor": None,
+                        "greenBackgroundColor": None,
+                        "violetBackgroundColor": None,
+                        "grayBackgroundColor": None,
+                        "redTextColor": None,
+                        "orangeTextColor": None,
+                        "yellowTextColor": None,
+                        "blueTextColor": None,
+                        "greenTextColor": None,
+                        "violetTextColor": None,
+                        "grayTextColor": None,
                     },
                 }
             )
@@ -1250,12 +1975,35 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
 
         # Fields that are marked as optional in proto:
         assert not new_session_msg.custom_theme.HasField("base_radius")
+        assert not new_session_msg.custom_theme.HasField("button_radius")
         assert not new_session_msg.custom_theme.HasField("border_color")
+        assert not new_session_msg.custom_theme.HasField("dataframe_border_color")
         assert not new_session_msg.custom_theme.HasField("show_widget_border")
         assert not new_session_msg.custom_theme.HasField("link_color")
+        assert not new_session_msg.custom_theme.HasField("link_underline")
         assert not new_session_msg.custom_theme.HasField("base_font_size")
-        assert not new_session_msg.custom_theme.HasField("code_background_color")
+        assert not new_session_msg.custom_theme.HasField("base_font_weight")
+        assert not new_session_msg.custom_theme.HasField("code_font_size")
+        assert not new_session_msg.custom_theme.HasField("code_font_weight")
         assert not new_session_msg.custom_theme.HasField("show_sidebar_border")
+        assert not new_session_msg.custom_theme.HasField("code_background_color")
+        assert not new_session_msg.custom_theme.HasField(
+            "dataframe_header_background_color"
+        )
+        assert not new_session_msg.custom_theme.HasField("red_color")
+        assert not new_session_msg.custom_theme.HasField("orange_color")
+        assert not new_session_msg.custom_theme.HasField("yellow_color")
+        assert not new_session_msg.custom_theme.HasField("blue_color")
+        assert not new_session_msg.custom_theme.HasField("green_color")
+        assert not new_session_msg.custom_theme.HasField("violet_color")
+        assert not new_session_msg.custom_theme.HasField("gray_color")
+
+        # Fields that are marked as repeated in proto:
+        assert not new_session_msg.custom_theme.heading_font_sizes
+        assert not new_session_msg.custom_theme.heading_font_weights
+        assert not new_session_msg.custom_theme.chart_categorical_colors
+        assert not new_session_msg.custom_theme.chart_sequential_colors
+        assert not new_session_msg.custom_theme.chart_diverging_colors
 
         app_session._populate_theme_msg(
             new_session_msg.custom_theme.sidebar,
@@ -1271,12 +2019,39 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
 
         # Fields that are marked as optional in proto:
         assert not new_session_msg.custom_theme.sidebar.HasField("base_radius")
+        assert not new_session_msg.custom_theme.sidebar.HasField("button_radius")
         assert not new_session_msg.custom_theme.sidebar.HasField("border_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField(
+            "dataframe_border_color"
+        )
         assert not new_session_msg.custom_theme.sidebar.HasField("show_widget_border")
         assert not new_session_msg.custom_theme.sidebar.HasField("link_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("link_underline")
+        assert not new_session_msg.custom_theme.sidebar.HasField("base_font_size")
+        assert not new_session_msg.custom_theme.sidebar.HasField("base_font_weight")
+        assert not new_session_msg.custom_theme.sidebar.HasField("code_font_size")
+        assert not new_session_msg.custom_theme.sidebar.HasField("code_font_weight")
+        assert not new_session_msg.custom_theme.sidebar.HasField("show_sidebar_border")
         assert not new_session_msg.custom_theme.sidebar.HasField(
             "code_background_color"
         )
+        assert not new_session_msg.custom_theme.sidebar.HasField(
+            "dataframe_header_background_color"
+        )
+        assert not new_session_msg.custom_theme.sidebar.HasField("red_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("orange_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("yellow_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("blue_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("green_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("violet_color")
+        assert not new_session_msg.custom_theme.sidebar.HasField("gray_color")
+
+        # Fields that are marked as repeated in proto:
+        assert not new_session_msg.custom_theme.sidebar.heading_font_sizes
+        assert not new_session_msg.custom_theme.sidebar.heading_font_weights
+        assert not new_session_msg.custom_theme.sidebar.chart_categorical_colors
+        assert not new_session_msg.custom_theme.sidebar.chart_sequential_colors
+        assert not new_session_msg.custom_theme.sidebar.chart_diverging_colors
 
     @patch("streamlit.runtime.app_session.config")
     def test_can_specify_all_options(self, patched_config):
@@ -1295,17 +2070,101 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
         assert new_session_msg.custom_theme.text_color == "black"
         assert new_session_msg.custom_theme.secondary_background_color == "blue"
         assert new_session_msg.custom_theme.base_radius == "1.2rem"
+        assert new_session_msg.custom_theme.button_radius == "medium"
         assert new_session_msg.custom_theme.border_color == "#ff0000"
+        assert new_session_msg.custom_theme.dataframe_border_color == "#280f63"
         assert new_session_msg.custom_theme.show_widget_border is True
         assert new_session_msg.custom_theme.link_color == "#2EC163"
+        assert new_session_msg.custom_theme.link_underline is False
         assert new_session_msg.custom_theme.base_font_size == 14
-        assert new_session_msg.custom_theme.code_background_color == "blue"
+        assert new_session_msg.custom_theme.base_font_weight == 300
+        assert new_session_msg.custom_theme.code_font_size == "12px"
+        assert new_session_msg.custom_theme.code_font_weight == 300
         assert new_session_msg.custom_theme.show_sidebar_border is True
+        assert new_session_msg.custom_theme.code_background_color == "blue"
+        assert (
+            new_session_msg.custom_theme.dataframe_header_background_color == "purple"
+        )
+        assert new_session_msg.custom_theme.red_color == "#7d353b"
+        assert new_session_msg.custom_theme.orange_color == "#d95a00"
+        assert new_session_msg.custom_theme.yellow_color == "#916e10"
+        assert new_session_msg.custom_theme.blue_color == "#004280"
+        assert new_session_msg.custom_theme.green_color == "#177233"
+        assert new_session_msg.custom_theme.violet_color == "#3f3163"
+        assert new_session_msg.custom_theme.gray_color == "#0e1117"
+        assert new_session_msg.custom_theme.red_background_color == "#ff4b4b"
+        assert new_session_msg.custom_theme.orange_background_color == "#ffa421"
+        assert new_session_msg.custom_theme.yellow_background_color == "#ffe312"
+        assert new_session_msg.custom_theme.blue_background_color == "#1c83e1"
+        assert new_session_msg.custom_theme.green_background_color == "#21c354"
+        assert new_session_msg.custom_theme.violet_background_color == "#803df5"
+        assert new_session_msg.custom_theme.gray_background_color == "#808495"
+        assert new_session_msg.custom_theme.red_text_color == "#ffabab"
+        assert new_session_msg.custom_theme.orange_text_color == "#ffe08e"
+        assert new_session_msg.custom_theme.yellow_text_color == "#ffff7d"
+        assert new_session_msg.custom_theme.blue_text_color == "#83c9ff"
+        assert new_session_msg.custom_theme.green_text_color == "#7defa1"
+        assert new_session_msg.custom_theme.violet_text_color == "#c89dff"
+        assert new_session_msg.custom_theme.gray_text_color == "#d5dae5"
+        assert new_session_msg.custom_theme.code_text_color == "#09ab3b"
+        assert new_session_msg.custom_theme.heading_font_sizes == [
+            "2.875rem",
+            "2.75rem",
+            "2rem",
+            "1.75rem",
+            "1.5rem",
+            "1.25rem",
+        ]
+        # app_session sets the default value (600) for the missing values, so even with only
+        # 4 values set in the config, we should have 6 values
+        assert new_session_msg.custom_theme.heading_font_weights == [
+            700,
+            700,
+            600,
+            600,
+            600,
+            600,
+        ]
+
         # The value from `theme.font` will be placed in body_font since
         # font uses a deprecated enum:
         assert new_session_msg.custom_theme.heading_font == "Inter Bold"
         assert new_session_msg.custom_theme.body_font == "Inter"
         assert new_session_msg.custom_theme.code_font == "Monaspace Argon"
+        assert list(new_session_msg.custom_theme.chart_categorical_colors) == [
+            "#7fc97f",
+            "#beaed4",
+            "#fdc086",
+            "#ffff99",
+            "#386cb0",
+            "#f0027f",
+            "#bf5b17",
+            "#666666",
+        ]
+        assert list(new_session_msg.custom_theme.chart_sequential_colors) == [
+            "#dffde9",
+            "#c0fcd3",
+            "#9ef6bb",
+            "#7defa1",
+            "#5ce488",
+            "#3dd56d",
+            "#21c354",
+            "#09ab3b",
+            "#158237",
+            "#177233",
+        ]
+        assert list(new_session_msg.custom_theme.chart_diverging_colors) == [
+            "#7d353b",
+            "#bd4043",
+            "#ff4b4b",
+            "#ff8c8c",
+            "#ffc7c7",
+            "#a6dcff",
+            "#60b4ff",
+            "#1c83e1",
+            "#0054a3",
+            "#004280",
+        ]
         assert list(new_session_msg.custom_theme.font_faces) == [
             FontFace(
                 family="Inter Bold",
@@ -1314,12 +2173,12 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
             FontFace(
                 family="Inter",
                 url="https://raw.githubusercontent.com/rsms/inter/refs/heads/master/docs/font-files/Inter-Regular.woff2",
-                weight=400,
+                weight_range="400",
             ),
             FontFace(
                 family="Monaspace Argon",
-                url="https://raw.githubusercontent.com/githubnext/monaspace/refs/heads/main/fonts/webfonts/MonaspaceArgon-Regular.woff2",
-                weight=400,
+                url="https://raw.githubusercontent.com/githubnext/monaspace/052b3c4eb409e7f026edf5f0609de4ff54db7e23/fonts/Web%20Fonts/Static%20Web%20Fonts/Monaspace%20Argon/MonaspaceArgon-Regular.woff2",
+                weight_range="400",
             ),
         ]
 
@@ -1333,19 +2192,377 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
         assert new_session_msg.custom_theme.sidebar.text_color == "black"
         assert new_session_msg.custom_theme.sidebar.secondary_background_color == "blue"
         assert new_session_msg.custom_theme.sidebar.base_radius == "1.2rem"
+        assert new_session_msg.custom_theme.sidebar.button_radius == "medium"
         assert new_session_msg.custom_theme.sidebar.border_color == "#ff0000"
+        assert new_session_msg.custom_theme.sidebar.dataframe_border_color == "#280f63"
         assert new_session_msg.custom_theme.sidebar.show_widget_border is True
         assert new_session_msg.custom_theme.sidebar.link_color == "#2EC163"
+        assert new_session_msg.custom_theme.sidebar.link_underline is False
+        assert new_session_msg.custom_theme.sidebar.code_font_size == "12px"
+        assert new_session_msg.custom_theme.sidebar.code_font_weight == 500
         assert new_session_msg.custom_theme.sidebar.heading_font == "Inter Bold"
+        assert new_session_msg.custom_theme.sidebar.heading_font_sizes == [
+            "2.125rem",
+            "2rem",
+            "1.875rem",
+        ]
+        assert new_session_msg.custom_theme.sidebar.heading_font_weights == [
+            700,
+            700,
+            600,
+            600,  # default value
+            600,  # default value
+            600,  # default value
+        ]
         assert new_session_msg.custom_theme.sidebar.body_font == "Inter"
         assert new_session_msg.custom_theme.sidebar.code_font == "Monaspace Argon"
         assert new_session_msg.custom_theme.sidebar.code_background_color == "blue"
+        assert (
+            new_session_msg.custom_theme.sidebar.dataframe_header_background_color
+            == "purple"
+        )
+        assert new_session_msg.custom_theme.sidebar.red_color == "red"
+        assert new_session_msg.custom_theme.sidebar.orange_color == "orange"
+        assert new_session_msg.custom_theme.sidebar.yellow_color == "yellow"
+        assert new_session_msg.custom_theme.sidebar.blue_color == "blue"
+        assert new_session_msg.custom_theme.sidebar.green_color == "green"
+        assert new_session_msg.custom_theme.sidebar.violet_color == "violet"
+        assert new_session_msg.custom_theme.sidebar.gray_color == "gray"
+        assert new_session_msg.custom_theme.sidebar.red_background_color == "#ff8c8c"
+        assert new_session_msg.custom_theme.sidebar.orange_background_color == "#ffd16a"
+        assert new_session_msg.custom_theme.sidebar.yellow_background_color == "#ffff59"
+        assert new_session_msg.custom_theme.sidebar.blue_background_color == "#60b4ff"
+        assert new_session_msg.custom_theme.sidebar.green_background_color == "#5ce488"
+        assert new_session_msg.custom_theme.sidebar.violet_background_color == "#b27eff"
+        assert new_session_msg.custom_theme.sidebar.gray_background_color == "#bfc5d3"
+        assert new_session_msg.custom_theme.sidebar.red_text_color == "#ffabab"
+        assert new_session_msg.custom_theme.sidebar.orange_text_color == "#ffe08e"
+        assert new_session_msg.custom_theme.sidebar.yellow_text_color == "#ffff7d"
+        assert new_session_msg.custom_theme.sidebar.blue_text_color == "#83c9ff"
+        assert new_session_msg.custom_theme.sidebar.green_text_color == "#7defa1"
+        assert new_session_msg.custom_theme.sidebar.violet_text_color == "#c89dff"
+        assert new_session_msg.custom_theme.sidebar.gray_text_color == "#d5dae5"
 
         # Default values for unsupported fields in sidebar
         assert new_session_msg.custom_theme.sidebar.base == 0
         assert not new_session_msg.custom_theme.sidebar.font_faces
         assert not new_session_msg.custom_theme.sidebar.HasField("base_font_size")
+        assert not new_session_msg.custom_theme.sidebar.HasField("base_font_weight")
         assert not new_session_msg.custom_theme.sidebar.HasField("show_sidebar_border")
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_can_specify_light_theme_options(self, patched_config):
+        """Test that theme.light section options are populated correctly."""
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "light": {
+                        "primaryColor": "#ff0000",
+                        "backgroundColor": "#ffffff",
+                        "textColor": "#000000",
+                        "font": "serif",
+                    }
+                }
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(
+            new_session_msg.custom_theme.light, "theme.light"
+        )
+
+        assert new_session_msg.custom_theme.light.primary_color == "#ff0000"
+        assert new_session_msg.custom_theme.light.background_color == "#ffffff"
+        assert new_session_msg.custom_theme.light.text_color == "#000000"
+        assert new_session_msg.custom_theme.light.body_font == "serif"
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_can_specify_dark_theme_options(self, patched_config):
+        """Test that theme.dark section options are populated correctly."""
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "dark": {
+                        "primaryColor": "#00ff00",
+                        "backgroundColor": "#000000",
+                        "textColor": "#ffffff",
+                        "font": "monospace",
+                    }
+                }
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(new_session_msg.custom_theme.dark, "theme.dark")
+
+        assert new_session_msg.custom_theme.dark.primary_color == "#00ff00"
+        assert new_session_msg.custom_theme.dark.background_color == "#000000"
+        assert new_session_msg.custom_theme.dark.text_color == "#ffffff"
+        assert new_session_msg.custom_theme.dark.body_font == "monospace"
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_can_specify_chart_colors_in_theme_sections(self, patched_config):
+        """Chart color options can be set on light, dark, and sidebar sections."""
+        light_colors = ["#111111", "#222222"]
+        dark_colors = ["#333333", "#444444"]
+        sidebar_colors = ["#555555", "#666666"]
+        sequential = [f"#{i:02x}0000" for i in range(10)]
+        diverging = [f"#00{i:02x}00" for i in range(10)]
+
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "light": {
+                        "chartCategoricalColors": light_colors,
+                        "chartSequentialColors": sequential,
+                        "chartDivergingColors": diverging,
+                    },
+                    "dark": {
+                        "chartCategoricalColors": dark_colors,
+                    },
+                    "sidebar": {
+                        "chartCategoricalColors": sidebar_colors,
+                    },
+                }
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(
+            new_session_msg.custom_theme.light, "theme.light"
+        )
+        app_session._populate_theme_msg(new_session_msg.custom_theme.dark, "theme.dark")
+        app_session._populate_theme_msg(
+            new_session_msg.custom_theme.sidebar, "theme.sidebar"
+        )
+
+        assert list(new_session_msg.custom_theme.light.chart_categorical_colors) == (
+            light_colors
+        )
+        assert list(new_session_msg.custom_theme.light.chart_sequential_colors) == (
+            sequential
+        )
+        assert list(new_session_msg.custom_theme.light.chart_diverging_colors) == (
+            diverging
+        )
+        assert list(new_session_msg.custom_theme.dark.chart_categorical_colors) == (
+            dark_colors
+        )
+        assert list(new_session_msg.custom_theme.sidebar.chart_categorical_colors) == (
+            sidebar_colors
+        )
+        # Dark/sidebar did not set sequential/diverging; leave empty for frontend inheritance
+        assert not new_session_msg.custom_theme.dark.chart_sequential_colors
+        assert not new_session_msg.custom_theme.sidebar.chart_diverging_colors
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_can_specify_light_sidebar_theme_options(self, patched_config):
+        """Test that theme.light.sidebar section options are populated correctly."""
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "light": {
+                        "sidebar": {
+                            "primaryColor": "#0000ff",
+                            "backgroundColor": "#f8f9fa",
+                            "textColor": "#212529",
+                            "font": "sans-serif",
+                            "baseRadius": "0.25rem",
+                        }
+                    }
+                }
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(
+            new_session_msg.custom_theme.light.sidebar, "theme.light.sidebar"
+        )
+
+        assert new_session_msg.custom_theme.light.sidebar.primary_color == "#0000ff"
+        assert new_session_msg.custom_theme.light.sidebar.background_color == "#f8f9fa"
+        assert new_session_msg.custom_theme.light.sidebar.text_color == "#212529"
+        assert new_session_msg.custom_theme.light.sidebar.body_font == "sans-serif"
+        assert new_session_msg.custom_theme.light.sidebar.base_radius == "0.25rem"
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_can_specify_dark_sidebar_theme_options(self, patched_config):
+        """Test that theme.dark.sidebar section options are populated correctly."""
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "dark": {
+                        "sidebar": {
+                            "primaryColor": "#ffff00",
+                            "backgroundColor": "#212529",
+                            "textColor": "#f8f9fa",
+                            "font": "monospace",
+                            "baseRadius": "0.5rem",
+                        }
+                    }
+                }
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(
+            new_session_msg.custom_theme.dark.sidebar, "theme.dark.sidebar"
+        )
+
+        assert new_session_msg.custom_theme.dark.sidebar.primary_color == "#ffff00"
+        assert new_session_msg.custom_theme.dark.sidebar.background_color == "#212529"
+        assert new_session_msg.custom_theme.dark.sidebar.text_color == "#f8f9fa"
+        assert new_session_msg.custom_theme.dark.sidebar.body_font == "monospace"
+        assert new_session_msg.custom_theme.dark.sidebar.base_radius == "0.5rem"
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_new_theme_sections_handle_none_values(self, patched_config):
+        """Test that new theme sections handle None values correctly."""
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "light": {
+                        "primaryColor": None,
+                        "backgroundColor": None,
+                        "textColor": None,
+                        "font": None,
+                        "sidebar": {
+                            "primaryColor": None,
+                            "backgroundColor": None,
+                            "textColor": None,
+                            "font": None,
+                        },
+                    },
+                    "dark": {
+                        "primaryColor": None,
+                        "backgroundColor": None,
+                        "textColor": None,
+                        "font": None,
+                        "sidebar": {
+                            "primaryColor": None,
+                            "backgroundColor": None,
+                            "textColor": None,
+                            "font": None,
+                        },
+                    },
+                }
+            )
+        )
+
+        # Test each new section handles None values
+        test_cases = [
+            ("theme.light", lambda msg: msg.custom_theme.light),
+            ("theme.dark", lambda msg: msg.custom_theme.dark),
+            ("theme.light.sidebar", lambda msg: msg.custom_theme.light.sidebar),
+            ("theme.dark.sidebar", lambda msg: msg.custom_theme.dark.sidebar),
+        ]
+
+        for section, theme_obj_getter in test_cases:
+            with self.subTest(section=section):
+                msg = ForwardMsg()
+                new_session_msg = msg.new_session
+                theme_obj = theme_obj_getter(new_session_msg)
+                app_session._populate_theme_msg(theme_obj, section)
+
+                # When values are None, string fields are set to empty string (proto3 behavior)
+                assert theme_obj.primary_color == ""
+                assert theme_obj.background_color == ""
+                assert theme_obj.text_color == ""
+                assert theme_obj.body_font == ""
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_new_theme_sections_support_all_color_options(self, patched_config):
+        """Test that new theme sections support all color palette options."""
+        chart_categorical = ["#111111", "#222222", "#333333"]
+        chart_sequential = [f"#{i:02x}0000" for i in range(10)]
+        chart_diverging = [f"#00{i:02x}00" for i in range(10)]
+        color_overrides = {
+            "redColor": "#ff0000",
+            "orangeColor": "#ffa500",
+            "yellowColor": "#ffff00",
+            "blueColor": "#0000ff",
+            "greenColor": "#00ff00",
+            "violetColor": "#8a2be2",
+            "grayColor": "#808080",
+            "redBackgroundColor": "#ffe6e6",
+            "orangeBackgroundColor": "#fff2e6",
+            "yellowBackgroundColor": "#fffee6",
+            "blueBackgroundColor": "#e6e6ff",
+            "greenBackgroundColor": "#e6ffe6",
+            "violetBackgroundColor": "#f2e6ff",
+            "grayBackgroundColor": "#f5f5f5",
+            "redTextColor": "#ff0000",
+            "orangeTextColor": "#ffa500",
+            "yellowTextColor": "#ffff00",
+            "blueTextColor": "#0000ff",
+            "greenTextColor": "#00ff00",
+            "violetTextColor": "#8a2be2",
+            "grayTextColor": "#808080",
+            "chartCategoricalColors": chart_categorical,
+            "chartSequentialColors": chart_sequential,
+            "chartDivergingColors": chart_diverging,
+        }
+
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {
+                    "light": {
+                        "sidebar": color_overrides,
+                        **color_overrides,
+                    },
+                    "dark": {
+                        "sidebar": color_overrides,
+                        **color_overrides,
+                    },
+                },
+            )
+        )
+
+        # Test that all new sections support the full color palette
+        test_cases = [
+            ("theme.light", lambda msg: msg.custom_theme.light),
+            ("theme.dark", lambda msg: msg.custom_theme.dark),
+            ("theme.light.sidebar", lambda msg: msg.custom_theme.light.sidebar),
+            ("theme.dark.sidebar", lambda msg: msg.custom_theme.dark.sidebar),
+        ]
+
+        for section, theme_obj_getter in test_cases:
+            with self.subTest(section=section):
+                msg = ForwardMsg()
+                new_session_msg = msg.new_session
+                theme_obj = theme_obj_getter(new_session_msg)
+                app_session._populate_theme_msg(theme_obj, section)
+
+                # Verify all color options are populated
+                assert theme_obj.red_color == "#ff0000"
+                assert theme_obj.orange_color == "#ffa500"
+                assert theme_obj.yellow_color == "#ffff00"
+                assert theme_obj.blue_color == "#0000ff"
+                assert theme_obj.green_color == "#00ff00"
+                assert theme_obj.violet_color == "#8a2be2"
+                assert theme_obj.gray_color == "#808080"
+                assert theme_obj.red_background_color == "#ffe6e6"
+                assert theme_obj.orange_background_color == "#fff2e6"
+                assert theme_obj.yellow_background_color == "#fffee6"
+                assert theme_obj.blue_background_color == "#e6e6ff"
+                assert theme_obj.green_background_color == "#e6ffe6"
+                assert theme_obj.violet_background_color == "#f2e6ff"
+                assert theme_obj.gray_background_color == "#f5f5f5"
+                assert theme_obj.red_text_color == "#ff0000"
+                assert theme_obj.orange_text_color == "#ffa500"
+                assert theme_obj.yellow_text_color == "#ffff00"
+                assert theme_obj.blue_text_color == "#0000ff"
+                assert theme_obj.green_text_color == "#00ff00"
+                assert theme_obj.violet_text_color == "#8a2be2"
+                assert theme_obj.gray_text_color == "#808080"
+                assert list(theme_obj.chart_categorical_colors) == chart_categorical
+                assert list(theme_obj.chart_sequential_colors) == chart_sequential
+                assert list(theme_obj.chart_diverging_colors) == chart_diverging
 
     @patch("streamlit.runtime.app_session._LOGGER")
     @patch("streamlit.runtime.app_session.config")
@@ -1359,6 +2576,95 @@ class PopulateCustomThemeMsgTest(unittest.TestCase):
         app_session._populate_theme_msg(new_session_msg.custom_theme)
 
         patched_logger.warning.assert_called_once()
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_handles_populating_font_source_for_font_config(self, patched_config):
+        patched_config.get_options_for_section.side_effect = _mock_get_options_for_section(
+            {
+                "font": "Inter:https://fonts.googleapis.com/css2?family=Inter&display=swap"
+            }
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(new_session_msg.custom_theme)
+
+        # Font name is added to the body_font field
+        assert new_session_msg.custom_theme.body_font == "Inter"
+
+        # Font source is added to the font_sources field
+        assert list(new_session_msg.custom_theme.font_sources) == [
+            FontSource(
+                config_name="font",
+                source_url="https://fonts.googleapis.com/css2?family=Inter&display=swap",
+            )
+        ]
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_handles_populating_font_source_for_code_font_config(self, patched_config):
+        patched_config.get_options_for_section.side_effect = _mock_get_options_for_section(
+            {
+                "codeFont": "Tagesschrift:https://fonts.googleapis.com/css2?family=Tagesschrift&display=swap"
+            }
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(new_session_msg.custom_theme)
+
+        # Font name is added to the code_font field
+        assert new_session_msg.custom_theme.code_font == "Tagesschrift"
+
+        # Font source is added to the font_sources field
+        assert list(new_session_msg.custom_theme.font_sources) == [
+            FontSource(
+                config_name="codeFont",
+                source_url="https://fonts.googleapis.com/css2?family=Tagesschrift&display=swap",
+            )
+        ]
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_handles_populating_font_source_for_heading_font_config(
+        self, patched_config
+    ):
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(
+                {"headingFont": "playwrite-cc-za:https://use.typekit.net/eor5wum.css"}
+            )
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        app_session._populate_theme_msg(new_session_msg.custom_theme)
+
+        # Font name is added to the heading_font field
+        assert new_session_msg.custom_theme.heading_font == "playwrite-cc-za"
+
+        # Font source is added to the font_sources field
+        assert list(new_session_msg.custom_theme.font_sources) == [
+            FontSource(
+                config_name="headingFont",
+                source_url="https://use.typekit.net/eor5wum.css",
+            )
+        ]
+
+    @patch("streamlit.runtime.app_session.config")
+    def test_raises_exception_if_source_contains_multiple_fonts(self, patched_config):
+        patched_config.get_options_for_section.side_effect = _mock_get_options_for_section(
+            {
+                "font": "Inter:https://fonts.googleapis.com/css2?family=Inter&family=Inter+Bold&display=swap"
+            }
+        )
+
+        msg = ForwardMsg()
+        new_session_msg = msg.new_session
+        with pytest.raises(StreamlitAPIException) as ctx:
+            app_session._populate_theme_msg(new_session_msg.custom_theme)
+
+        assert (
+            "The source URL specified in the font property of config.toml contains multiple fonts."
+            in str(ctx.value)
+        )
 
 
 @patch.object(
@@ -1389,3 +2695,731 @@ class ShouldRerunOnFileChangeTest(unittest.TestCase):
         session._client_state.page_script_hash = "hash2"
 
         assert not session._should_rerun_on_file_change("page1.py")
+
+
+class BackendOperationRequestTest(unittest.TestCase):
+    """Tests for backend operation request handling in AppSession."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.session = _create_test_session(session_id_override="session-id")
+
+    def _create_request(
+        self, *, session_id: str = "session-id"
+    ) -> BackendOperationRequest:
+        from streamlit.proto.BackMsg_pb2 import BackendOperationRequest
+
+        request = BackendOperationRequest()
+        request.request_id = "request-id"
+        request.session_id = session_id
+        request.deferred_file.file_id = "file-id"
+        return request
+
+    def test_handle_backend_operation_request_dispatches_valid_session(self) -> None:
+        """Test that matching session IDs are dispatched."""
+        from streamlit.proto.ForwardMsg_pb2 import (
+            BackendOperationResponse,
+            DeferredFileResponsePayload,
+        )
+
+        request = self._create_request()
+        response = BackendOperationResponse(
+            request_id="request-id",
+            deferred_file=DeferredFileResponsePayload(url="/media/generated"),
+        )
+        mock_dispatch = AsyncMock(return_value=response)
+
+        with patch.object(
+            self.session._backend_operation_dispatcher,
+            "dispatch",
+            mock_dispatch,
+        ):
+            asyncio.run(self.session._handle_backend_operation_request(request))
+
+        mock_dispatch.assert_awaited_once_with(request, "session-id")
+        msg = self.session._browser_queue._queue[-1]
+        assert msg.HasField("backend_operation_response")
+        assert msg.backend_operation_response.request_id == "request-id"
+        assert msg.backend_operation_response.deferred_file.url == "/media/generated"
+        assert msg.backend_operation_response.error_msg == ""
+
+    def test_handle_backend_operation_request_rejects_invalid_session(self) -> None:
+        """Test that mismatched session IDs are rejected before dispatch."""
+        request = self._create_request(session_id="other-session")
+        mock_dispatch = AsyncMock()
+
+        with patch.object(
+            self.session._backend_operation_dispatcher,
+            "dispatch",
+            mock_dispatch,
+        ):
+            asyncio.run(self.session._handle_backend_operation_request(request))
+
+        mock_dispatch.assert_not_awaited()
+        msg = self.session._browser_queue._queue[-1]
+        assert msg.HasField("backend_operation_response")
+        assert msg.backend_operation_response.request_id == "request-id"
+        assert (
+            msg.backend_operation_response.error_msg
+            == "Invalid session ID for backend operation request"
+        )
+        assert not msg.backend_operation_response.HasField("deferred_file")
+
+    def test_handle_backmsg_routes_backend_operation_request(self) -> None:
+        """Test that handle_backmsg routes backend_operation_request."""
+
+        async def mock_async_handler(_request: BackendOperationRequest) -> None:
+            pass
+
+        msg = BackMsg()
+        msg.backend_operation_request.request_id = "request-id"
+        msg.backend_operation_request.session_id = self.session.id
+        msg.backend_operation_request.deferred_file.file_id = "file-id"
+
+        with (
+            patch.object(
+                self.session,
+                "_handle_backend_operation_request",
+                side_effect=mock_async_handler,
+            ),
+            patch(
+                "streamlit.runtime.app_session.asyncio.create_task"
+            ) as mock_create_task,
+        ):
+            self.session.handle_backmsg(msg)
+
+        mock_create_task.assert_called_once()
+        created_coroutine = mock_create_task.call_args[0][0]
+        assert asyncio.iscoroutine(created_coroutine)
+        created_coroutine.close()
+        mock_create_task.return_value.set_name.assert_called_once_with(
+            "backend_op_request-id"
+        )
+
+
+class GetShowErrorLinksTest(unittest.TestCase):
+    @patch_config_options({"client.showErrorLinks": "auto"})
+    def test_auto(self):
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        assert _get_show_error_links() == Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO
+
+    @patch_config_options({"client.showErrorLinks": "true"})
+    def test_true(self):
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        assert _get_show_error_links() == Config.ShowErrorLinks.SHOW_ERROR_LINKS_TRUE
+
+    @patch_config_options({"client.showErrorLinks": "false"})
+    def test_false(self):
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        assert _get_show_error_links() == Config.ShowErrorLinks.SHOW_ERROR_LINKS_FALSE
+
+    @patch_config_options({"client.showErrorLinks": True})
+    def test_bool_true(self):
+        """Test that boolean True is handled correctly."""
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        assert _get_show_error_links() == Config.ShowErrorLinks.SHOW_ERROR_LINKS_TRUE
+
+    @patch_config_options({"client.showErrorLinks": False})
+    def test_bool_false(self):
+        """Test that boolean False is handled correctly."""
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        assert _get_show_error_links() == Config.ShowErrorLinks.SHOW_ERROR_LINKS_FALSE
+
+    @patch_config_options({"client.showErrorLinks": "invalid"})
+    def test_invalid_raises(self):
+        from streamlit.runtime.app_session import _get_show_error_links
+
+        with pytest.raises(ValueError, match="auto, true, false"):
+            _get_show_error_links()
+
+
+def test_create_new_session_message_recommends_skills_install() -> None:
+    """The new-session Initialize carries the skills-nudge recommendation,
+    computed from the directory of the app's main script (the same key the
+    page-profile telemetry uses, so both share the cached detection). Recommend
+    only when the browser is on a direct-loopback connection."""
+    session = _create_test_session()
+
+    with (
+        patch(
+            "streamlit.web.skills.nudge_suppression_reason", return_value=""
+        ) as mock_reason,
+        patch(
+            "streamlit.runtime.backend_operation_handler.connection_locality",
+            return_value="loopback",
+        ),
+    ):
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is True
+    # No suppression telemetry when the nudge is actually recommended.
+    assert msg.new_session.initialize.skills_nudge_suppressed_reason == ""
+    mock_reason.assert_called_once_with("/fake")
+
+
+def test_create_new_session_message_skips_skills_install_when_not_recommended() -> None:
+    """When detection declines, the recommendation flag stays False so the
+    frontend does not show the nudge."""
+    session = _create_test_session()
+
+    with patch(
+        "streamlit.web.skills.nudge_suppression_reason", return_value="installed"
+    ):
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is False
+    # "installed" is an uninteresting reason, so it is not reported.
+    assert msg.new_session.initialize.skills_nudge_suppressed_reason == ""
+
+
+def test_create_new_session_message_suppresses_nudge_on_non_loopback() -> None:
+    """An otherwise-eligible nudge is NOT recommended when the browser is not on
+    a direct-loopback connection (Docker/VM/tunnel). The connection class is
+    surfaced for telemetry instead, so we can measure the excluded audience."""
+    session = _create_test_session()
+
+    with (
+        patch("streamlit.web.skills.nudge_suppression_reason", return_value=""),
+        patch(
+            "streamlit.runtime.backend_operation_handler.connection_locality",
+            return_value="private",
+        ),
+    ):
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is False
+    assert (
+        msg.new_session.initialize.skills_nudge_suppressed_reason
+        == "non_loopback_private"
+    )
+
+
+@pytest.mark.parametrize("reason", ["conflict", "check_failed", "check_unreadable"])
+def test_create_new_session_message_reports_informative_suppression(
+    reason: str,
+) -> None:
+    """A withheld nudge that tells us something actionable is reported, so
+    suppression is measurable rather than silent. ``conflict`` shares the
+    install-failure reason name for the same cause, so "we withheld the nudge"
+    and "we nudged and the install conflicted anyway" compare in one query."""
+    session = _create_test_session()
+
+    with patch("streamlit.web.skills.nudge_suppression_reason", return_value=reason):
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is False
+    assert msg.new_session.initialize.skills_nudge_suppressed_reason == reason
+
+
+@pytest.mark.parametrize(
+    "reason", ["headless", "welcome_hidden", "dismissed", "no_agent", "installed"]
+)
+def test_create_new_session_message_drops_high_volume_suppression(
+    reason: str,
+) -> None:
+    """The uninteresting reasons are deliberately NOT reported. ``headless``
+    especially: it fires for every deployed app, so reporting it would swamp the
+    metric with sessions that were never nudge candidates."""
+    session = _create_test_session()
+
+    with patch("streamlit.web.skills.nudge_suppression_reason", return_value=reason):
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is False
+    assert msg.new_session.initialize.skills_nudge_suppressed_reason == ""
+
+
+def test_create_new_session_message_recomputes_skills_recommendation() -> None:
+    """The skills-nudge recommendation is recomputed on each NewSession, not
+    memoized for the session's lifetime.
+
+    The heavy filesystem detection is cached in ``skills`` (and that cache is
+    invalidated when skills are installed in-app), so recomputing here is cheap
+    and lets a later NewSession reflect a post-install change instead of a stale
+    "recommend" value.
+    """
+    session = _create_test_session()
+
+    with (
+        patch(
+            "streamlit.web.skills.nudge_suppression_reason",
+            side_effect=["", "installed"],
+        ) as mock_reason,
+        patch(
+            "streamlit.runtime.backend_operation_handler.connection_locality",
+            return_value="loopback",
+        ),
+    ):
+        first = session._create_new_session_message(page_script_hash="")
+        second = session._create_new_session_message(page_script_hash="")
+
+    assert mock_reason.call_count == 2
+    assert first.new_session.initialize.recommend_skills_install is True
+    # The second NewSession reflects the updated detection (e.g. post-install),
+    # not a stale memoized True.
+    assert second.new_session.initialize.recommend_skills_install is False
+
+
+def test_create_new_session_message_skips_skills_install_for_hello_app() -> None:
+    """The skills nudge is never recommended for the bundled ``streamlit hello``
+    demo: its script lives inside the Streamlit package, so a one-click install
+    would write into the install tree. The recommendation short-circuits on
+    ``is_hello`` before the detection is consulted."""
+    session = _create_test_session(is_hello=True)
+
+    with patch(
+        "streamlit.web.skills.nudge_suppression_reason", return_value=""
+    ) as mock_reason:
+        msg = session._create_new_session_message(page_script_hash="")
+
+    assert msg.new_session.initialize.recommend_skills_install is False
+    # Short-circuited on is_hello before the (would-recommend) detection ran.
+    mock_reason.assert_not_called()
+
+
+# ---- Tests for _handle_git_information_request ----
+
+
+@patch("streamlit.git_util.GitRepo")
+def test_handle_git_information_request_no_repo_info(mock_git_repo: MagicMock) -> None:
+    """No ForwardMsg is enqueued when the repo info cannot be determined."""
+    mock_git_repo.return_value.get_repo_info.return_value = None
+    session = _create_test_session()
+
+    with patch.object(session, "_enqueue_forward_msg") as enqueue_mock:
+        session._handle_git_information_request()
+
+    enqueue_mock.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("is_head_detached", "ahead_commits", "expected_state"),
+    [
+        (True, [], GitInfo.GitStates.HEAD_DETACHED),
+        (False, ["abc123"], GitInfo.GitStates.AHEAD_OF_REMOTE),
+        (False, [], GitInfo.GitStates.DEFAULT),
+    ],
+)
+@patch("streamlit.git_util.GitRepo")
+def test_handle_git_information_request_populates_message(
+    mock_git_repo: MagicMock,
+    is_head_detached: bool,
+    ahead_commits: list[str],
+    expected_state: GitInfo.GitStates.ValueType,
+) -> None:
+    """Git metadata and repository state are populated into the enqueued ForwardMsg."""
+    repo = mock_git_repo.return_value
+    repo.get_repo_info.return_value = ("streamlit/streamlit.git", "develop", "app.py")
+    repo.untracked_files = ["untracked.py"]
+    repo.uncommitted_files = ["uncommitted.py"]
+    repo.is_head_detached = is_head_detached
+    repo.ahead_commits = ahead_commits
+
+    session = _create_test_session()
+    with patch.object(session, "_enqueue_forward_msg") as enqueue_mock:
+        session._handle_git_information_request()
+
+    enqueue_mock.assert_called_once()
+    git_info = enqueue_mock.call_args[0][0].git_info_changed
+    # The ".git" suffix is stripped from the repository name.
+    assert git_info.repository == "streamlit/streamlit"
+    assert git_info.branch == "develop"
+    assert git_info.module == "app.py"
+    assert list(git_info.untracked_files) == ["untracked.py"]
+    assert list(git_info.uncommitted_files) == ["uncommitted.py"]
+    assert git_info.state == expected_state
+
+
+@patch("streamlit.git_util.GitRepo")
+def test_handle_git_information_request_swallows_errors(
+    mock_git_repo: MagicMock,
+) -> None:
+    """Errors while gathering git info are swallowed and nothing is enqueued."""
+    mock_git_repo.side_effect = Exception("git is not installed")
+    session = _create_test_session()
+
+    with patch.object(session, "_enqueue_forward_msg") as enqueue_mock:
+        session._handle_git_information_request()
+
+    enqueue_mock.assert_not_called()
+
+
+# ---- Tests for _populate_theme_msg parsing of stringified / edge-case configs ----
+
+
+def _populate_theme_with_overrides(
+    overrides: dict[str, Any],
+) -> CustomThemeConfig:
+    """Run _populate_theme_msg with mocked config overrides and return the theme msg."""
+    with patch("streamlit.runtime.app_session.config") as patched_config:
+        patched_config.get_options_for_section.side_effect = (
+            _mock_get_options_for_section(overrides)
+        )
+        msg = ForwardMsg()
+        app_session._populate_theme_msg(msg.new_session.custom_theme)
+        return msg.new_session.custom_theme
+
+
+@pytest.mark.parametrize(
+    ("config_key", "theme_attr"),
+    [
+        ("chartCategoricalColors", "chart_categorical_colors"),
+        ("fontFaces", "font_faces"),
+        ("headingFontSizes", "heading_font_sizes"),
+        ("headingFontWeights", "heading_font_weights"),
+    ],
+    ids=["chart_colors", "font_faces", "heading_font_sizes", "heading_font_weights"],
+)
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_ignores_invalid_json(
+    patched_logger: MagicMock, config_key: str, theme_attr: str
+) -> None:
+    """An invalid JSON string for a list-valued theme option is skipped with a warning."""
+    theme = _populate_theme_with_overrides({config_key: "not-valid-json"})
+    assert not getattr(theme, theme_attr)
+    patched_logger.warning.assert_called_once()
+
+
+def test_populate_theme_msg_parses_chart_colors_from_json_string() -> None:
+    """Chart colors provided as a JSON string (e.g. via env var) are parsed."""
+    theme = _populate_theme_with_overrides(
+        {"chartCategoricalColors": '["#111111", "#222222"]'}
+    )
+    assert list(theme.chart_categorical_colors) == ["#111111", "#222222"]
+
+
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_rejects_chart_colors_with_wrong_length(
+    patched_logger: MagicMock,
+) -> None:
+    """Sequential chart colors with the wrong number of values are rejected."""
+    # chartSequentialColors requires exactly 10 values.
+    theme = _populate_theme_with_overrides(
+        {"chartSequentialColors": ["#111111", "#222222"]}
+    )
+    assert not theme.chart_sequential_colors
+    patched_logger.error.assert_called_once()
+
+
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_skips_invalid_chart_color_value(
+    patched_logger: MagicMock,
+) -> None:
+    """A chart color value that cannot be appended is skipped with a warning."""
+    theme = _populate_theme_with_overrides(
+        {"chartCategoricalColors": ["#123456", 12345]}
+    )
+    assert list(theme.chart_categorical_colors) == ["#123456"]
+    patched_logger.warning.assert_called_once()
+
+
+def test_populate_theme_msg_parses_font_faces_from_json_string() -> None:
+    """fontFaces provided as a JSON string are parsed into FontFace protos."""
+    theme = _populate_theme_with_overrides(
+        {"fontFaces": '[{"family": "Foo", "url": "https://example.com/foo.woff2"}]'}
+    )
+    assert list(theme.font_faces) == [
+        FontFace(family="Foo", url="https://example.com/foo.woff2")
+    ]
+
+
+def test_populate_theme_msg_handles_legacy_font_face_weight() -> None:
+    """Legacy 'weight' keys are migrated to 'weight_range' and stringified."""
+    theme = _populate_theme_with_overrides(
+        {
+            "fontFaces": [
+                {"family": "A", "url": "https://x/a.woff2", "weight": 700},
+                {"family": "B", "url": "https://x/b.woff2", "weight_range": 400},
+                {
+                    "family": "C",
+                    "url": "https://x/c.woff2",
+                    "weight": 300,
+                    "weight_range": "500",
+                },
+            ]
+        }
+    )
+    assert list(theme.font_faces) == [
+        FontFace(family="A", url="https://x/a.woff2", weight_range="700"),
+        FontFace(family="B", url="https://x/b.woff2", weight_range="400"),
+        # When both keys are present, the existing weight_range wins.
+        FontFace(family="C", url="https://x/c.woff2", weight_range="500"),
+    ]
+
+
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_skips_invalid_font_face_entry(
+    patched_logger: MagicMock,
+) -> None:
+    """A font face entry that cannot be parsed is skipped with a warning."""
+    theme = _populate_theme_with_overrides({"fontFaces": ["not-a-dict"]})
+    assert not theme.font_faces
+    patched_logger.warning.assert_called_once()
+
+
+def test_populate_theme_msg_expands_single_heading_font_size() -> None:
+    """A single rem/px headingFontSizes value is applied to all six headings."""
+    theme = _populate_theme_with_overrides({"headingFontSizes": "2rem"})
+    assert list(theme.heading_font_sizes) == ["2rem"] * 6
+
+
+def test_populate_theme_msg_parses_heading_font_sizes_json_string() -> None:
+    """headingFontSizes provided as a JSON list string are parsed."""
+    theme = _populate_theme_with_overrides(
+        {"headingFontSizes": '["1rem", "2rem", "3rem"]'}
+    )
+    assert list(theme.heading_font_sizes) == ["1rem", "2rem", "3rem"]
+
+
+@pytest.mark.parametrize(
+    "value", [[], ["1rem", "2rem", "3rem", "4rem", "5rem", "6rem", "7rem"]]
+)
+def test_populate_theme_msg_rejects_invalid_heading_font_sizes_length(
+    value: list[str],
+) -> None:
+    """headingFontSizes must have between 1 and 6 values."""
+    with pytest.raises(ValueError, match="headingFontSizes should have 1-6 values"):
+        _populate_theme_with_overrides({"headingFontSizes": value})
+
+
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_skips_invalid_heading_font_size_value(
+    patched_logger: MagicMock,
+) -> None:
+    """A heading font size value that cannot be appended is skipped with a warning."""
+    theme = _populate_theme_with_overrides({"headingFontSizes": [123]})
+    assert not theme.heading_font_sizes
+    patched_logger.warning.assert_called_once()
+
+
+def test_populate_theme_msg_parses_heading_font_weights_json_string() -> None:
+    """headingFontWeights provided as a JSON list string are parsed and padded."""
+    theme = _populate_theme_with_overrides({"headingFontWeights": "[700, 600]"})
+    assert list(theme.heading_font_weights) == [700, 600, 600, 600, 600, 600]
+
+
+def test_populate_theme_msg_expands_single_heading_font_weight() -> None:
+    """A single integer headingFontWeights value is applied to all six headings."""
+    theme = _populate_theme_with_overrides({"headingFontWeights": 500})
+    assert list(theme.heading_font_weights) == [500] * 6
+
+
+@pytest.mark.parametrize("value", [[], [700, 700, 700, 700, 700, 700, 700]])
+def test_populate_theme_msg_rejects_invalid_heading_font_weights_length(
+    value: list[int],
+) -> None:
+    """headingFontWeights must have between 1 and 6 values."""
+    with pytest.raises(ValueError, match="headingFontWeights should have 1-6 values"):
+        _populate_theme_with_overrides({"headingFontWeights": value})
+
+
+@patch("streamlit.runtime.app_session._LOGGER")
+def test_populate_theme_msg_skips_invalid_heading_font_weight_value(
+    patched_logger: MagicMock,
+) -> None:
+    """A heading font weight value that cannot be appended is skipped with a warning."""
+    theme = _populate_theme_with_overrides({"headingFontWeights": ["bad"]})
+    # The invalid first value is skipped; the remaining slots use the 600 default.
+    assert list(theme.heading_font_weights) == [600, 600, 600, 600, 600]
+    patched_logger.warning.assert_called_once()
+
+
+# ---- Tests for _handle_set_run_on_save_request and _populate_config_msg ----
+
+
+@pytest.mark.parametrize("new_value", [True, False])
+def test_handle_set_run_on_save_request_updates_flag(new_value: bool) -> None:
+    """Setting run_on_save updates the flag and notifies the browser."""
+    session = _create_test_session()
+    with patch.object(session, "_enqueue_forward_msg") as enqueue_mock:
+        session._handle_set_run_on_save_request(new_value)
+
+    assert session._run_on_save is new_value
+    enqueue_mock.assert_called_once()
+    msg = enqueue_mock.call_args[0][0]
+    assert msg.session_status_changed.run_on_save is new_value
+
+
+@pytest.mark.parametrize(
+    ("show_sidebar_navigation", "expected_hide_sidebar_nav"),
+    [(False, True), (True, False)],
+    ids=["hidden", "visible"],
+)
+def test_populate_config_msg_sidebar_navigation(
+    show_sidebar_navigation: bool, expected_hide_sidebar_nav: bool
+) -> None:
+    """hide_sidebar_nav is set only when client.showSidebarNavigation is disabled."""
+    with patch_config_options(
+        {"client.showSidebarNavigation": show_sidebar_navigation}
+    ):
+        msg = Config()
+        app_session._populate_config_msg(msg)
+
+    assert msg.hide_sidebar_nav is expected_hide_sidebar_nav
+
+
+@pytest.mark.parametrize("disable_data_export", [True, False])
+def test_populate_config_msg_disable_data_export(disable_data_export: bool) -> None:
+    """disable_data_export mirrors client.disableDataExport."""
+    with patch_config_options({"client.disableDataExport": disable_data_export}):
+        msg = Config()
+        app_session._populate_config_msg(msg)
+
+    assert msg.disable_data_export is disable_data_export
+
+
+# ---- Tests for handle_backmsg dispatch and small handlers ----
+
+
+@pytest.mark.parametrize(
+    ("field", "handler_name"),
+    [
+        ("load_git_info", "_handle_git_information_request"),
+        ("set_run_on_save", "_handle_set_run_on_save_request"),
+        ("stop_script", "_handle_stop_script_request"),
+    ],
+)
+def test_handle_backmsg_dispatches_bool_requests(field: str, handler_name: str) -> None:
+    """Test that handle_backmsg routes each boolean BackMsg to its handler."""
+    session = _create_test_session()
+    msg = BackMsg()
+    setattr(msg, field, True)
+
+    with patch.object(session, handler_name) as handler:
+        session.handle_backmsg(msg)
+
+    handler.assert_called_once()
+
+
+def test_handle_backmsg_dispatches_file_urls_request() -> None:
+    """Test that handle_backmsg routes a file_urls_request to its handler."""
+    session = _create_test_session()
+    msg = BackMsg()
+    msg.file_urls_request.request_id = "some_request_id"
+
+    with patch.object(session, "_handle_file_urls_request") as handler:
+        session.handle_backmsg(msg)
+
+    handler.assert_called_once()
+
+
+def test_handle_backmsg_unknown_type_logs_warning() -> None:
+    """Test that an unrecognized BackMsg type logs a warning instead of raising."""
+    session = _create_test_session()
+
+    with patch.object(app_session, "_LOGGER") as patched_logger:
+        # An empty BackMsg has no oneof "type" set, so no handler matches.
+        session.handle_backmsg(BackMsg())
+
+    patched_logger.warning.assert_called_once()
+
+
+def test_handle_stop_script_request_forwards_to_scriptrunner() -> None:
+    """Test that _handle_stop_script_request delegates to request_script_stop."""
+    session = _create_test_session()
+
+    with patch.object(session, "request_script_stop") as request_stop:
+        session._handle_stop_script_request()
+
+    request_stop.assert_called_once()
+
+
+def test_request_rerun_after_shutdown_is_discarded() -> None:
+    """Test that a rerun request is ignored once shutdown has been requested."""
+    session = _create_test_session()
+    session._state = AppSessionState.SHUTDOWN_REQUESTED
+
+    with patch.object(session, "_create_scriptrunner") as create_scriptrunner:
+        session.request_rerun(None)
+
+    create_scriptrunner.assert_not_called()
+
+
+def test_clear_user_info_empties_user_info() -> None:
+    """Test that clear_user_info removes all stored user info."""
+    session = _create_test_session()
+    assert session._user_info != {}
+
+    session.clear_user_info()
+
+    assert session._user_info == {}
+
+
+def test_on_secrets_file_changed_triggers_source_change() -> None:
+    """Test that a secrets file change is handled like a source file change."""
+    session = _create_test_session()
+
+    with patch.object(session, "_on_source_file_changed") as on_source_changed:
+        session._on_secrets_file_changed(None)
+
+    on_source_changed.assert_called_once_with()
+
+
+def test_create_file_change_message_marks_script_changed() -> None:
+    """Test that _create_file_change_message flags a script change on disk."""
+    session = _create_test_session()
+
+    msg = session._create_file_change_message()
+
+    assert msg.session_event.script_changed_on_disk is True
+
+
+async def _run_close_from_running_loop(loop: asyncio.AbstractEventLoop) -> bool:
+    _close_script_event_loop(loop)
+    return loop.is_closed()
+
+
+def test_close_script_event_loop_while_runtime_loop_is_running() -> None:
+    """_close_script_event_loop closes the loop even when called from within
+    a running asyncio event loop, without raising RuntimeError."""
+    script_loop = asyncio.new_event_loop()
+
+    runtime_loop = asyncio.new_event_loop()
+    try:
+        closed = runtime_loop.run_until_complete(
+            _run_close_from_running_loop(script_loop)
+        )
+    finally:
+        runtime_loop.close()
+
+    assert closed, "script_loop must be closed after _close_script_event_loop"
+
+
+def test_close_script_event_loop_propagates_unrelated_runtime_error() -> None:
+    """Best-effort closure does not hide RuntimeErrors from a stopped loop."""
+    script_loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    script_loop.is_closed.return_value = False
+    script_loop.is_running.return_value = False
+    script_loop.close.side_effect = RuntimeError("unrelated close failure")
+
+    with (
+        patch("streamlit.runtime.app_session.asyncio.all_tasks", return_value=set()),
+        patch(
+            "streamlit.runtime.app_session.asyncio.get_running_loop",
+            return_value=MagicMock(spec=asyncio.AbstractEventLoop),
+        ),
+        pytest.raises(RuntimeError, match="unrelated close failure"),
+    ):
+        _close_script_event_loop(script_loop)
+
+
+def test_close_script_event_loop_cancels_pending_tasks() -> None:
+    """When no other loop is running on this thread, pending tasks are cancelled
+    and drained before the script loop is closed."""
+    script_loop = asyncio.new_event_loop()
+
+    async def _linger() -> None:
+        await asyncio.sleep(3600)
+
+    task = script_loop.create_task(_linger())
+
+    _close_script_event_loop(script_loop)
+
+    assert script_loop.is_closed()
+    assert task.done()
+    assert task.cancelled() or isinstance(task.exception(), asyncio.CancelledError)

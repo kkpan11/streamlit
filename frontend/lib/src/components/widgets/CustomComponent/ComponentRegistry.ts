@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,15 @@
  */
 import { getLogger } from "loglevel"
 
-import { isNullOrUndefined } from "~lib/util/utils"
 import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { isNullOrUndefined } from "~lib/util/utils"
 
+import type { IframeMessage } from "./componentUtils"
 import { ComponentMessageType } from "./enums"
 
-export type ComponentMessageListener = (
+type ComponentMessageListener = (
   type: ComponentMessageType,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  data: any
+  data: IframeMessage
 ) => void
 
 const LOG = getLogger("ComponentRegistry")
@@ -98,7 +98,15 @@ export class ComponentRegistry {
     return this.endpoints.buildComponentURL(componentName, path)
   }
 
-  private onMessageEvent = (event: MessageEvent): void => {
+  /** Return a URL for fetching a resource for the given bidirectional component. */
+  public getBidiComponentURL = (
+    componentName: string,
+    path: string
+  ): string => {
+    return this.endpoints.buildBidiComponentURL(componentName, path)
+  }
+
+  private readonly onMessageEvent = (event: MessageEvent): void => {
     if (
       isNullOrUndefined(event.data) ||
       !Object.hasOwn(event.data, "isStreamlitMessage")

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,25 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import io
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 from PIL import Image, ImageDraw
 
 import streamlit as st
 
-if TYPE_CHECKING:
-    import numpy.typing as npt
-
-
-# Construct test assets path relative to this script file to
+# Construct static path relative to this script file to
 # allow its execution with different working directories.
-TEST_ASSETS_DIR = Path(__file__).parent / "test_assets"
+STATIC_DIR = Path(__file__).parent / "static"
 
-img = np.repeat(0, 10000).reshape(100, 100)
-img800 = np.repeat(0, 640000).reshape(800, 800)
+img: npt.NDArray[np.int64] = np.repeat(0, 10000).reshape(100, 100)
+img800: npt.NDArray[np.int64] = np.repeat(0, 640000).reshape(800, 800)
 
 
 st.header("Images from numpy arrays")
@@ -41,7 +40,7 @@ st.image(img, caption="Black Square as PNG.", output_format="PNG", width=100)
 
 st.image(img, caption="Black Square with no output format specified.", width=100)
 
-transparent_img: "npt.NDArray[Any]" = np.zeros((100, 100, 4), dtype=np.uint8)
+transparent_img: npt.NDArray[Any] = np.zeros((100, 100, 4), dtype=np.uint8)
 st.image(transparent_img, caption="Transparent Black Square.", width=100)
 
 st.header("GIF images")
@@ -176,7 +175,7 @@ st.image(SVG_GREEN_SQUARE_VIEWBOX_ONLY)
 
 st.header("Image from file (str and Path)")
 
-CAT_IMAGE = TEST_ASSETS_DIR / "cat.jpg"
+CAT_IMAGE = STATIC_DIR / "test-cat.jpg"
 st.image(str(CAT_IMAGE), caption="Image from jpg file (str).", width=200)
 st.image(CAT_IMAGE, caption="Image from jpg file (Path).", width=200)
 
@@ -186,18 +185,6 @@ red_image = Image.new("RGB", (100, 100), color="red")
 red_bgr_img = np.array(red_image)[..., ["BGR".index(s) for s in "RGB"]]
 st.image(red_bgr_img, caption="BGR channel (red).", channels="BGR", width=100)
 st.image(red_bgr_img, caption="RGB channel (blue).", channels="RGB", width=100)
-
-st.header("use_column_width parameter (deprecated)")
-
-col1, col2, col3, col4 = st.columns(4)
-col1.image(img)  # 100 px
-col1.image(img, use_column_width="auto")  # 100 px
-col1.image(img, use_column_width="never")  # 100 px
-col1.image(img, use_column_width=False)  # 100 px
-
-col2.image(img, use_column_width="always")  # column width
-col2.image(img, use_column_width=True)  # column width
-col2.image(img800, use_column_width="auto")  # column width
 
 st.header("List of images")
 
@@ -210,37 +197,35 @@ st.image(
     caption=[f"Image list {i}" for i in range(3)],
 )
 
-st.header("use_container_width parameter")
+st.header("use_container_width parameter (deprecated)")
 
+with st.container(key="use_container_width"):
+    col5, col6, col7, col8 = st.columns(4)
 
-col5, col6, col7, col8 = st.columns(4)
+    # Full container width, since use_container_width is explicitly set to True
+    col5.image(img, use_container_width=True, width=50)
+    # Full container width
+    col5.image(img, use_container_width=True)
+    # Full container width, since 1000 would overflow the container
+    col5.image(
+        img800,
+        width=1000,
+    )
 
+    # Full container width, since 800 would overflow the container
+    col6.image(img800)
+    # Full container width, since 800 would overflow the container
+    col6.image(img800, use_container_width=True)
+    # Full container width, since 800 would overflow the container
+    col6.image(img800, use_container_width=False)
 
-# Full container width, since use_container_width is explicitly set to True
-col5.image(img, use_container_width=True, width=50)
-# Full container width
-col5.image(img, use_container_width=True)
-# Full container width, since 1000 would overflow the container
-col5.image(
-    img800,
-    width=1000,
-)
-
-# Full container width, since 800 would overflow the container
-col6.image(img800)
-# Full container width, since 800 would overflow the container
-col6.image(img800, use_container_width=True)
-# Full container width, since 800 would overflow the container
-col6.image(img800, use_container_width=False)
-
-
-col7.image(img)  # 100 px
-# 100 px since that is the width of the image, and it does not exceed the container width
-col7.image(img, use_container_width=False)
-# 50 px since the width parameter is given
-col7.image(img, width=50)
-# 50 px since the width parameter is given, and use_container_width is not True
-col7.image(img, use_container_width=False, width=50)
+    col7.image(img)  # 100 px
+    # 100 px since that is the width of the image, and it does not exceed the container width
+    col7.image(img, use_container_width=False)
+    # 50 px since the width parameter is given
+    col7.image(img, width=50)
+    # 50 px since the width parameter is given, and use_container_width is not True
+    col7.image(img, use_container_width=False, width=50)
 
 
 st.image(
@@ -251,4 +236,32 @@ st.image(
 
 st.container(key="image_with_markdown_caption").image(
     img, caption="-> :material/check: :rainbow[Fancy] _**markdown** `label` _support_"
+)
+
+st.header("width parameter")
+
+# Content width (default) - image's native width, up to container width
+st.image(img, width="content", caption="Small image with width='content' (default)")
+st.image(img800, width="content", caption="Large image with width='content'")
+
+# Stretch width - full container width
+st.image(img, width="stretch", caption="Small image with width='stretch'")
+st.image(img800, width="stretch", caption="Large image with width='stretch'")
+
+st.header("link parameter")
+
+st.image(
+    img,
+    width=100,
+    caption="Image with link.",
+    link="https://streamlit.io",
+)
+
+# Image with a dangerous javascript: link. The frontend must neutralize this to
+# "#" to prevent XSS when the link is clicked.
+st.image(
+    img,
+    width=100,
+    caption="Image with dangerous link.",
+    link="javascript:alert('xss')",
 )

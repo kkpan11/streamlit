@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,7 @@
  * limitations under the License.
  */
 
-import {
-  MutableRefObject,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react"
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-export const usePrevious = (value: any): any => {
-  const ref = useRef()
-
-  useEffect(() => {
-    ref.current = value
-  }, [value])
-
-  return ref.current
-}
+import { MutableRefObject, useCallback, useEffect, useState } from "react"
 
 export const useIsOverflowing = (
   ref: MutableRefObject<HTMLElement | null>,
@@ -41,6 +24,7 @@ export const useIsOverflowing = (
   const [isOverflowing, setIsOverflowing] = useState(false)
   const checkOverflowing = useCallback(() => {
     if (current) {
+      // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
       const { scrollHeight, clientHeight } = current
 
       setIsOverflowing(scrollHeight > clientHeight)
@@ -53,9 +37,8 @@ export const useIsOverflowing = (
   useEffect(() => {
     checkOverflowing()
     // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, current?.clientHeight])
+  }, [expanded, current?.clientHeight]) // eslint-disable-line streamlit-custom/no-force-reflow-access -- Existing usage
 
   // Window resizing can also affect the overflow state
   // so we need to check it as well

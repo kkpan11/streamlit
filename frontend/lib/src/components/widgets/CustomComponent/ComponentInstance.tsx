@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,43 +14,40 @@
  * limitations under the License.
  */
 
-import React, {
+import {
   memo,
   ReactElement,
-  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react"
 
-import { useTheme } from "@emotion/react"
 import { getLogger } from "loglevel"
 import queryString from "query-string"
 import { flushSync } from "react-dom"
 
 import {
   ComponentInstance as ComponentInstanceProto,
-  ISpecialArg,
-  Skeleton as SkeletonProto,
+  type SpecialArg,
 } from "@streamlit/protobuf"
+import { StreamlitConfig } from "@streamlit/utils"
 
-import { LibContext } from "~lib/components/core/LibContext"
-import AlertElement from "~lib/components/elements/AlertElement"
-import { Skeleton } from "~lib/components/elements/Skeleton"
-import ErrorElement from "~lib/components/shared/ErrorElement"
-import { Kind } from "~lib/components/shared/AlertContainer"
+import { withCalculatedWidth } from "~lib/components/core/Layout/withCalculatedWidth"
+import AlertElement from "~lib/components/elements/AlertElement/AlertElement"
+import { SquareSkeleton } from "~lib/components/elements/Skeleton/styled-components"
+import { Kind } from "~lib/components/shared/AlertContainer/AlertContainer"
+import ErrorElement from "~lib/components/shared/ErrorElement/ErrorElement"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 import useTimeout from "~lib/hooks/useTimeout"
-import { EmotionTheme } from "~lib/theme"
+import { COMMUNITY_URL, COMPONENT_DEVELOPER_URL } from "~lib/urls"
+import { ensureError } from "~lib/util/ErrorHandling"
 import {
   DEFAULT_IFRAME_FEATURE_POLICY,
   DEFAULT_IFRAME_SANDBOX_POLICY,
 } from "~lib/util/IFrameUtil"
-import { WidgetStateManager } from "~lib/WidgetStateManager"
-import { COMMUNITY_URL, COMPONENT_DEVELOPER_URL } from "~lib/urls"
-import { ensureError } from "~lib/util/ErrorHandling"
 import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
-import { withCalculatedWidth } from "~lib/components/core/Layout/withCalculatedWidth"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import { ComponentRegistry } from "./ComponentRegistry"
 import {
@@ -71,12 +68,13 @@ const LOG = getLogger("ComponentInstance")
  */
 export const COMPONENT_READY_WARNING_TIME_MS = 60000 // 60 seconds
 
-export interface Props {
+interface Props {
   widgetMgr: WidgetStateManager
   disabled: boolean
   element: ComponentInstanceProto
   width: number
   fragmentId?: string
+  componentRegistry: ComponentRegistry
 }
 
 /**
@@ -99,10 +97,16 @@ function getSrc(
   }
 
   // Add streamlitUrl query parameter to src
+  const customComponentClientId = StreamlitConfig.CUSTOM_COMPONENT_CLIENT_ID
   const currentUrl = new URL(window.location.href)
   src = queryString.stringifyUrl({
     url: src,
-    query: { streamlitUrl: currentUrl.origin + currentUrl.pathname },
+    query: {
+      streamlitUrl: currentUrl.origin + currentUrl.pathname,
+      ...(customComponentClientId && {
+        __streamlit_parent_client_id: customComponentClientId,
+      }),
+    },
   })
   return src
 }
@@ -133,7 +137,7 @@ function getWarnMessage(componentName: string, url?: string): string {
 
 function tryParseArgs(
   jsonArgs: string,
-  specialArgs: ISpecialArg[],
+  specialArgs: SpecialArg.$Properties[],
   setComponentError: (e: Error) => void,
   componentError?: Error
 ): [newArgs: Args, dataframeArgs: DataframeArg[]] {
@@ -179,12 +183,17 @@ function compareDataframeArgs(
  * by {@link COMPONENT_READY_WARNING_TIME_MS}, a warning element is rendered instead.
  */
 function ComponentInstance(props: Props): ReactElement {
-  const theme: EmotionTheme = useTheme()
-  const { componentRegistry: registry } = useContext(LibContext)
-
+  const theme = useEmotionTheme()
   const [componentError, setComponentError] = useState<Error>()
 
-  const { disabled, element, widgetMgr, width, fragmentId } = props
+  const {
+    disabled,
+    element,
+    widgetMgr,
+    width,
+    fragmentId,
+    componentRegistry: registry,
+  } = props
   const { componentName, jsonArgs, specialArgs, url } = element
 
   const [parsedNewArgs, parsedDataframeArgs] = tryParseArgs(
@@ -211,7 +220,9 @@ function ComponentInstance(props: Props): ReactElement {
     parsedArgsRef.current.dataframeArgs,
     parsedDataframeArgs
   )
+
   parsedArgsRef.current.args = parsedNewArgs
+
   parsedArgsRef.current.dataframeArgs = parsedDataframeArgs
 
   const [isReadyTimeout, setIsReadyTimeout] = useState<boolean>()
@@ -219,9 +230,10 @@ function ComponentInstance(props: Props): ReactElement {
   // custom components that define a height property, e.g. in Python
   // my_custom_component(height=100). undefined means no explicit height
   // was specified, but will be set to the default height of 0.
-  const [frameHeight, setFrameHeight] = useState<number | undefined>(() =>
-    isNaN(parsedNewArgs.height) ? undefined : parsedNewArgs.height
-  )
+  const [frameHeight, setFrameHeight] = useState<number | undefined>(() => {
+    const height = parsedNewArgs.height as number | undefined
+    return height === undefined || isNaN(height) ? undefined : height
+  })
 
   // Use a ref for the ready-state so that we can differentiate between sending renderMessages due to props-changes
   // and when the componentReady callback is called (for the first time)
@@ -230,12 +242,12 @@ function ComponentInstance(props: Props): ReactElement {
   const onBackMsgRef = useRef<IframeMessageHandlerProps>()
 
   // Show a log in the console as a soft-warning to the developer before showing the more disrupting warning element
-  const clearTimeoutLog = useTimeout(
+  const { clear: clearTimeoutLog } = useTimeout(
     () => LOG.warn(getWarnMessage(componentName, url)),
     COMPONENT_READY_WARNING_TIME_MS / 4
   )
-  const clearTimeoutWarningElement = useTimeout(() => {
-    /* eslint-disable-next-line @eslint-react/dom/no-flush-sync -- To keep
+  const { clear: clearTimeoutWarningElement } = useTimeout(() => {
+    /* eslint-disable-next-line @eslint-react/dom-no-flush-sync -- To keep
      * behavior the same as before introducing `createRoot` and after, we ensure
      * that the state updates are flushed immediately.
      */
@@ -300,7 +312,7 @@ function ComponentInstance(props: Props): ReactElement {
       // immediately change their frameHeight after mounting). This is wasteful,
       // and it also breaks certain components.
       iframeRef.current.height = height.toString()
-      /* eslint-disable-next-line @eslint-react/dom/no-flush-sync -- To keep
+      /* eslint-disable-next-line @eslint-react/dom-no-flush-sync -- To keep
        * behavior the same as before introducing `createRoot` and after, we ensure
        * that the state updates are flushed immediately.
        */
@@ -321,7 +333,7 @@ function ComponentInstance(props: Props): ReactElement {
       clearTimeoutLog()
       clearTimeoutWarningElement()
       isReadyRef.current = true
-      /* eslint-disable-next-line @eslint-react/dom/no-flush-sync -- To keep
+      /* eslint-disable-next-line @eslint-react/dom-no-flush-sync -- To keep
        * behavior the same as before introducing `createRoot` and after, we ensure
        * that the state updates are flushed immediately.
        */
@@ -392,26 +404,22 @@ function ComponentInstance(props: Props): ReactElement {
 
   // Show the loading Skeleton while we have not received the ready message from the custom component
   // but while we also have not waited until the ready timeout
-  // TODO: Update to match React best practices
 
   const loadingSkeleton = !isReadyRef.current &&
     !isReadyTimeout &&
     // if height is explicitly set to 0, we don’t want to show the skeleton at all
     frameHeight !== 0 && (
       // Skeletons will have a default height if no frameHeight was specified
-      <Skeleton
-        element={SkeletonProto.create({
-          height: frameHeight,
-          style: SkeletonProto.SkeletonStyle.ELEMENT,
-        })}
+      <SquareSkeleton
+        data-testid="stSkeleton"
+        height={frameHeight ? `${frameHeight}px` : undefined}
+        aria-hidden="true"
       />
     )
 
   // If we've timed out waiting for the READY message from the component,
   // display a warning.
   const warns =
-    // TODO: Update to match React best practices
-
     !isReadyRef.current && isReadyTimeout ? (
       <AlertElement
         body={getWarnMessage(componentName, url)}
@@ -426,6 +434,8 @@ function ComponentInstance(props: Props): ReactElement {
   // Without this, there is a potential for a scrollbar to
   // appear for a brief moment after an iframe's content gets bigger,
   // and before it sends the "setFrameHeight" message back to Streamlit.
+  // CSS overflow on the iframe does not reliably disable inner-document
+  // scrolling, so the deprecated scrolling attribute stays.
   //
   // We may ultimately want to give components control over the "scrolling"
   // property.
@@ -446,11 +456,10 @@ function ComponentInstance(props: Props): ReactElement {
         width={width}
         // for undefined height we set the height to 0 to avoid inconsistent behavior
         height={frameHeight ?? 0}
+        // eslint-disable-next-line @typescript-eslint/no-deprecated
         scrolling="no"
         sandbox={DEFAULT_IFRAME_SANDBOX_POLICY}
         title={componentName}
-        // TODO: Update to match React best practices
-
         componentReady={isReadyRef.current}
         tabIndex={element.tabIndex ?? undefined}
       />

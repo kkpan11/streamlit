@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,31 +16,39 @@
 
 import { getLogger } from "loglevel"
 
-import { BackMsg, ForwardMsg, IBackMsg } from "@streamlit/protobuf"
+import { BackMsg, ForwardMsg } from "@streamlit/protobuf"
 import {
   getCookie,
   isNullOrUndefined,
   notNullOrUndefined,
 } from "@streamlit/utils"
 
-import { ForwardMsgCache } from "./ForwardMessageCache"
-import { buildWsUri } from "./utils"
+import { ConnectionState } from "./ConnectionState"
 import {
   PING_MAXIMUM_RETRY_PERIOD_MS,
   PING_MINIMUM_RETRY_PERIOD_MS,
+  RECONNECT_BASE_RETRY_PERIOD_MS,
+  RECONNECT_MAXIMUM_RETRY_PERIOD_MS,
+  RECONNECT_MINIMUM_RETRY_PERIOD_MS,
   WEBSOCKET_STREAM_PATH,
   WEBSOCKET_TIMEOUT_MS,
 } from "./constants"
 import {
+  AsyncPingRequest,
+  doInitPings,
+  PingCancelledError,
+} from "./DoInitPings"
+import { ForwardMsgCache } from "./ForwardMessageCache"
+import {
+  ErrorDetails,
   Event,
-  IHostConfigResponse,
+  IHostConfigProperties,
   OnConnectionStateChange,
   OnMessage,
   OnRetry,
   StreamlitEndpoints,
 } from "./types"
-import { ConnectionState } from "./ConnectionState"
-import { doInitPings } from "./DoInitPings"
+import { buildWsUri } from "./utils"
 
 export interface Args {
   /** The application's SessionInfo instance */
@@ -98,12 +106,16 @@ export interface Args {
    * Function to set the host config and allowed-message-origins for this app (if in a relevant deployment
    * scenario).
    */
-  onHostConfigResp: (resp: IHostConfigResponse) => void
-}
+  onHostConfigResp: (resp: IHostConfigProperties) => void
 
-interface MessageQueue {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  [index: number]: any
+  /**
+   * Enables host to bypass waiting for health/host-config endpoint responses
+   * in establishing the initial websocket connection. When true, the connection
+   * state machine will connect to the websocket immediately without waiting for
+   * the initial ping cycle to complete. Health and host-config pings continue to run
+   * asynchronously in the background for error handling and configuration.
+   */
+  enableBypass?: boolean
 }
 
 const LOG = getLogger("WebsocketConnection")
@@ -111,6 +123,8 @@ const LOG = getLogger("WebsocketConnection")
 /**
  * Events of the WebsocketConnection state machine. Here's what the FSM looks
  * like:
+ *
+ * DEFAULT PATH (enableBypass = false):
  *
  *   INITIAL
  *     │
@@ -123,6 +137,27 @@ const LOG = getLogger("WebsocketConnection")
  *     │                                  │
  *     │:on error/closed                  │:on conn succeed
  *   CONNECTED<───────────────────────────┘
+ *
+ *
+ * BYPASS PATH (enableBypass = true):
+ *
+ *   INITIAL ─────────────────────> CONNECTING
+ *                                    │  │
+ *             ┌──────────────────────┘  │
+ *             │:on timeout/error/closed │
+ *             v                         │:on conn succeed
+ *   PINGING_SERVER                      │
+ *     ^  ^                              │
+ *     │  │:on timeout/error/closed      │
+ *     │  └──────────────────────────────┤
+ *     │                                 │
+ *     │:on error/closed                 │
+ *   CONNECTED<──────────────────────────┘
+ *
+ *   Note: In bypass mode, background pings run in parallel with the WebSocket
+ *   connection attempt. The first URI (index 0) is always tried first. If the
+ *   connection fails, the FSM falls back to PINGING_SERVER to discover the
+ *   correct URI via health checks.
  *
  *
  *                    on fatal error or call to .disconnect()
@@ -149,6 +184,20 @@ export class WebsocketConnection {
   private uriIndex = 0
 
   /**
+   * Index into baseUriPartsList that the WebSocket last successfully connected
+   * on. Once set, we skip path discovery on reconnect and only probe this URI.
+   */
+  private connectedUriIndex?: number
+
+  /**
+   * Index into baseUriPartsList used to build the currently-open WebSocket.
+   * Captured when the socket is created so that, once connected, we pin to the
+   * URI the socket actually used rather than this.uriIndex, which a background
+   * ping (bypass mode) may have overwritten before the socket's open event.
+   */
+  private socketUriIndex?: number
+
+  /**
    * To guarantee packet transmission order, this is the index of the last
    * dispatched incoming message.
    */
@@ -160,10 +209,10 @@ export class WebsocketConnection {
   private nextMessageIndex = 0
 
   /**
-   * This dictionary stores received messages that we haven't sent out yet
-   * (because we're still decoding previous messages)
+   * Incoming messages that we haven't dispatched yet because earlier
+   * messages are still being decoded. Keyed by transmission order.
    */
-  private readonly messageQueue: MessageQueue = {}
+  private readonly messageQueue = new Map<number, ForwardMsg>()
 
   /**
    * The current state of this object's state machine.
@@ -176,12 +225,28 @@ export class WebsocketConnection {
   private websocket?: WebSocket
 
   /**
+   * The AsyncPingRequest returned by doInitPings.
+   */
+  private pingRequest?: AsyncPingRequest
+
+  /**
    * WebSocket objects don't support retries, so we have to implement them
    * ourselves. We use setTimeout to wait for a connection and retry once the
    * timeout fires. This field stores the timer ID from setTimeout, so we can
    * cancel it if needed.
    */
-  private wsConnectionTimeoutId?: number
+  private wsConnectionTimeout?: ReturnType<typeof setTimeout>
+
+  /**
+   * Timeout used to spread WebSocket reconnection attempts before they re-probe
+   * the health endpoint.
+   */
+  private reconnectDelayTimeout?: ReturnType<typeof setTimeout>
+
+  /**
+   * Consecutive WebSocket reconnect attempts since the last successful connect.
+   */
+  private reconnectAttempt = 0
 
   constructor(props: Args) {
     this.args = props
@@ -204,23 +269,51 @@ export class WebsocketConnection {
     this.setFsmState(ConnectionState.DISCONNECTED_FOREVER)
   }
 
+  /**
+   * Close the current connection and attempt to reconnect.
+   * Unlike disconnect(), this does not permanently close the connection.
+   * Instead, it sends a CONNECTION_CLOSED event, which causes the FSM to
+   * transition to PINGING_SERVER and attempt reconnection.
+   */
+  public reconnect(): void {
+    if (this.state === ConnectionState.CONNECTED) {
+      this.closeConnection()
+      this.stepFsm("CONNECTION_CLOSED")
+    }
+  }
+
   // This should only be called inside stepFsm().
-  private setFsmState(state: ConnectionState, errMsg?: string): void {
+  private setFsmState(
+    state: ConnectionState,
+    errDetails?: ErrorDetails,
+    pingDelayMs = 0
+  ): void {
     LOG.info(`New state: ${state}`)
     this.state = state
 
     // Perform pre-callback actions when entering certain states.
     switch (this.state) {
       case ConnectionState.PINGING_SERVER:
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
-        this.pingServer()
+        this.schedulePingServer(pingDelayMs)
+        break
+
+      case ConnectionState.CONNECTED:
+        this.reconnectAttempt = 0
+        this.clearReconnectDelayTimeout()
+        // Pin to the URI the live socket actually used (captured at socket
+        // creation), not this.uriIndex: in bypass mode a background ping can
+        // overwrite this.uriIndex before the socket's open event fires, which
+        // would otherwise pin a URI the socket never used. Also realign
+        // this.uriIndex so getBaseUriParts() and reconnects stay consistent.
+        this.connectedUriIndex = this.socketUriIndex ?? this.uriIndex
+        this.uriIndex = this.connectedUriIndex
         break
 
       default:
         break
     }
 
-    this.args.onConnectionStateChange(state, errMsg)
+    this.args.onConnectionStateChange(state, errDetails)
 
     // Perform post-callback actions when entering certain states.
     switch (this.state) {
@@ -264,7 +357,9 @@ export class WebsocketConnection {
       )
       // If we get a fatal error, we transition to DISCONNECTED_FOREVER
       // regardless of our current state.
-      this.setFsmState(ConnectionState.DISCONNECTED_FOREVER, errMsg)
+      this.setFsmState(ConnectionState.DISCONNECTED_FOREVER, {
+        message: errMsg || "Unknown error",
+      })
       return
     }
 
@@ -274,7 +369,17 @@ export class WebsocketConnection {
     switch (this.state) {
       case ConnectionState.INITIAL:
         if (event === "INITIALIZED") {
-          this.setFsmState(ConnectionState.PINGING_SERVER)
+          if (this.args.enableBypass) {
+            // Bypass: Start connecting to the websocket immediately while
+            // running health and host-config pings in parallel (rather than
+            // sequentially). Both must succeed, but they don't gate the WS connection.
+            // This reduces latency while maintaining full error handling and
+            // configuration retrieval.
+            this.setFsmState(ConnectionState.CONNECTING)
+            void this.pingServerInBackground()
+          } else {
+            this.setFsmState(ConnectionState.PINGING_SERVER)
+          }
           return
         }
         break
@@ -289,14 +394,22 @@ export class WebsocketConnection {
           event === "CONNECTION_ERROR" ||
           event === "CONNECTION_CLOSED"
         ) {
-          this.setFsmState(ConnectionState.PINGING_SERVER)
+          this.setFsmState(
+            ConnectionState.PINGING_SERVER,
+            undefined,
+            this.nextReconnectDelayMs()
+          )
           return
         }
         break
 
       case ConnectionState.CONNECTED:
         if (event === "CONNECTION_CLOSED" || event === "CONNECTION_ERROR") {
-          this.setFsmState(ConnectionState.PINGING_SERVER)
+          this.setFsmState(
+            ConnectionState.PINGING_SERVER,
+            undefined,
+            this.nextReconnectDelayMs()
+          )
           return
         }
         break
@@ -329,8 +442,155 @@ export class WebsocketConnection {
     )
   }
 
+  /**
+   * Compute the delay before the next health re-probe using exponential
+   * backoff with equal jitter, spreading reconnect attempts to avoid a
+   * synchronized reconnect storm (e.g. after a server restart).
+   *
+   * Note: This is NOT a pure getter. It increments `this.reconnectAttempt`
+   * as a side effect and therefore advances the backoff window on every
+   * call. It must only be called when a delay is actually going to be
+   * scheduled (i.e. its result is fed into `setFsmState(PINGING_SERVER, ...)`).
+   * The counter is reset to 0 on a successful `CONNECTED` transition.
+   *
+   * @returns The delay in milliseconds before the next health probe.
+   */
+  private nextReconnectDelayMs(): number {
+    this.reconnectAttempt += 1
+
+    const retryWindowMs = Math.min(
+      RECONNECT_MAXIMUM_RETRY_PERIOD_MS,
+      RECONNECT_BASE_RETRY_PERIOD_MS * 2 ** (this.reconnectAttempt - 1)
+    )
+    const minimumDelayMs =
+      this.reconnectAttempt === 1
+        ? RECONNECT_MINIMUM_RETRY_PERIOD_MS
+        : retryWindowMs / 2
+
+    return Math.floor(
+      minimumDelayMs + Math.random() * (retryWindowMs - minimumDelayMs)
+    )
+  }
+
+  /**
+   * Schedule the health probe (`pingServer`) to run after `delayMs`.
+   *
+   * Any previously scheduled reconnect delay is cleared first, so at most one
+   * pending probe exists at a time. A non-positive delay pings immediately
+   * (used for the initial `INITIAL -> PINGING_SERVER` probe). The scheduled
+   * probe is skipped if the FSM has left `PINGING_SERVER` by the time it fires.
+   *
+   * @param delayMs The delay in milliseconds before probing; `<= 0` probes
+   * immediately.
+   */
+  private schedulePingServer(delayMs: number): void {
+    this.clearReconnectDelayTimeout()
+
+    if (delayMs <= 0) {
+      void this.pingServer()
+      return
+    }
+
+    // eslint-disable-next-line no-restricted-properties -- Reconnect retry scheduler requires a raw timer outside React.
+    this.reconnectDelayTimeout = globalThis.setTimeout(() => {
+      this.reconnectDelayTimeout = undefined
+
+      if (this.state !== ConnectionState.PINGING_SERVER) {
+        return
+      }
+
+      void this.pingServer()
+    }, delayMs)
+  }
+
+  /**
+   * Cancel any pending reconnect-delay timer.
+   *
+   * Called when entering `CONNECTED` (successful reconnect), when scheduling a
+   * new probe, and on permanent disconnect, so a stale timer can never fire a
+   * health probe after the FSM has moved on.
+   */
+  private clearReconnectDelayTimeout(): void {
+    if (notNullOrUndefined(this.reconnectDelayTimeout)) {
+      globalThis.clearTimeout(this.reconnectDelayTimeout)
+      this.reconnectDelayTimeout = undefined
+    }
+  }
+
+  /**
+   * Returns the base URIs to probe when (re)connecting. Before the first
+   * successful connection we probe all candidates (path discovery for multipage
+   * apps). Once connected, we pin to the URI that worked so reconnects don't
+   * re-run discovery — which would double requests and risk selecting the wrong
+   * path.
+   */
+  private getBaseUrisToProbe(): URL[] {
+    if (this.connectedUriIndex !== undefined) {
+      return [this.args.baseUriPartsList[this.connectedUriIndex]]
+    }
+    return this.args.baseUriPartsList
+  }
+
   private async pingServer(): Promise<void> {
-    this.uriIndex = await doInitPings(
+    const currentRequest = doInitPings(
+      this.getBaseUrisToProbe(),
+      PING_MINIMUM_RETRY_PERIOD_MS,
+      PING_MAXIMUM_RETRY_PERIOD_MS,
+      this.args.onRetry,
+      this.args.sendClientError,
+      this.args.onHostConfigResp
+    )
+    this.pingRequest = currentRequest
+
+    try {
+      const resolvedIndex = await currentRequest.promise
+      // When probing a pinned single-URI list, doInitPings resolves index 0;
+      // map it back to the real index into baseUriPartsList.
+      this.uriIndex = this.connectedUriIndex ?? resolvedIndex
+      // Only clear if we're still the active request
+      if (this.pingRequest === currentRequest) {
+        this.pingRequest = undefined
+      }
+      this.stepFsm("SERVER_PING_SUCCEEDED")
+    } catch (e) {
+      if (e instanceof PingCancelledError) {
+        // This is an expected error when the connection is cancelled.
+        // We don't need to do anything here.
+        LOG.info("Ping cancelled")
+      } else {
+        // This is an unexpected error.
+        this.stepFsm("FATAL_ERROR", e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      // Only clear if we're still the active request
+      // This prevents a race where a new ping starts before this finally block runs
+      if (this.pingRequest === currentRequest) {
+        this.pingRequest = undefined
+      }
+    }
+  }
+
+  /**
+   * Run the ping cycle in the background (parallel to WebSocket connection attempt).
+   * This is used in bypass mode to maintain the same health check and configuration
+   * behavior as the default path, while allowing the WebSocket connection to start
+   * immediately rather than waiting for pings to complete first.
+   *
+   * Differences from pingServer() (default path):
+   *
+   * Success case:
+   * - pingServer(): Calls stepFsm("SERVER_PING_SUCCEEDED") to advance FSM to CONNECTING
+   * - pingServerInBackground(): No FSM transition (already in CONNECTING state)
+   *
+   * Error handling (consistent between both):
+   * - Cancellation (PingCancelledError): Both log and exit gracefully, no FSM transition
+   * - Unexpected errors: Both call stepFsm("FATAL_ERROR") as defensive programming.
+   *   In practice, doInitPings retries indefinitely and only rejects with
+   *   PingCancelledError, but we handle unexpected errors to guard against future
+   *   implementation changes or unforeseen edge cases.
+   */
+  private async pingServerInBackground(): Promise<void> {
+    const currentRequest = doInitPings(
       this.args.baseUriPartsList,
       PING_MINIMUM_RETRY_PERIOD_MS,
       PING_MAXIMUM_RETRY_PERIOD_MS,
@@ -338,8 +598,35 @@ export class WebsocketConnection {
       this.args.sendClientError,
       this.args.onHostConfigResp
     )
+    this.pingRequest = currentRequest
 
-    this.stepFsm("SERVER_PING_SUCCEEDED")
+    try {
+      const uriIndex = await currentRequest.promise
+      // Don't overwrite the index once the WebSocket has already connected on a
+      // URI; the connected path takes precedence over background discovery.
+      if (this.connectedUriIndex === undefined) {
+        this.uriIndex = uriIndex
+      }
+      LOG.info("Background pings completed successfully")
+    } catch (e) {
+      if (e instanceof PingCancelledError) {
+        // This is an expected error when the connection is cancelled.
+        // We don't need to do anything here.
+        LOG.info("Background pings cancelled")
+      } else {
+        // This is an unexpected error. In practice, doInitPings retries
+        // indefinitely and never rejects on ping failures, but we handle
+        // this case for consistency with pingServer() and robustness.
+        this.stepFsm("FATAL_ERROR", e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      // Only clear if we're still the active request
+      // This prevents a race where bypass mode fails and transitions to PINGING_SERVER,
+      // starting a new ping before this finally block runs
+      if (this.pingRequest === currentRequest) {
+        this.pingRequest = undefined
+      }
+    }
   }
 
   /**
@@ -368,8 +655,11 @@ export class WebsocketConnection {
   }
 
   private async connectToWebSocket(): Promise<void> {
+    // Capture the index this socket is built from so that, once connected, we
+    // pin to it even if a background ping overwrites this.uriIndex in between.
+    this.socketUriIndex = this.uriIndex
     const uri = buildWsUri(
-      this.args.baseUriPartsList[this.uriIndex],
+      this.args.baseUriPartsList[this.socketUriIndex],
       WEBSOCKET_STREAM_PATH
     )
 
@@ -443,7 +733,7 @@ export class WebsocketConnection {
   }
 
   private setConnectionTimeout(uri: string): void {
-    if (notNullOrUndefined(this.wsConnectionTimeoutId)) {
+    if (notNullOrUndefined(this.wsConnectionTimeout)) {
       // This should never happen. We set the timeout ID to null in both FSM
       // nodes that lead to this one.
       throw new Error("WS timeout is already set")
@@ -451,18 +741,20 @@ export class WebsocketConnection {
 
     const localWebsocket = this.websocket
 
-    this.wsConnectionTimeoutId = window.setTimeout(() => {
+    // eslint-disable-next-line no-restricted-properties -- Non-React connection timeout requires a raw timer.
+    this.wsConnectionTimeout = globalThis.setTimeout(() => {
       if (localWebsocket !== this.websocket) {
         return
       }
 
-      if (isNullOrUndefined(this.wsConnectionTimeoutId)) {
+      if (isNullOrUndefined(this.wsConnectionTimeout)) {
         // Sometimes the clearTimeout doesn't work. No idea why :-/
         LOG.warn("Timeout fired after cancellation")
         return
       }
 
-      if (isNullOrUndefined(this.websocket)) {
+      const websocket = this.websocket
+      if (isNullOrUndefined(websocket)) {
         // This should never happen! The only place we call
         // setConnectionTimeout() should be immediately before setting
         // this.websocket.
@@ -471,7 +763,7 @@ export class WebsocketConnection {
         return
       }
 
-      if (this.websocket.readyState === 0 /* CONNECTING */) {
+      if (websocket.readyState === 0 /* CONNECTING */) {
         LOG.info(`Client error: ${uri} timed out`)
         this.args.sendClientError(
           "Websocket connection timed out",
@@ -482,7 +774,7 @@ export class WebsocketConnection {
         this.stepFsm("CONNECTION_TIMED_OUT")
       }
     }, WEBSOCKET_TIMEOUT_MS)
-    LOG.info(`Set WS timeout ${this.wsConnectionTimeoutId}`)
+    LOG.info(`Set WS timeout ${Number(this.wsConnectionTimeout)}`)
   }
 
   private closeConnection(): void {
@@ -497,10 +789,17 @@ export class WebsocketConnection {
       this.websocket = undefined
     }
 
-    if (notNullOrUndefined(this.wsConnectionTimeoutId)) {
-      LOG.info(`Clearing WS timeout ${this.wsConnectionTimeoutId}`)
-      window.clearTimeout(this.wsConnectionTimeoutId)
-      this.wsConnectionTimeoutId = undefined
+    if (notNullOrUndefined(this.wsConnectionTimeout)) {
+      LOG.info(`Clearing WS timeout ${Number(this.wsConnectionTimeout)}`)
+      globalThis.clearTimeout(this.wsConnectionTimeout)
+      this.wsConnectionTimeout = undefined
+    }
+
+    this.clearReconnectDelayTimeout()
+
+    if (this.pingRequest) {
+      this.pingRequest.cancel()
+      this.pingRequest = undefined
     }
   }
 
@@ -508,14 +807,20 @@ export class WebsocketConnection {
    * Encodes the message with the outgoingMessageType and sends it over the
    * wire.
    */
-  public sendMessage(obj: IBackMsg): void {
+  public sendMessage(obj: BackMsg.$Properties): void {
     if (!this.websocket) {
       return
     }
 
     const msg = BackMsg.create(obj)
     const buffer = BackMsg.encode(msg).finish()
-    this.websocket.send(buffer)
+    const encodedMessage = new Uint8Array(
+      buffer.buffer as ArrayBuffer,
+      buffer.byteOffset,
+      buffer.byteLength
+    )
+
+    this.websocket.send(encodedMessage)
   }
 
   /**
@@ -544,21 +849,24 @@ export class WebsocketConnection {
     const encodedMsg = new Uint8Array(data)
     const msg = ForwardMsg.decode(encodedMsg)
 
-    this.messageQueue[messageIndex] = await this.cache.processMessagePayload(
-      msg,
-      encodedMsg
+    this.messageQueue.set(
+      messageIndex,
+      await this.cache.processMessagePayload(msg, encodedMsg)
     )
 
     // Dispatch any pending messages in the queue. This may *not* result
     // in our just-decoded message being dispatched: if there are other
     // messages that were received earlier than this one but are being
     // downloaded, our message won't be sent until they're done.
-    while (this.lastDispatchedMessageIndex + 1 in this.messageQueue) {
+    let queuedMessage = this.messageQueue.get(
+      this.lastDispatchedMessageIndex + 1
+    )
+    while (queuedMessage !== undefined) {
       const dispatchMessageIndex = this.lastDispatchedMessageIndex + 1
-      this.args.onMessage(this.messageQueue[dispatchMessageIndex])
-
-      delete this.messageQueue[dispatchMessageIndex]
+      this.args.onMessage(queuedMessage)
+      this.messageQueue.delete(dispatchMessageIndex)
       this.lastDispatchedMessageIndex = dispatchMessageIndex
+      queuedMessage = this.messageQueue.get(dispatchMessageIndex + 1)
     }
   }
 }

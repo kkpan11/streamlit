@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,15 @@
 
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction
+from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_loaded
+from e2e_playwright.shared.app_utils import (
+    get_element_by_key,
+    get_expander,
+    reset_hovering,
+)
+from e2e_playwright.shared.theme_utils import apply_theme_via_window
 
-PAGE_LINK_COUNT = 10
+PAGE_LINK_COUNT = 18
 
 
 def test_page_links(app: Page, assert_snapshot: ImageCompareFunction):
@@ -24,34 +30,33 @@ def test_page_links(app: Page, assert_snapshot: ImageCompareFunction):
     page_link_elements = app.get_by_test_id("stPageLink")
     expect(page_link_elements).to_have_count(PAGE_LINK_COUNT)
 
-    # Screenshot link using the link element to reflect width
-    # Help causes two stPageLink-NavLink elements to be rendered under a stPageLink
-    # (one for normal, one for mobile tooltip) so indices are off
-    page_link_links = page_link_elements.get_by_test_id("stPageLink-NavLink")
+    assert_snapshot(page_link_elements.nth(5), name="st_page_link-default")
+    assert_snapshot(page_link_elements.nth(6), name="st_page_link-icon")
+    assert_snapshot(page_link_elements.nth(7), name="st_page_link-help")
+    assert_snapshot(page_link_elements.nth(8), name="st_page_link-disabled")
+    assert_snapshot(page_link_elements.nth(9), name="st_page_link-material-icon")
 
-    assert_snapshot(page_link_links.nth(1), name="st_page_link-sidebar-icon")
-    assert_snapshot(page_link_links.nth(4), name="st_page_link-sidebar-disabled")
-    assert_snapshot(page_link_links.nth(7), name="st_page_link-icon")
-    assert_snapshot(page_link_links.nth(10), name="st_page_link-disabled")
-
-
-def test_default_container_width(app: Page, assert_snapshot: ImageCompareFunction):
-    """Test that st.page_link default container width in main is false and in sidebar is true."""
-    page_links = app.get_by_test_id("stPageLink")
-
-    page_links.nth(0).get_by_test_id("stMarkdownContainer").hover()
-    assert_snapshot(page_links.nth(0), name="st_page_link-sidebar-default")
-
-    page_links.nth(4).get_by_test_id("stMarkdownContainer").hover()
+    # st.Page object page links
+    assert_snapshot(page_link_elements.nth(10), name="st_page_link-st_page_with_icon")
     assert_snapshot(
-        page_links.nth(4), name="st_page_link-sidebar-container-width-false"
+        page_link_elements.nth(11), name="st_page_link-st_page_with_material_icon"
+    )
+    assert_snapshot(
+        page_link_elements.nth(12), name="st_page_link-st_page_icon_override"
     )
 
-    page_links.nth(5).get_by_test_id("stMarkdownContainer").hover()
-    assert_snapshot(page_links.nth(5), name="st_page_link-default")
+    # Sidebar page links
+    assert_snapshot(page_link_elements.nth(0), name="st_page_link-sidebar-default")
+    assert_snapshot(page_link_elements.nth(1), name="st_page_link-sidebar-icon")
+    assert_snapshot(page_link_elements.nth(2), name="st_page_link-sidebar-help")
+    assert_snapshot(page_link_elements.nth(3), name="st_page_link-sidebar-disabled")
+    assert_snapshot(
+        page_link_elements.nth(4), name="st_page_link-sidebar-width_content"
+    )
 
-    page_links.nth(9).get_by_test_id("stMarkdownContainer").hover()
-    assert_snapshot(page_links.nth(9), name="st_page_link-container-width-true")
+    assert_snapshot(
+        page_link_elements.nth(17), name="st_page_link-icon_position_right_emoji"
+    )
 
 
 def test_page_link_help_tooltip(app: Page):
@@ -63,7 +68,68 @@ def test_page_link_help_tooltip(app: Page):
     hover_target = page_links.nth(7).get_by_test_id("stTooltipHoverTarget")
     expect(hover_target).to_be_visible()
 
-    # Hover over the tooltip target
+    # Prime the interaction modality to 'pointer' before hovering.
+    # React Aria requires a document-level pointermove before pointerenter.
+    reset_hovering(app)
     hover_target.hover()
 
     expect(app.get_by_text("Some help text")).to_be_visible()
+
+
+def test_page_link_width_examples(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test page link width examples via screenshot matching."""
+    page_expander = get_expander(app, "Page Link Width Examples")
+
+    page_elements = page_expander.get_by_test_id("stPageLink")
+
+    assert_snapshot(page_elements.nth(0), name="st_page_link-width_content")
+    assert_snapshot(page_elements.nth(1), name="st_page_link-width_stretch")
+    assert_snapshot(page_elements.nth(2), name="st_page_link-width_500px")
+
+
+def test_page_link_href_includes_query_params(app: Page):
+    """Test that st.page_link href attribute includes query params for internal links."""
+    # Page link with dict query_params: {"foo": ["bar", "baz"]}
+    page_link_with_dict_params = app.get_by_role(
+        "link", name="Page Link with Icon from st.Page"
+    )
+    expect(page_link_with_dict_params).to_have_attribute(
+        "href", "dummy_page?foo=bar&foo=baz"
+    )
+
+    # Page link with iterable query_params: [("foo", "bar"), ("baz", "qux")]
+    page_link_with_iterable_params = app.get_by_role(
+        "link", name="Page Link with Material Icon from st.Page"
+    )
+    expect(page_link_with_iterable_params).to_have_attribute(
+        "href", "dummy_page?foo=bar&baz=qux"
+    )
+
+
+def test_page_link_with_custom_theme(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that page link adjusts for custom theme base radius, not button radius."""
+    # Apply custom theme using window injection
+    apply_theme_via_window(
+        app,
+        base="light",
+        primaryColor="#9867C5",
+        secondaryBackgroundColor="#CBC3E3",
+        baseRadius="0.25rem",
+        buttonRadius="1.25rem",
+    )
+
+    # Reload to apply the theme
+    app.reload()
+    wait_for_app_loaded(app)
+
+    # Retrieve the container containing the page link & button:
+    container = get_element_by_key(app, "custom_theme")
+    expect(container).to_be_visible()
+
+    page_link = container.get_by_test_id("stPageLink")
+    button = container.get_by_test_id("stButton")
+    expect(button).to_have_count(1)
+
+    # Hover over the page link to show background color & radius application
+    page_link.hover()
+    assert_snapshot(container, name="st_page_link-custom-theme")

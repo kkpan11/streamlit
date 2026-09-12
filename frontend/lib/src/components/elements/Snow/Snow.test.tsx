@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,24 @@
  * limitations under the License.
  */
 
-import React from "react"
-
 import { screen } from "@testing-library/react"
 
-import { render } from "~lib/test_util"
 import Snow, {
   NUM_FLAKES,
-  SnowProps,
-} from "~lib/components/elements/Snow/index"
+  Props as SnowProps,
+} from "~lib/components/elements/Snow/Snow"
+import { render, renderWithContexts } from "~lib/test_util"
+
+// Mock StreamlitConfig using global mock state (see vitest.setup.ts)
+vi.mock("@streamlit/utils", async () => {
+  const actual = await vi.importActual("@streamlit/utils")
+  return {
+    ...actual,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 const getProps = (): SnowProps => ({
   scriptRunId: "51522269",
@@ -51,11 +60,78 @@ describe("Snow element", () => {
     })
   })
 
-  it("uses correct top-level class", () => {
+  it("uses correct top-level class", { timeout: 10_000 }, () => {
     const props = getProps()
     render(<Snow {...props} />)
 
     const snowElement = screen.getByTestId("stSnow")
     expect(snowElement).toHaveClass("stSnow")
+  })
+
+  describe("crossOrigin attribute", () => {
+    beforeEach(() => {
+      globalThis.__mockStreamlitConfig = {}
+    })
+
+    afterEach(() => {
+      globalThis.__mockStreamlitConfig = {}
+    })
+
+    it("sets crossOrigin when BACKEND_BASE_URL is configured", () => {
+      // Setup StreamlitConfig.BACKEND_BASE_URL
+      globalThis.__mockStreamlitConfig.BACKEND_BASE_URL =
+        "http://localhost:8501"
+
+      renderWithContexts(<Snow scriptRunId="51522269" />, {
+        libConfigContext: {
+          resourceCrossOriginMode: "anonymous",
+        },
+      })
+
+      const snowImages = screen.getAllByRole("img")
+      snowImages.forEach(node => {
+        expect(node).toHaveAttribute("crossOrigin", "anonymous")
+      })
+    })
+
+    it("does not set crossOrigin when BACKEND_BASE_URL is not configured (same-origin)", () => {
+      renderWithContexts(<Snow scriptRunId="51522269" />, {
+        libConfigContext: {
+          resourceCrossOriginMode: "anonymous",
+        },
+      })
+
+      const snowImages = screen.getAllByRole("img")
+      snowImages.forEach(node => {
+        expect(node).not.toHaveAttribute("crossOrigin")
+      })
+    })
+
+    it.each([
+      { backendBaseUrl: undefined, description: "without BACKEND_BASE_URL" },
+      {
+        backendBaseUrl: "http://localhost:8501",
+        description: "with BACKEND_BASE_URL",
+      },
+    ])(
+      "does not set crossOrigin attribute when resourceCrossOriginMode is undefined ($description)",
+      ({ backendBaseUrl }) => {
+        // Setup StreamlitConfig.BACKEND_BASE_URL if specified
+        if (backendBaseUrl) {
+          globalThis.__mockStreamlitConfig.BACKEND_BASE_URL = backendBaseUrl
+        }
+
+        renderWithContexts(<Snow scriptRunId="51522269" />, {
+          libConfigContext: {
+            resourceCrossOriginMode: undefined,
+          },
+        })
+
+        const snowImages = screen.getAllByRole("img")
+        snowImages.forEach(node => {
+          expect(node).not.toHaveAttribute("crossOrigin")
+        })
+      }
+    )
   })
 })

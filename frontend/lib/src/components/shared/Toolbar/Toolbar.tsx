@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,24 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { ReactElement } from "react"
 
 import { EmotionIcon } from "@emotion-icons/emotion-icon"
-import { useTheme } from "@emotion/react"
-import { StyledComponent } from "@emotion/styled"
 import { Fullscreen, FullscreenExit } from "@emotion-icons/material-outlined"
 
-import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown"
-import Tooltip, { Placement } from "~lib/components/shared/Tooltip"
-import Button, { BaseButtonKind } from "~lib/components/shared/BaseButton"
-import Icon from "~lib/components/shared/Icon"
-import { EmotionTheme } from "~lib/theme"
+import Button, {
+  BaseButtonKind,
+} from "~lib/components/shared/BaseButton/BaseButton"
+import Icon from "~lib/components/shared/Icon/Icon"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import Tooltip, { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 
-import { StyledToolbar, StyledToolbarWrapper } from "./styled-components"
+import {
+  StyledToolbar,
+  StyledToolbarWrapper,
+  type StyledToolbarWrapperProps,
+} from "./styled-components"
 
 export interface ToolbarActionProps {
   label: string
@@ -42,7 +46,7 @@ export function ToolbarAction({
   icon,
   onClick,
 }: ToolbarActionProps): ReactElement {
-  const theme: EmotionTheme = useTheme()
+  const theme = useEmotionTheme()
 
   const displayLabel = show_label ? label : ""
   return (
@@ -59,6 +63,9 @@ export function ToolbarAction({
         // The default tooltip delay (== how fast the tooltip is triggered) of 200ms
         // is a bit too fast for the toolbar use case. Therefore, we are setting it to 1000ms.
         onMouseEnterDelay={1000}
+        closeDelay={0}
+        dismissOnClick
+        interactive={false}
         inline
       >
         <Button
@@ -90,8 +97,7 @@ export interface ToolbarProps {
   onCollapse?: () => void
   isFullScreen?: boolean
   locked?: boolean
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  target?: StyledComponent<any, any, any>
+  target?: StyledToolbarWrapperProps["target"]
   disableFullscreenMode?: boolean
 }
 

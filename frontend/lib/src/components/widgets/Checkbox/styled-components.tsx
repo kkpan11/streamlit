@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,245 @@
  * limitations under the License.
  */
 
-import styled from "@emotion/styled"
+import styled, { CSSObject } from "@emotion/styled"
+import {
+  CheckboxButton as RACheckboxButton,
+  CheckboxField as RACheckboxField,
+  SwitchButton as RASwitchButton,
+  SwitchField as RASwitchField,
+} from "react-aria-components"
 
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
 import { LabelVisibilityOptions } from "~lib/util/utils"
 
-export const StyledCheckbox = styled.div(({ theme }) => ({
+/**
+ * Shared by both field wrappers so checkbox and toggle cannot drift out of
+ * alignment with each other.
+ */
+const fieldStyles = ({ theme }: { theme: EmotionTheme }): CSSObject => ({
   display: "flex",
   alignItems: "center",
   minHeight: theme.sizes.smallElementHeight,
-}))
+})
 
-export interface StyledContentProps {
+/**
+ * Outer wrapper `<div>` for the checkbox. Column-alignment CSS,
+ * `data-testid="stCheckbox"`, and the `stCheckbox` class all target this
+ * element. Passes controlled selection state to `CheckboxButton`.
+ */
+export const StyledCheckboxField = styled(RACheckboxField)(fieldStyles)
+
+/**
+ * Toggle counterpart to `StyledCheckboxField`. `SwitchButton` reads state from a
+ * `SwitchField`, so this cannot share the checkbox Field component.
+ */
+export const StyledSwitchField = styled(RASwitchField)(fieldStyles)
+
+interface StyledContentProps {
   visibility?: LabelVisibilityOptions
+  /** When true, the label truncates on one line, so it must be shrinkable. */
+  $truncate?: boolean
 }
 
 export const StyledContent = styled.div<StyledContentProps>(
-  ({ visibility }) => ({
+  ({ theme, visibility, $truncate }) => ({
     display: visibility === LabelVisibilityOptions.Collapsed ? "none" : "flex",
     visibility:
       visibility === LabelVisibilityOptions.Hidden ? "hidden" : "visible",
     verticalAlign: "middle",
     flexDirection: "row",
     alignItems: "center",
+    lineHeight: theme.lineHeights.small,
+    // Allow the label to shrink below its content size so the markdown can
+    // ellipsize. The help icon keeps its intrinsic size and stays visible.
+    ...($truncate && { minWidth: 0 }),
   })
+)
+
+interface StyledLabelTextProps {
+  /** When true, the label truncates on one line, so it must be shrinkable. */
+  $truncate?: boolean
+}
+
+/**
+ * Wraps the label markdown so the native `title` tooltip is scoped to the label
+ * only (not the sibling help icon). When truncating it becomes a shrinkable flex
+ * box so the markdown can ellipsize; otherwise it stays transparent to layout.
+ */
+export const StyledLabelText = styled.div<StyledLabelTextProps>(
+  ({ $truncate }) =>
+    $truncate
+      ? { display: "flex", alignItems: "center", minWidth: 0 }
+      : { display: "contents" }
+)
+
+interface StyledButtonProps {
+  /** When true, the control can shrink within its container so the label can ellipsize. */
+  $truncate?: boolean
+}
+
+/**
+ * Shared by both button labels so truncation and the keyboard-focus background
+ * cannot drift between checkbox and toggle.
+ */
+const buttonStyles = ({
+  theme,
+  $truncate,
+}: { theme: EmotionTheme } & StyledButtonProps): CSSObject => ({
+  display: "flex",
+  alignItems: "flex-start",
+  gap: theme.spacing.sm,
+  marginBottom: 0,
+  marginTop: 0,
+  cursor: "pointer",
+  position: "relative",
+  // Bound the control to its container (without expanding a short label to full
+  // width) and let it shrink so an overflowing label can ellipsize instead of
+  // widening the control past its container.
+  ...($truncate && { minWidth: 0, maxWidth: "100%" }),
+
+  "&[data-disabled]": {
+    cursor: "not-allowed",
+    color: theme.colors.fadedText40,
+  },
+
+  "&[data-focus-visible]": {
+    backgroundColor: theme.colors.darkenedBgMix25,
+  },
+})
+
+/** React Aria's `<label>` for the checkbox. Truncation and the keyboard-focus background belong here, not on the field wrapper. */
+export const StyledCheckboxButton = styled(RACheckboxButton, {
+  shouldForwardProp: (prop: string) => !prop.startsWith("$"),
+})<StyledButtonProps>(buttonStyles)
+
+interface StyledCheckboxIndicatorProps {
+  $isSelected: boolean
+  $isFocusVisible: boolean
+  $isDisabled: boolean
+}
+
+export const StyledCheckboxIndicator =
+  styled.div<StyledCheckboxIndicatorProps>(
+    ({ theme, $isSelected, $isFocusVisible, $isDisabled }) => {
+      let borderColor: string
+      let backgroundColor: string
+
+      if ($isDisabled) {
+        borderColor = theme.colors.borderColor
+        backgroundColor = $isSelected
+          ? theme.colors.fadedText40
+          : theme.colors.lightenedBg05
+      } else if ($isSelected) {
+        borderColor = theme.colors.primary
+        backgroundColor = theme.colors.primary
+      } else {
+        borderColor = theme.colors.borderColor
+        backgroundColor = theme.colors.lightenedBg05
+      }
+
+      return {
+        flexShrink: 0,
+        width: theme.sizes.checkbox,
+        height: theme.sizes.checkbox,
+        // Vertically center the indicator with the first text line.
+        // = (lineHeight × fontSize − indicatorSize) / 2 = (1.5 × 0.875rem − 1rem) / 2 = 2.5px
+        marginTop: `calc((${theme.lineHeights.small} * ${theme.fontSizes.sm} - ${theme.sizes.checkbox}) / 2)`,
+        borderRadius: theme.radii.sm,
+        border: `${theme.sizes.borderWidth} solid ${borderColor}`,
+        backgroundColor,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow:
+          $isFocusVisible && $isSelected ? theme.shadows.focusRing : "none",
+        transition: "background-color 100ms ease, border-color 100ms ease",
+
+        "& svg": {
+          width: "65%",
+          height: "65%",
+          fill: "none",
+          stroke: $isDisabled
+            ? hasLightBackgroundColor(theme)
+              ? theme.colors.bgColor
+              : theme.colors.bodyText
+            : theme.colors.white,
+          strokeWidth: "2.5px",
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+        },
+      }
+    }
+  )
+
+/** Toggle counterpart to `StyledCheckboxButton`, sharing its styles. */
+export const StyledSwitchButton = styled(RASwitchButton, {
+  shouldForwardProp: (prop: string) => !prop.startsWith("$"),
+})<StyledButtonProps>(buttonStyles)
+
+interface StyledToggleTrackProps {
+  $isSelected: boolean
+  $isHovered: boolean
+  $isDisabled: boolean
+}
+
+export const StyledToggleTrack = styled.div<StyledToggleTrackProps>(
+  ({ theme, $isSelected, $isHovered, $isDisabled }) => {
+    let backgroundColor: string
+
+    if ($isSelected && !$isDisabled) {
+      backgroundColor = theme.colors.primary
+    } else if ($isHovered && !$isDisabled) {
+      backgroundColor = theme.colors.darkenedBgMix15
+    } else {
+      backgroundColor = theme.colors.borderColor
+    }
+
+    return {
+      flexShrink: 0,
+      // Vertically center the track with the first text line — mirrors the
+      // checkbox indicator formula: (lineHeight × fontSize − trackHeight) / 2
+      marginTop: `calc((${theme.lineHeights.small} * ${theme.fontSizes.sm} - ${theme.sizes.checkbox}) / 2)`,
+      width: `calc(2 * ${theme.sizes.checkbox})`,
+      height: theme.sizes.checkbox,
+      paddingLeft: theme.spacing.threeXS,
+      paddingRight: theme.spacing.threeXS,
+      borderRadius: theme.radii.full,
+      backgroundColor,
+      display: "flex",
+      alignItems: "center",
+      transition: "background-color 150ms ease",
+    }
+  }
+)
+
+interface StyledToggleThumbProps {
+  $isSelected: boolean
+  $isDisabled: boolean
+}
+
+export const StyledToggleThumb = styled.div<StyledToggleThumbProps>(
+  ({ theme, $isSelected, $isDisabled }) => {
+    const isLightTheme = hasLightBackgroundColor(theme)
+    const backgroundColor = $isDisabled
+      ? isLightTheme
+        ? theme.colors.gray70
+        : theme.colors.gray90
+      : isLightTheme
+        ? theme.colors.bgColor
+        : theme.colors.bodyText
+
+    return {
+      flexShrink: 0,
+      width: `calc(${theme.sizes.checkbox} - ${theme.spacing.twoXS})`,
+      height: `calc(${theme.sizes.checkbox} - ${theme.spacing.twoXS})`,
+      borderRadius: theme.radii.full,
+      backgroundColor,
+      transform: $isSelected
+        ? `translateX(${theme.sizes.checkbox})`
+        : "translateX(0)",
+      transition: "transform 150ms ease",
+    }
+  }
 )

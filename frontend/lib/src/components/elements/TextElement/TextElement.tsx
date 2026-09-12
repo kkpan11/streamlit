@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,66 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement } from "react"
+import { memo, ReactElement } from "react"
 
 import { Text as TextProto } from "@streamlit/protobuf"
 
-import {
-  InlineTooltipIcon,
-  StyledLabelHelpWrapper,
-} from "~lib/components/shared/TooltipIcon"
+import { StyledLabelHelpWrapper } from "~lib/components/shared/TooltipIcon/styled-components"
+import { InlineTooltipIcon } from "~lib/components/shared/TooltipIcon/TooltipIcon"
+import { useLabelTitleTooltip } from "~lib/hooks/useLabelTitleTooltip"
 
-import { StyledText } from "./styled-components"
+import {
+  StyledInlineHelpIcon,
+  StyledText,
+  StyledTextBody,
+} from "./styled-components"
 
 export interface TextProps {
   element: TextProto
 }
 
 /**
+ * Replace newlines with spaces so wrap=False stays on one line.
+ *
+ * wrap=False uses nowrap + white-space-collapse:preserve so extra spaces
+ * stay visible (GH#10062). That combination computes to white-space:pre,
+ * which would otherwise honor newlines as extra rows.
+ */
+function collapseNewlines(body: string): string {
+  return body.replaceAll(/\r\n|\r|\n/g, " ")
+}
+
+/**
  * Functional element representing preformatted (plain) text.
  */
 function TextElement({ element }: Readonly<TextProps>): ReactElement {
+  const truncate = element.wrap === false
+  const { titleRef, labelTextRef } = useLabelTitleTooltip<HTMLSpanElement>(
+    truncate,
+    element.body
+  )
+  const displayedBody = truncate
+    ? collapseNewlines(element.body)
+    : element.body
+
   return (
     <StyledLabelHelpWrapper className="stText" data-testid="stText">
-      <StyledText>{element.body}</StyledText>
-      {element.help && <InlineTooltipIcon content={element.help} />}
+      <StyledText $truncate={truncate}>
+        {truncate ? (
+          <StyledTextBody ref={titleRef}>
+            <span ref={labelTextRef} style={{ display: "contents" }}>
+              {displayedBody}
+            </span>
+          </StyledTextBody>
+        ) : (
+          displayedBody
+        )}
+        {element.help && (
+          <StyledInlineHelpIcon>
+            <InlineTooltipIcon content={element.help} />
+          </StyledInlineHelpIcon>
+        )}
+      </StyledText>
     </StyledLabelHelpWrapper>
   )
 }

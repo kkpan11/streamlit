@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,19 +11,33 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import re
 
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    build_app_url,
+    wait_for_app_loaded,
+    wait_for_app_run,
+)
 from e2e_playwright.shared.app_utils import (
     check_top_level_class,
+    click_checkbox,
+    click_toggle,
     expect_help_tooltip,
+    expect_label_truncated,
+    expect_markdown,
+    expect_prefixed_markdown,
+    get_checkbox,
     get_element_by_key,
     get_expander,
+    reset_hovering,
 )
 
-CHECKBOX_ELEMENTS = 12
+CHECKBOX_ELEMENTS = 24
+
+WRAP_LABEL = "Include archived projects from the last several quarters"
 
 
 def test_checkbox_widget_display(
@@ -33,15 +47,57 @@ def test_checkbox_widget_display(
     checkbox_elements = themed_app.get_by_test_id("stCheckbox")
     expect(checkbox_elements).to_have_count(CHECKBOX_ELEMENTS)
 
-    assert_snapshot(checkbox_elements.nth(0), name="st_checkbox-true")
-    assert_snapshot(checkbox_elements.nth(1), name="st_checkbox-false")
-    assert_snapshot(checkbox_elements.nth(2), name="st_checkbox-long_label")
-    assert_snapshot(checkbox_elements.nth(3), name="st_checkbox-callback")
-    assert_snapshot(checkbox_elements.nth(4), name="st_checkbox-false_disabled")
-    assert_snapshot(checkbox_elements.nth(5), name="st_checkbox-true_disabled")
-    assert_snapshot(checkbox_elements.nth(6), name="st_checkbox-hidden_label")
-    assert_snapshot(checkbox_elements.nth(7), name="st_checkbox-collapsed_label")
-    assert_snapshot(checkbox_elements.nth(11), name="st_checkbox-markdown_label")
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox 1 (True)"), name="st_checkbox-true"
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox 2 (False)"), name="st_checkbox-false"
+    )
+    assert_snapshot(
+        get_checkbox(
+            themed_app,
+            re.compile(r"^checkbox 3"),
+        ),
+        name="st_checkbox-long_label",
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox 4 (with callback)"),
+        name="st_checkbox-callback",
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox 5 (False, disabled)"),
+        name="st_checkbox-false_disabled",
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox 6 (True, disabled)"),
+        name="st_checkbox-true_disabled",
+    )
+    assert_snapshot(
+        get_element_by_key(themed_app, "checkbox_7"),
+        name="st_checkbox-hidden_label",
+    )
+    assert_snapshot(
+        get_element_by_key(themed_app, "checkbox_8"),
+        name="st_checkbox-collapsed_label",
+    )
+    assert_snapshot(
+        get_element_by_key(themed_app, "checkbox_9"),
+        name="st_checkbox-markdown_label",
+    )
+
+    # Width examples
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox with content width"),
+        name="st_checkbox-width_content",
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox with stretch width"),
+        name="st_checkbox-width_stretch",
+    )
+    assert_snapshot(
+        get_checkbox(themed_app, "checkbox with 200px width"),
+        name="st_checkbox-width_200px",
+    )
 
 
 def test_help_tooltip_works(app: Page):
@@ -53,62 +109,46 @@ def test_help_tooltip_works(app: Page):
         a
         code
         block!"""
-    element_with_help = app.get_by_test_id("stCheckbox").nth(0)
+    element_with_help = get_checkbox(app, "checkbox 1 (True)")
     expect_help_tooltip(app, element_with_help, leading_indent_code_tooltip)
 
 
 def test_checkbox_initial_values(app: Page):
     """Test that st.checkbox has the correct initial values."""
-    markdown_elements = app.get_by_test_id("stMarkdown")
-    expect(markdown_elements).to_have_count(9)
-
-    expected = [
-        "checkbox 1 - value: True",
-        "checkbox 2 - value: False",
-        "checkbox 3 - value: False",
-        "checkbox 4 - value: False",
-        "checkbox 4 - clicked: False",
-        "checkbox 5 - value: False",
-        "checkbox 6 - value: True",
-        "checkbox 7 - value: False",
-        "checkbox 8 - value: False",
-    ]
-
-    for markdown_element, expected_text in zip(markdown_elements.all(), expected):
-        expect(markdown_element).to_have_text(expected_text, use_inner_text=True)
+    expect_markdown(app, "checkbox 1 - value: True")
+    expect_markdown(app, "checkbox 2 - value: False")
+    expect_markdown(app, "checkbox 3 - value: False")
+    expect_markdown(app, "checkbox 4 - value: False")
+    expect_markdown(app, "checkbox 4 - clicked: False")
+    expect_markdown(app, "checkbox 5 - value: False")
+    expect_markdown(app, "checkbox 6 - value: True")
+    expect_markdown(app, "checkbox 7 - value: False")
+    expect_markdown(app, "checkbox 8 - value: False")
 
 
 def test_checkbox_values_on_click(app: Page):
     """Test that st.checkbox updates values correctly when user clicks."""
-    checkbox_elements = app.get_by_test_id("stCheckbox")
-    expect(checkbox_elements).to_have_count(CHECKBOX_ELEMENTS)
+    # Click only the checkboxes that affect the displayed markdown values
+    click_checkbox(app, "checkbox 1 (True)")
+    click_checkbox(app, "checkbox 2 (False)")
+    click_checkbox(app, re.compile(r"^checkbox 3"))
+    click_checkbox(app, "checkbox 4 (with callback)")
 
-    for checkbox_element in checkbox_elements.all():
-        # Not sure if this is needed, but somehow it is slightly
-        # flaky with the last checkbox without it.
-        # It seems that it sometimes fails to click,
-        # and in these cases the checkbox was not scrolled into view.
-        # So, maybe that's the reason why it fails to click it.
-        # But this is just a guess.
-        checkbox_element.scroll_into_view_if_needed()
-        checkbox_element.locator("label").first.click(delay=50, force=True)
-        wait_for_app_run(app)
+    # Hidden/collapsed labels: click via key wrapper
+    get_element_by_key(app, "checkbox_7").locator("label").click()
+    wait_for_app_run(app)
+    get_element_by_key(app, "checkbox_8").locator("label").click()
+    wait_for_app_run(app)
 
-    markdown_elements = app.get_by_test_id("stMarkdown")
-    expected = [
-        "checkbox 1 - value: False",
-        "checkbox 2 - value: True",
-        "checkbox 3 - value: True",
-        "checkbox 4 - value: True",
-        "checkbox 4 - clicked: True",
-        "checkbox 5 - value: False",
-        "checkbox 6 - value: True",
-        "checkbox 7 - value: True",
-        "checkbox 8 - value: True",
-    ]
-
-    for markdown_element, expected_text in zip(markdown_elements.all(), expected):
-        expect(markdown_element).to_have_text(expected_text, use_inner_text=True)
+    expect_markdown(app, "checkbox 1 - value: False")
+    expect_markdown(app, "checkbox 2 - value: True")
+    expect_markdown(app, "checkbox 3 - value: True")
+    expect_markdown(app, "checkbox 4 - value: True")
+    expect_markdown(app, "checkbox 4 - clicked: True")
+    expect_markdown(app, "checkbox 5 - value: False")
+    expect_markdown(app, "checkbox 6 - value: True")
+    expect_markdown(app, "checkbox 7 - value: True")
+    expect_markdown(app, "checkbox 8 - value: True")
 
 
 def test_grouped_checkboxes_height(app: Page, assert_snapshot: ImageCompareFunction):
@@ -119,9 +159,58 @@ def test_grouped_checkboxes_height(app: Page, assert_snapshot: ImageCompareFunct
     )
     expect(expander_details.get_by_test_id("stCheckbox")).to_have_count(3)
     assert_snapshot(expander_details, name="st_checkbox-grouped_styling")
-    expect(expander_details.get_by_test_id("stCheckbox").nth(0)).to_have_css(
+    expect(get_checkbox(expander_details, "checkbox group - 1")).to_have_css(
         "height", "24px"
     )
+
+
+def test_wrap_false_single_row_and_auto_resolution(app: Page):
+    """wrap=False keeps the checkbox on one row and exposes the full label via a
+    native title, while the auto default (wrap=None) wraps and grows taller in a
+    vertical layout but ellipsizes with a title inside a horizontal container.
+    """
+    wrap_false = get_element_by_key(app, "wrap_false_checkbox")
+    wrap_auto_vertical = get_element_by_key(app, "wrap_auto_vertical_checkbox")
+
+    # wrap=False: label ellipsized and full label exposed via a native title.
+    # The checkbox indicator itself must remain visible (not clipped by truncation).
+    expect_label_truncated(wrap_false)
+    expect(wrap_false.get_by_title(WRAP_LABEL, exact=True)).to_be_visible()
+    expect(wrap_false.get_by_role("checkbox")).to_be_visible()
+
+    # Auto default in a vertical layout wraps onto another line and adds no title.
+    expect(wrap_auto_vertical.get_by_title(WRAP_LABEL, exact=True)).to_have_count(0)
+
+    false_box = wrap_false.get_by_test_id("stCheckbox").bounding_box()
+    auto_box = wrap_auto_vertical.get_by_test_id("stCheckbox").bounding_box()
+    assert false_box is not None
+    assert auto_box is not None
+    # The 4px margin absorbs sub-pixel rounding so the wrapped (two-line) checkbox
+    # is clearly taller than the single-row one, not just larger by rounding.
+    assert auto_box["height"] > false_box["height"] + 4
+
+    # Auto default inside a horizontal container keeps one row with a title.
+    wrap_auto_horizontal = get_element_by_key(app, "wrap_auto_checkbox")
+    expect_label_truncated(wrap_auto_horizontal)
+    expect(wrap_auto_horizontal.get_by_title(WRAP_LABEL, exact=True)).to_be_visible()
+
+
+def test_wrap_false_title_and_help_coexist(app: Page):
+    """With help set, the full-label title stays on the label (the help tooltip
+    lives on a separate icon), so both coexist.
+    """
+    container = get_element_by_key(app, "wrap_help_checkbox")
+    # The label is still ellipsized and exposes the full label via a native title.
+    # The checkbox indicator and help icon must remain visible (not clipped when
+    # the help icon shares the truncated row).
+    expect_label_truncated(container)
+    expect(container.get_by_title(WRAP_LABEL, exact=True)).to_be_visible()
+    expect(container.get_by_role("checkbox")).to_be_visible()
+    expect(container.get_by_test_id("stTooltipHoverTarget")).to_be_visible()
+
+    # Hovering the separate help icon still shows the help tooltip.
+    reset_hovering(app)
+    expect_help_tooltip(app, container, "wrap help text")
 
 
 def test_check_top_level_class(app: Page):
@@ -132,3 +221,122 @@ def test_check_top_level_class(app: Page):
 def test_custom_css_class_via_key(app: Page):
     """Test that the element can have a custom css class via the key argument."""
     expect(get_element_by_key(app, "checkbox4")).to_be_visible()
+
+
+def test_dynamic_checkbox_props(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that the checkbox can be updated dynamically."""
+    dynamic_checkbox = get_element_by_key(app, "dynamic_checkbox_with_key")
+    expect(dynamic_checkbox).to_be_visible()
+
+    expect(dynamic_checkbox).to_contain_text("Initial dynamic checkbox")
+
+    # Check that the initial checkbox state is True
+    expect_prefixed_markdown(app, "Initial checkbox state:", "True")
+
+    assert_snapshot(dynamic_checkbox, name="st_checkbox-dynamic_initial")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_checkbox, "initial help")
+
+    # Click checkbox -> state is False
+    click_checkbox(app, "Initial dynamic checkbox")
+    expect_prefixed_markdown(app, "Initial checkbox state:", "False")
+
+    # Click checkbox again -> state is True
+    click_checkbox(app, "Initial dynamic checkbox")
+    expect_prefixed_markdown(app, "Initial checkbox state:", "True")
+
+    # Click the toggle to update the checkbox props
+    click_toggle(app, "Update checkbox props")
+
+    # new checkbox is visible:
+    expect(dynamic_checkbox).to_contain_text("Updated dynamic checkbox")
+
+    # Check the the updated checkbox state is still True
+    expect_prefixed_markdown(app, "Updated checkbox state:", "True")
+
+    dynamic_checkbox.scroll_into_view_if_needed()
+    assert_snapshot(dynamic_checkbox, name="st_checkbox-dynamic_updated")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_checkbox, "updated help")
+
+    # Click the checkbox
+    click_checkbox(app, "Updated dynamic checkbox")
+    expect_prefixed_markdown(app, "Updated checkbox state:", "False")
+
+
+def test_checkbox_query_param_seeding(page: Page, app_base_url: str):
+    """Test that checkbox value can be seeded from URL query params."""
+    page.goto(build_app_url(app_base_url, query={"bound_checkbox": "true"}))
+    wait_for_app_loaded(page)
+
+    expect_prefixed_markdown(page, "bound checkbox value:", "True")
+
+
+def test_checkbox_query_param_updates_url(app: Page):
+    """Test that clicking a bound checkbox updates the URL."""
+    # Initially default False, no query param in URL
+    expect_prefixed_markdown(app, "bound checkbox value:", "False")
+    expect(app).not_to_have_url(re.compile(r"bound_checkbox"))
+
+    # Click the checkbox -> True
+    click_checkbox(app, "Bound checkbox (default False)")
+    expect_prefixed_markdown(app, "bound checkbox value:", "True")
+
+    # URL should now contain the query param
+    expect(app).to_have_url(re.compile(r"bound_checkbox=true"))
+
+    # Click again -> back to default False
+    click_checkbox(app, "Bound checkbox (default False)")
+    expect_prefixed_markdown(app, "bound checkbox value:", "False")
+
+    # Query param should be removed since value is back to default
+    expect(app).not_to_have_url(re.compile(r"bound_checkbox"))
+
+
+def test_checkbox_query_param_default_true(page: Page, app_base_url: str):
+    """Test checkbox with default True: seeding and param removal."""
+    # Load app with query param overriding the True default
+    page.goto(build_app_url(app_base_url, query={"bound_true": "false"}))
+    wait_for_app_loaded(page)
+
+    # Checkbox should be unchecked (overriding True default)
+    expect_prefixed_markdown(page, "bound checkbox true value:", "False")
+
+    # Click to re-check (back to default True)
+    click_checkbox(page, "Bound checkbox (default True)")
+    expect_prefixed_markdown(page, "bound checkbox true value:", "True")
+
+    # Query param should be removed since value is back to default (True)
+    expect(page).not_to_have_url(re.compile(r"bound_true"))
+
+
+def test_checkbox_query_param_invalid_value(page: Page, app_base_url: str):
+    """Test that invalid URL values are cleared and widget uses default."""
+    page.goto(build_app_url(app_base_url, query={"bound_checkbox": "invalid"}))
+    wait_for_app_loaded(page)
+
+    # Checkbox should use default (False), and invalid param should be cleared
+    expect_prefixed_markdown(page, "bound checkbox value:", "False")
+    expect(page).not_to_have_url(re.compile(r"bound_checkbox"))
+
+
+def test_checkbox_unbind_clears_url_param(page: Page, app_base_url: str):
+    """Test that removing bind='query-params' clears the URL param."""
+    page.goto(build_app_url(app_base_url, query={"unbindable": "true"}))
+    wait_for_app_loaded(page)
+
+    expect_prefixed_markdown(page, "unbindable value:", "True")
+    expect_prefixed_markdown(page, "bind active:", "True")
+    expect(page).to_have_url(re.compile(r"unbindable=true"))
+
+    # Remove the binding by clicking the button
+    page.get_by_role("button", name="Remove binding").click()
+    wait_for_app_run(page)
+
+    # URL should no longer contain the query param
+    expect(page).not_to_have_url(re.compile(r"unbindable"))
+    # Widget value should still be True (preserved in session state)
+    expect_prefixed_markdown(page, "unbindable value:", "True")
+    expect_prefixed_markdown(page, "bind active:", "False")

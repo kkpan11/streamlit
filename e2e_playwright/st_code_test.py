@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
+import textwrap
+
+import pytest
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction
-from e2e_playwright.shared.app_utils import check_top_level_class
+from e2e_playwright.conftest import ImageCompareFunction, wait_until
+from e2e_playwright.shared.app_utils import (
+    check_top_level_class,
+    reset_focus,
+    reset_hovering,
+    tab_until_focused,
+)
 
 
 def test_code_display(app: Page):
     """Test that st.code displays a code block."""
-    code_element = app.get_by_test_id("stCode").first
-    expect(code_element).to_contain_text("This code is awesome!")
+    # The code blocks might require a bit more time for rendering, so wait until
+    # the text is truly visible. Otherwise we might get blank code blocks in the
+    # screenshots.
+    foo_func_count = 5
+    app.wait_for_function(
+        f"()=>document.body.textContent.split('def foo()').length === {foo_func_count}"
+    )
+
+    code = textwrap.dedent(
+        """
+        def hello():
+            print("Hello, Streamlit!")
+        """
+    ).strip()
+    code_with_whitespace = textwrap.indent(code, "    ")
+    code_pattern = re.escape(code)
+    code_with_whitespace_pattern = re.escape(code_with_whitespace)
+
+    code_blocks = app.get_by_test_id("stCode")
+    # `to_contain_text` does not support pattern /\A\Z/, use /^$/ instead.
+    expect(code_blocks.nth(0)).to_contain_text(re.compile(r"^# This code is awesome!$"))
+    expect(code_blocks.nth(1)).to_contain_text(re.compile(r"^$"))
+    expect(code_blocks.nth(2)).to_contain_text(re.compile(rf"^{code_pattern}$"))
+    expect(code_blocks.nth(5)).to_contain_text(re.compile(rf"^{code_pattern}\n$"))
+    expect(code_blocks.nth(7)).to_contain_text(
+        re.compile(rf"^{code_with_whitespace_pattern}$")
+    )
+    expect(code_blocks.nth(8)).to_contain_text(
+        re.compile(rf"^{code_with_whitespace_pattern}\n$")
+    )
+    expect(code_blocks.nth(9)).to_contain_text(
+        re.compile(rf"^\n{code_with_whitespace_pattern}\n$")
+    )
+    expect(code_blocks.nth(10)).to_contain_text(
+        re.compile(rf"^\n{code_with_whitespace_pattern}\n\n$")
+    )
 
 
 def test_syntax_highlighting(themed_app: Page, assert_snapshot: ImageCompareFunction):
@@ -31,12 +74,40 @@ def test_syntax_highlighting(themed_app: Page, assert_snapshot: ImageCompareFunc
     assert_snapshot(first_code_element, name="st_code-hover_copy")
 
 
-def test_code_blocks_render_correctly(
+def test_copy_action_keyboard_accessibility(app: Page):
+    """Test that the copy action is reachable via keyboard navigation."""
+    first_code_element = app.get_by_test_id("stCode").first
+    copy_button = first_code_element.get_by_test_id("stBaseButton-elementToolbar")
+
+    expect(first_code_element).to_have_attribute("tabindex", "0")
+    expect(copy_button).not_to_be_visible()
+
+    first_code_element.hover()
+    expect(copy_button).to_be_visible()
+
+    # Regression check: after pointer interaction, the toolbar should not stay
+    # pinned visible once hover is removed.
+    copy_button.click()
+    reset_hovering(app)
+    expect(copy_button).not_to_be_visible()
+
+    # Start tabbing from a neutral focus state, then tab to the first code block.
+    reset_focus(app)
+    tab_until_focused(app, first_code_element)
+
+    expect(first_code_element).to_be_focused()
+    expect(copy_button).to_be_visible()
+
+    app.keyboard.press("Tab")
+    expect(copy_button).to_be_focused()
+
+
+def test_code_blocks_render_correctly_themed(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the code blocks render as expected via screenshot matching."""
+    """Test that code blocks with syntax highlighting render correctly (theme-dependent)."""
     code_blocks = themed_app.get_by_test_id("stCode")
-    expect(code_blocks).to_have_count(19)
+    expect(code_blocks).to_have_count(33)
     # The code blocks might require a bit more time for rendering, so wait until
     # the text is truly visible. Otherwise we might get blank code blocks in the
     # screenshots.
@@ -45,8 +116,9 @@ def test_code_blocks_render_correctly(
         f"()=>document.body.textContent.split('def foo()').length === {foo_func_count}"
     )
     # Check that there are 15 code blocks with the class "language-python"
-    expect(themed_app.locator("code.language-python")).to_have_count(17)
+    expect(themed_app.locator("code.language-python")).to_have_count(31)
 
+    # Syntax highlighting (colors differ by theme)
     assert_snapshot(code_blocks.nth(0), name="st_code-auto_lang")
     assert_snapshot(code_blocks.nth(1), name="st_code-empty")
     assert_snapshot(code_blocks.nth(2), name="st_code-python_lang")
@@ -55,18 +127,91 @@ def test_code_blocks_render_correctly(
     assert_snapshot(code_blocks.nth(5), name="st_markdown-code_block")
     assert_snapshot(code_blocks.nth(6), name="st_code-diff_lang")
 
-    # Test long lines draw as expected.
+
+def test_code_blocks_render_correctly_layout(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Test that code blocks layout properties render correctly (theme-independent)."""
+    code_blocks = app.get_by_test_id("stCode")
+    expect(code_blocks).to_have_count(33)
+    # Wait for code blocks to render
+    foo_func_count = 5
+    app.wait_for_function(
+        f"()=>document.body.textContent.split('def foo()').length === {foo_func_count}"
+    )
+
+    # Test long lines draw as expected (wrapping is layout behavior)
     # The screenshot for long-no_wrap seems to be a bit flaky, scrolling
     # it into view seems to help fix this (but not sure why).
-    code_blocks.nth(11).scroll_into_view_if_needed()
-    assert_snapshot(code_blocks.nth(11), name="st_code-long-no_wrap")
-    assert_snapshot(code_blocks.nth(12), name="st_code-long-numbers-no_wrap")
-    assert_snapshot(code_blocks.nth(13), name="st_code-long-wrap")
-    assert_snapshot(code_blocks.nth(14), name="st_code-long-numbers-wrap")
+    code_blocks.nth(15).scroll_into_view_if_needed()
+    assert_snapshot(code_blocks.nth(15), name="st_code-long-no_wrap")
+    assert_snapshot(code_blocks.nth(16), name="st_code-long-numbers-no_wrap")
+    assert_snapshot(code_blocks.nth(17), name="st_code-long-wrap")
+    assert_snapshot(code_blocks.nth(18), name="st_code-long-numbers-wrap")
 
-    # Test height prop
-    assert_snapshot(code_blocks.nth(15), name="st_code-height-long-code")
-    assert_snapshot(code_blocks.nth(16), name="st_code-height-short-code")
+    # Test height prop (sizing is layout property)
+    assert_snapshot(code_blocks.nth(19), name="st_code-height-long-code")
+    assert_snapshot(code_blocks.nth(20), name="st_code-height-short-code")
+
+    # Test long single word string (wrapping behavior)
+    long_string = "askldfjlweklrjweifjlsdfliwjlierjilsildfjlslfij" * 3
+    code_blocks.nth(24).scroll_into_view_if_needed()
+    expect(app.get_by_text(long_string)).to_have_count(2)
+    expect(app.get_by_text(long_string).nth(0)).to_be_attached()
+    assert_snapshot(code_blocks.nth(24), name="st_code-long-single-word-string-no-wrap")
+
+    code_blocks.nth(25).scroll_into_view_if_needed()
+    expect(app.get_by_text(long_string).nth(1)).to_be_attached()
+    assert_snapshot(code_blocks.nth(25), name="st_code-long-single-word-string-wrap")
+
+
+def test_right_padding_preserved_on_horizontal_scroll(app: Page):
+    """Regression test for #8206: right-side padding should stay visible
+    when scrolling a wide code block all the way to the right, so the last
+    characters don't touch the container edge.
+    """
+    code_blocks = app.get_by_test_id("stCode")
+    # Index 15 is the first `wrap_lines=False` block in st_code.py; its
+    # content overflows horizontally so it must scroll to the right.
+    wide_block = code_blocks.nth(15)
+    wide_block.scroll_into_view_if_needed()
+
+    pre = wide_block.locator("pre")
+    expect(pre).to_be_visible()
+
+    # Wait for the block to actually have overflow content before measuring,
+    # otherwise `scrollWidth` / `clientWidth` may not be stable yet.
+    app.wait_for_function(
+        """(el) => el && el.scrollWidth > el.clientWidth""",
+        arg=pre.element_handle(),
+    )
+
+    # Scroll the inner <pre> to its rightmost position, then measure the gap
+    # between the last text glyph and the pre's right edge.
+    gap_px = pre.evaluate(
+        """(el) => {
+            el.scrollLeft = el.scrollWidth - el.clientWidth;
+            const preRight = el.getBoundingClientRect().right;
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT);
+            let rightmost = 0;
+            let node = walker.nextNode();
+            while (node) {
+                if (node.children.length === 0 && (node.textContent ?? "").trim()) {
+                    rightmost = Math.max(
+                        rightmost, node.getBoundingClientRect().right,
+                    );
+                }
+                node = walker.nextNode();
+            }
+            return preRight - rightmost;
+        }"""
+    )
+
+    # We expect roughly a `theme.spacing.lg` (16px) gap between the last
+    # character and the container's right edge. Allow small subpixel slack.
+    assert gap_px >= 12, (
+        f"Expected right padding gap of ~16px at max scroll, got {gap_px}px"
+    )
 
 
 def test_correct_bottom_spacing_for_code_blocks(app: Page):
@@ -94,21 +239,21 @@ def test_line_wrap(app: Page):
 
     # When line-wrap is off, the "EOL" token should not be visible.
 
-    curr_block = code_blocks.nth(11)
+    curr_block = code_blocks.nth(15)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.get_by_text("EOL")).not_to_be_in_viewport()
 
-    curr_block = code_blocks.nth(12)
+    curr_block = code_blocks.nth(16)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.get_by_text("EOL")).not_to_be_in_viewport()
 
     # When line-wrap is on, the "EOL" token should be visible.
 
-    curr_block = code_blocks.nth(13)
+    curr_block = code_blocks.nth(17)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.get_by_text("EOL")).to_be_in_viewport()
 
-    curr_block = code_blocks.nth(14)
+    curr_block = code_blocks.nth(18)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.get_by_text("EOL")).to_be_in_viewport()
 
@@ -118,14 +263,14 @@ def test_height_parameter(app: Page):
     code_blocks = app.get_by_test_id("stCode")
 
     # Test long code with fixed height
-    curr_block = code_blocks.nth(15)
+    curr_block = code_blocks.nth(19)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.locator("pre")).to_have_css("height", "200px")
     # The "EOL" token at the end of the code block should not be visible.
     expect(curr_block.get_by_text("EOL")).not_to_be_in_viewport()
 
     # Test short code with fixed height
-    curr_block = code_blocks.nth(16)
+    curr_block = code_blocks.nth(20)
     curr_block.scroll_into_view_if_needed()
     expect(curr_block.locator("pre")).to_have_css("height", "200px")
 
@@ -136,5 +281,88 @@ def test_width_configurations(app: Page, assert_snapshot: ImageCompareFunction):
     code_elements = app.get_by_test_id("stCode")
 
     # Test longer code blocks with different widths
-    assert_snapshot(code_elements.nth(17), name="st_code-width_pixels")
-    assert_snapshot(code_elements.nth(18), name="st_code-width_stretch")
+    assert_snapshot(code_elements.nth(21), name="st_code-width_pixels")
+    assert_snapshot(code_elements.nth(22), name="st_code-width_stretch")
+    assert_snapshot(code_elements.nth(23), name="st_code-width_content")
+
+
+def test_form_with_code_block(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that code blocks render correctly within forms."""
+    # Get the form container and snapshot the entire form
+    form_container = app.get_by_test_id("stForm")
+    form_container.scroll_into_view_if_needed()
+    assert_snapshot(form_container, name="st_code-form_container")
+
+
+def test_columns_with_code_blocks(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that code blocks render correctly within columns."""
+    # Get the columns container and snapshot the entire columns layout
+    columns_container = app.get_by_test_id("stHorizontalBlock")
+    columns_container.scroll_into_view_if_needed()
+    assert_snapshot(columns_container, name="st_code-columns")
+
+
+def test_container_with_code_blocks(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that code blocks render correctly within containers with fixed height."""
+    # Get the container with height and snapshot the entire container
+    height_container = app.get_by_test_id("stVerticalBlock").last
+    height_container.scroll_into_view_if_needed()
+    assert_snapshot(height_container, name="st_code-height_container")
+
+
+@pytest.mark.only_browser("chromium")
+def test_copy_to_clipboard_functionality(app: Page):
+    """Test that the copy-to-clipboard button actually copies code to the clipboard.
+
+    Only runs on Chromium as Firefox and WebKit don't support clipboard
+    permissions in Playwright.
+    """
+    app.context.grant_permissions(["clipboard-read", "clipboard-write"])
+
+    first_code_block = app.get_by_test_id("stCode").first
+    copy_button = first_code_block.get_by_test_id("stBaseButton-elementToolbar")
+
+    first_code_block.hover()
+    expect(copy_button).to_be_visible()
+    copy_button.click()
+
+    wait_until(
+        app,
+        lambda: (
+            app.evaluate("async () => await navigator.clipboard.readText()")
+            == "# This code is awesome!"
+        ),
+    )
+    expect(copy_button).to_have_attribute("aria-label", "Copied")
+
+
+@pytest.mark.only_browser("chromium")
+def test_copy_to_clipboard_multiline_code(app: Page):
+    """Test that copying multiline code blocks works correctly.
+
+    Verifies that the entire code block, including newlines and indentation,
+    is copied correctly to the clipboard. Only runs on Chromium as Firefox
+    and WebKit don't support clipboard permissions in Playwright.
+    """
+    app.context.grant_permissions(["clipboard-read", "clipboard-write"])
+
+    python_code_block = app.get_by_test_id("stCode").nth(2)
+    python_code_block.hover()
+    copy_button = python_code_block.get_by_test_id("stBaseButton-elementToolbar")
+    expect(copy_button).to_be_visible()
+    copy_button.click()
+
+    expected_code = textwrap.dedent(
+        """
+        def hello():
+            print("Hello, Streamlit!")
+        """
+    ).strip()
+
+    wait_until(
+        app,
+        lambda: (
+            app.evaluate("async () => await navigator.clipboard.readText()")
+            == expected_code
+        ),
+    )

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 import { AppRoot, HostCommunicationManager } from "@streamlit/lib"
 import {
-  IAppPage,
+  type AppPage,
   Navigation,
   NewSession,
   PageConfig,
@@ -24,8 +24,9 @@ import {
 
 interface AppNavigationState {
   expandSidebarNav: boolean
+  sidebarNavVisibleItems?: number
   hideSidebarNav: boolean
-  appPages: IAppPage[]
+  appPages: AppPage.$Properties[]
   currentPageScriptHash: string
   navSections: string[]
 }
@@ -62,11 +63,13 @@ export class AppNavigation {
 
   isPageIconSet: boolean
 
+  hasSetDefaultFavicon: boolean
+
   mainScriptHash: string | null
 
-  appPages: IAppPage[]
+  appPages: AppPage.$Properties[]
 
-  mainPage: IAppPage | null
+  mainPage: AppPage.$Properties | null
 
   hideSidebarNav: boolean | null
 
@@ -82,6 +85,7 @@ export class AppNavigation {
     this.onPageIconChange = onPageIconChange
     this.isPageIconSet = false
     this.isPageTitleSet = false
+    this.hasSetDefaultFavicon = false
     this.mainScriptHash = null
     this.appPages = []
     this.mainPage = null
@@ -89,17 +93,18 @@ export class AppNavigation {
   }
 
   handleNewSession(newSession: NewSession): MaybeStateUpdate {
-    this.isPageTitleSet = false
-    this.isPageIconSet = false
+    // Reset flags only when script hash changes (new page in multi-page app)
+    if (this.mainScriptHash !== newSession.mainScriptHash) {
+      this.isPageTitleSet = false
+      this.isPageIconSet = false
+      this.hasSetDefaultFavicon = false
+    }
 
     this.mainScriptHash = newSession.mainScriptHash
     // Initialize to the config value if provided
     if (this.hideSidebarNav === null) {
       this.hideSidebarNav = newSession.config?.hideSidebarNav ?? null
     }
-
-    // We do not know the page name, so use an empty string version
-    document.title = getTitle("")
 
     return [
       {
@@ -120,8 +125,8 @@ export class AppNavigation {
     const currentPageScriptHash = navigationMsg.pageScriptHash
     const currentPage = appPages.find(
       p => p.pageScriptHash === currentPageScriptHash
-    ) as IAppPage
-    const mainPage = appPages.find(p => p.isDefault) as IAppPage
+    ) as AppPage.$Properties
+    const mainPage = appPages.find(p => p.isDefault) as AppPage.$Properties
     this.mainPage = mainPage
     const currentPageName = currentPage.urlPathname as string
 
@@ -138,21 +143,25 @@ export class AppNavigation {
       this.onPageIconChange(currentPage.icon)
     }
 
-    this.onUpdatePageUrl(
-      mainPage.urlPathname ?? "",
-      currentPageName,
-      currentPage.isDefault ?? false
-    )
-
     return [
       {
         appPages,
         navSections: sections,
         hideSidebarNav: this.hideSidebarNav,
         expandSidebarNav: navigationMsg.expanded,
+        sidebarNavVisibleItems: navigationMsg.visibleItems ?? undefined,
         currentPageScriptHash,
       },
       () => {
+        // Update the page URL in the setState callback so that
+        // this.state.queryParams reflects all batched updates
+        // (e.g. from handlePageInfoChanged) before we read it.
+        this.onUpdatePageUrl(
+          mainPage.urlPathname ?? "",
+          currentPageName,
+          currentPage.isDefault ?? false
+        )
+
         this.hostCommunicationMgr.sendMessageToHost({
           type: "SET_APP_PAGES",
           appPages,
@@ -185,19 +194,34 @@ export class AppNavigation {
     ]
   }
 
-  findPageByUrlPath(pathname: string): IAppPage | null {
+  findPageByUrlPath(pathname: string): AppPage.$Properties | null {
+    // Browsers URL-encode Unicode during Back/Forward navigation (popstate),
+    // so decode before matching against unencoded page URL paths.
+    let decodedPathname: string
+    try {
+      decodedPathname = decodeURIComponent(pathname)
+    } catch {
+      decodedPathname = pathname
+    }
+
     return (
       this.appPages.find(appPage =>
         // The page name is embedded at the end of the URL path, and if not, we are in the main page.
         // See https://github.com/streamlit/streamlit/blob/1.19.0/frontend/src/App.tsx#L740
-        pathname.endsWith("/" + appPage.urlPathname)
+        decodedPathname.endsWith("/" + appPage.urlPathname)
       ) ?? this.mainPage
     )
   }
 
   handlePageConfigChanged(pageConfig: PageConfig): void {
-    this.isPageIconSet = Boolean(pageConfig.favicon)
-    this.isPageTitleSet = Boolean(pageConfig.title)
+    // Make flags "sticky" - once set, they stay true for the session.
+    // This ensures that multiple set_page_config calls don't reset the flags.
+    if (pageConfig.favicon) {
+      this.isPageIconSet = true
+    }
+    if (pageConfig.title) {
+      this.isPageTitleSet = true
+    }
   }
 
   clearPageElements(elements: AppRoot, mainScriptHash: string): AppRoot {

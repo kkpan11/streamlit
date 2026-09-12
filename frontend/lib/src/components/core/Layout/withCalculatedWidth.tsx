@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,13 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import React, { ComponentType } from "react"
+import { ComponentType, ReactElement } from "react"
 
 import hoistNonReactStatics from "hoist-non-react-statics"
-import { ReactElement } from "react-markdown/lib/react-markdown"
 
 import { Box } from "~lib/components/shared/Base/styled-components"
-import { useCalculatedWidth } from "~lib/hooks/useCalculatedWidth"
+import { useCalculatedDimensions } from "~lib/hooks/useCalculatedDimensions"
 
 /**
  * HOC that wraps a component and passes its width as a prop. Should only be
@@ -29,7 +28,7 @@ export const withCalculatedWidth = <P extends { width?: number }>(
   WrappedComponent: ComponentType<React.PropsWithChildren<P>>
 ): ComponentType<Omit<P, "width">> => {
   const EnhancedComponent = (props: Omit<P, "width">): ReactElement => {
-    const [width, elementRef] = useCalculatedWidth()
+    const { width, elementRef } = useCalculatedDimensions()
 
     return (
       <Box ref={elementRef}>

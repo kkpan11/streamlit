@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,15 +18,25 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from streamlit import config, dataframe_util
+from streamlit import dataframe_util
+from streamlit.deprecation_util import (
+    make_deprecated_name_warning,
+    show_deprecation_warning,
+)
 from streamlit.elements import deck_gl_json_chart
 from streamlit.elements.lib.color_util import (
     Color,
     IntColorTuple,
     is_color_like,
     to_int_color_tuple,
+)
+from streamlit.elements.lib.layout_utils import (
+    HeightWithoutContent,
+    WidthWithoutContent,
+    create_layout_config,
 )
 from streamlit.errors import StreamlitAPIException
 from streamlit.proto.DeckGlJsonChart_pb2 import DeckGlJsonChart as DeckGlJsonChartProto
@@ -82,12 +92,12 @@ class MapMixin:
         *,
         latitude: str | None = None,
         longitude: str | None = None,
-        color: None | str | Color = None,
-        size: None | str | float = None,
+        color: str | Color | None = None,
+        size: str | float | None = None,
         zoom: int | None = None,
-        use_container_width: bool = True,
-        width: int | None = None,
-        height: int | None = None,
+        width: WidthWithoutContent = "stretch",
+        height: HeightWithoutContent = 500,
+        use_container_width: bool | None = None,
     ) -> DeltaGenerator:
         """Display a map with a scatterplot overlaid onto it.
 
@@ -163,39 +173,54 @@ class MapMixin:
             Zoom level as specified in
             https://wiki.openstreetmap.org/wiki/Zoom_levels.
 
-        use_container_width : bool
+        width : "stretch" or int
+            The width of the chart element. This can be one of the following:
+
+            - ``"stretch"`` (default): The width of the element matches the
+              width of the parent container.
+            - An integer specifying the width in pixels: The element has a
+              fixed width. If the specified width is greater than the width of
+              the parent container, the width of the element matches the width
+              of the parent container.
+
+        height : "stretch" or int
+            The height of the chart element. This can be one of the following:
+
+            - An integer specifying the height in pixels: The element has a
+              fixed height. If the content is larger than the specified
+              height, scrolling is enabled. This is ``500`` by default.
+            - ``"stretch"``: The height of the element matches the height of
+              its content or the height of the parent container, whichever is
+              larger. If the element is not in a parent container, the height
+              of the element matches the height of its content.
+
+        use_container_width : bool or None
             Whether to override the map's native width with the width of
-            the parent container. If ``use_container_width`` is ``True``
-            (default), Streamlit sets the width of the map to match the width
-            of the parent container. If ``use_container_width`` is ``False``,
-            Streamlit sets the width of the chart to fit its contents according
-            to the plotting library, up to the width of the parent container.
+            the parent container. This can be one of the following:
 
-        width : int or None
-            Desired width of the chart expressed in pixels. If ``width`` is
-            ``None`` (default), Streamlit sets the width of the chart to fit
-            its contents according to the plotting library, up to the width of
-            the parent container. If ``width`` is greater than the width of the
-            parent container, Streamlit sets the chart width to match the width
-            of the parent container.
+            - ``None`` (default): Streamlit will use the map's default behavior.
+            - ``True``: Streamlit sets the width of the map to match the
+              width of the parent container.
+            - ``False``: Streamlit sets the width of the map to fit its
+              contents according to the plotting library, up to the width of
+              the parent container.
 
-            To use ``width``, you must set ``use_container_width=False``.
-
-        height : int or None
-            Desired height of the chart expressed in pixels. If ``height`` is
-            ``None`` (default), Streamlit sets the height of the chart to fit
-            its contents according to the plotting library.
+            .. deprecated::
+               ``use_container_width`` is deprecated and will be removed in a
+                future release. For ``use_container_width=True``, use
+                ``width="stretch"``.
 
         Examples
         --------
-        >>> import streamlit as st
         >>> import pandas as pd
-        >>> import numpy as np
+        >>> import streamlit as st
+        >>> from numpy.random import default_rng as rng
         >>>
         >>> df = pd.DataFrame(
-        ...     np.random.randn(1000, 2) / [50, 50] + [37.76, -122.4],
-        ...     columns=["lat", "lon"],
-        ... )
+        >>>     rng(0).standard_normal((1000, 2)) / [50, 50] + [37.76, -122.4],
+        >>>     columns=["lat", "lon"],
+        >>> )
+        >>>
         >>> st.map(df)
 
         .. output::
@@ -210,16 +235,16 @@ class MapMixin:
         and longitude components, as well as set size and color of each
         datapoint dynamically based on other columns:
 
-        >>> import streamlit as st
         >>> import pandas as pd
-        >>> import numpy as np
+        >>> import streamlit as st
+        >>> from numpy.random import default_rng as rng
         >>>
         >>> df = pd.DataFrame(
         ...     {
-        ...         "col1": np.random.randn(1000) / 50 + 37.76,
-        ...         "col2": np.random.randn(1000) / 50 + -122.4,
-        ...         "col3": np.random.randn(1000) * 100,
-        ...         "col4": np.random.rand(1000, 4).tolist(),
+        ...         "col1": rng(0).standard_normal(1000) / 50 + 37.76,
+        ...         "col2": rng(1).standard_normal(1000) / 50 + -122.4,
+        ...         "col3": rng(2).standard_normal(1000) * 100,
+        ...         "col4": rng(3).standard_normal((1000, 4)).tolist(),
         ...     }
         ... )
         >>>
@@ -230,31 +255,37 @@ class MapMixin:
            height: 600px
 
         """
-        # This feature was turned off while we investigate why different
-        # map styles cause DeckGL to crash.
-        #
-        # For reference, this was the docstring for map_style:
-        #
-        #   map_style : str, None
-        #       One of Mapbox's map style URLs. A full list can be found here:
-        #       https://docs.mapbox.com/api/maps/styles/#mapbox-styles
-        #
-        #       This feature requires a Mapbox token. See the top of these docs
-        #       for information on how to get one and set it up in Streamlit.
-        #
-        map_style = None
+        # Handle use_container_width deprecation (for elements that already had width parameter)
+        if use_container_width is not None:
+            show_deprecation_warning(
+                make_deprecated_name_warning(
+                    "use_container_width",
+                    "width",
+                    "2025-12-31",
+                    "For `use_container_width=True`, use `width='stretch'`. "
+                    "For `use_container_width=False`, specify an integer width.",
+                    include_st_prefix=False,
+                ),
+                show_in_browser=False,
+            )
+            if use_container_width:
+                width = "stretch"
+            # For use_container_width=False, preserve any integer width that was set.
+
+        layout_config = create_layout_config(width=width, height=height)
+
         map_proto = DeckGlJsonChartProto()
-        deck_gl_json = to_deckgl_json(
-            data, latitude, longitude, size, color, map_style, zoom
+        deck_gl_json = to_deckgl_json(data, latitude, longitude, size, color, zoom)
+
+        marshall(map_proto, deck_gl_json)
+
+        return self.dg._enqueue(
+            "deck_gl_json_chart", map_proto, layout_config=layout_config
         )
-        marshall(
-            map_proto, deck_gl_json, use_container_width, width=width, height=height
-        )
-        return self.dg._enqueue("deck_gl_json_chart", map_proto)
 
     @property
     def dg(self) -> DeltaGenerator:
-        """Get our DeltaGenerator."""
+        """The associated DeltaGenerator."""
         return cast("DeltaGenerator", self)
 
 
@@ -262,9 +293,8 @@ def to_deckgl_json(
     data: Data,
     lat: str | None,
     lon: str | None,
-    size: None | str | float,
-    color: None | str | Collection[float],
-    map_style: str | None,
+    size: str | float | None,
+    color: str | Collection[float] | None,
     zoom: int | None,
 ) -> str:
     if data is None:
@@ -294,7 +324,7 @@ def to_deckgl_json(
             if c is not None
         ]
     )
-    df = df[used_columns]
+    df = df[used_columns].copy()
 
     converted_color_arg = _convert_color_arg_or_column(df, color_arg, color_col_name)
 
@@ -317,14 +347,6 @@ def to_deckgl_json(
             "data": df.to_dict("records"),
         }
     ]
-
-    if map_style:
-        if not config.get_option("mapbox.token"):
-            raise StreamlitAPIException(
-                "You need a Mapbox token in order to select a map type. "
-                "Refer to the docs for st.map for more information."
-            )
-        default["mapStyle"] = map_style
 
     return json.dumps(default)
 
@@ -355,7 +377,8 @@ def _get_lat_or_lon_col_name(
 
             raise StreamlitAPIException(
                 f"Map data must contain a {human_readable_name} column named: "
-                f"{formatted_allowed_col_name}. Existing columns: {formmated_col_names}"
+                f"{formatted_allowed_col_name}. Existing columns: {formmated_col_names}",
+                error_id="map-missing-lat-lon-column",
             )
         col_name = candidate_col_name
 
@@ -368,7 +391,8 @@ def _get_lat_or_lon_col_name(
     if any(data[col_name].isna().array):
         raise StreamlitAPIException(
             f"Column {col_name} is not allowed to contain null values, such "
-            "as NaN, NaT, or None."
+            "as NaN, NaT, or None.",
+            error_id="map-column-contains-nulls",
         )
 
     return col_name
@@ -407,7 +431,7 @@ def _convert_color_arg_or_column(
     data: DataFrame,
     color_arg: str,
     color_col_name: str | None,
-) -> None | str | IntColorTuple:
+) -> str | IntColorTuple | None:
     """Converts color to a format accepted by PyDeck.
 
     For example:
@@ -418,20 +442,19 @@ def _convert_color_arg_or_column(
     NOTE: This function mutates the data argument.
     """
 
-    color_arg_out: None | str | IntColorTuple = None
+    color_arg_out: str | IntColorTuple | None = None
 
     if color_col_name is not None:
         # Convert color column to the right format.
-        if len(data[color_col_name]) > 0 and is_color_like(
-            data[color_col_name].iloc[0]
-        ):
-            # Use .loc[] to avoid a SettingWithCopyWarning in some cases.
-            data.loc[:, color_col_name] = data.loc[:, color_col_name].map(
-                to_int_color_tuple
-            )
+        if len(data[color_col_name]) > 0 and is_color_like(data[color_col_name].iat[0]):
+            # Convert to object dtype first to support tuple values (pandas 3.x infers
+            # string columns as StringDtype which can't hold tuples).
+            data[color_col_name] = data[color_col_name].astype(object)
+            data[color_col_name] = data[color_col_name].map(to_int_color_tuple)
         else:
             raise StreamlitAPIException(
-                f'Column "{color_col_name}" does not appear to contain valid colors.'
+                f'Column "{color_col_name}" does not appear to contain valid colors.',
+                error_id="map-invalid-color-column",
             )
 
         color_arg_out = color_arg
@@ -489,16 +512,18 @@ def _get_zoom_level(distance: float) -> int:
 def marshall(
     pydeck_proto: DeckGlJsonChartProto,
     pydeck_json: str,
-    use_container_width: bool,
-    height: int | None = None,
-    width: int | None = None,
 ) -> None:
+    """Marshall a map proto with the given pydeck JSON specification.
+
+    Layout configuration (width, height, etc.) is handled by the LayoutConfig
+    system and not through proto fields.
+    """
     pydeck_proto.json = pydeck_json
-    pydeck_proto.use_container_width = use_container_width
-
-    if width:
-        pydeck_proto.width = width
-    if height:
-        pydeck_proto.height = height
-
     pydeck_proto.id = ""
+
+    # st.map builds Deck JSON itself and never constructs a PyDeck Deck, so
+    # copy MAPBOX_API_KEY onto the proto. Default styles are Carto; the
+    # frontend uses this token only if the spec selects a Mapbox style.
+    mapbox_token = os.environ.get("MAPBOX_API_KEY")
+    if mapbox_token:
+        pydeck_proto.mapbox_token = mapbox_token

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -154,6 +154,20 @@ def get_project_streamlit_file_path(*filepath: str) -> str:
     This doesn't guarantee that the file (or its directory) exists.
     """
     return str(Path.cwd() / CONFIG_FOLDER_NAME / Path(*filepath))
+
+
+def get_main_script_streamlit_file_path(main_script_path: str, filename: str) -> str:
+    """Return the full path to a file in the .streamlit folder relative to the
+    main script's path.
+
+    This doesn't guarantee that the file (or its directory) exists.
+    """
+
+    return str(
+        Path(os.path.abspath(os.path.dirname(main_script_path)))
+        / CONFIG_FOLDER_NAME
+        / filename
+    )
 
 
 def file_is_in_folder_glob(filepath: str, folderpath_glob: str) -> bool:

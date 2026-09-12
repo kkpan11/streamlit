@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,16 +13,70 @@
 # limitations under the License.
 
 import pathlib
+from unittest.mock import patch
 
 import pytest
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
+from streamlit.elements.html import _is_file
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitMissingRequiredParameterError,
+)
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
+
+
+def test_is_file_with_long_string() -> None:
+    """Test that _is_file short-circuits for very long strings (likely HTML)."""
+    long_html = "x" * 5000
+    assert _is_file(long_html) is False
+
+
+def test_is_file_with_html_tag_substring() -> None:
+    """Test that _is_file short-circuits for strings containing '<'."""
+    assert _is_file("not<a>file") is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError("broken"), ValueError("null byte"), TypeError("bad")],
+    ids=["oserror", "valueerror", "typeerror"],
+)
+def test_is_file_returns_false_on_filesystem_error(error: Exception) -> None:
+    """Path.is_file errors are treated as 'not a file'."""
+    with patch("streamlit.elements.html.Path") as mock_path:
+        mock_path.return_value.is_file.side_effect = error
+        assert _is_file("shortpath") is False
 
 
 class StHtmlAPITest(DeltaGeneratorTestCase):
     """Test st.html API."""
+
+    def test_unsafe_allow_javascript_default_false(self):
+        """By default JS execution is disabled (flag False)."""
+        st.html("<div>Hi</div>")
+        el = self.get_delta_from_queue().new_element
+        assert el.html.body == "<div>Hi</div>"
+        assert el.html.unsafe_allow_javascript is False
+
+    def test_unsafe_allow_javascript_true(self):
+        """When enabled, the flag is serialized as True."""
+        st.html("<div>Hi</div>", unsafe_allow_javascript=True)
+        el = self.get_delta_from_queue().new_element
+        assert el.html.body == "<div>Hi</div>"
+        assert el.html.unsafe_allow_javascript is True
+
+    def test_unsafe_allow_javascript_style_only_ignores_flag(self):
+        """Style-only HTML ignores the JS flag since no scripts can execute."""
+        css = "<style>body{background:red}</style>"
+        st.html(css, unsafe_allow_javascript=True)
+        # First message routes the style-only tag to the event container; then
+        # the element
+        _ = self.get_message_from_queue()
+        style_el = self.get_delta_from_queue().new_element
+        assert style_el.html.body == css
+        assert style_el.html.unsafe_allow_javascript is False
 
     def test_st_html(self):
         """Test st.html."""
@@ -33,10 +87,8 @@ class StHtmlAPITest(DeltaGeneratorTestCase):
 
     def test_st_html_empty_body_throws_error(self):
         """Test st.html with empty body throws error."""
-        with pytest.raises(StreamlitAPIException) as ctx:
+        with pytest.raises(StreamlitMissingRequiredParameterError):
             st.html("")
-
-        assert "`st.html` body cannot be empty" in str(ctx.value)
 
     def test_st_html_with_style_tag_only(self):
         """Test st.html with only a style tag."""
@@ -110,11 +162,31 @@ class StHtmlAPITest(DeltaGeneratorTestCase):
         )
 
     def test_st_html_with_file(self):
-        """Test st.html with file."""
-        st.html(str(pathlib.Path(__file__).parent / "test_html.js"))
+        """Test st.html with a file."""
+        st.html(pathlib.Path(__file__).parent / "test_html.js")
 
         el = self.get_delta_from_queue().new_element
         assert el.html.body.strip() == "<button>Corgi</button>"
+
+    def test_st_html_with_string_file_path(self):
+        """Test st.html warns and doesn't read a string file path."""
+        file_path = str(pathlib.Path(__file__).parent / "test_html.js")
+
+        with (
+            patch(
+                "streamlit.elements.html.show_deprecation_warning"
+            ) as mock_show_warning,
+            patch("streamlit.elements.html.open") as mock_open,
+        ):
+            st.html(file_path)
+
+        mock_show_warning.assert_called_once_with(
+            "Passing a local file path as a string to `st.html` is no longer "
+            "supported. To load a local file, pass a `pathlib.Path` object instead."
+        )
+        mock_open.assert_not_called()
+        el = self.get_delta_from_queue().new_element
+        assert el.html.body == file_path
 
     def test_st_html_with_path(self):
         """Test st.html with path."""
@@ -168,9 +240,87 @@ class StHtmlAPITest(DeltaGeneratorTestCase):
         el = self.get_delta_from_queue().new_element
         assert el.html.body == "<div>html</div>"
 
+    def test_st_html_with_width(self):
+        """Test st.html with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.html("<p>test html</p>", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.html.body == "<p>test html</p>"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_html_with_invalid_width(self):
+        """Test st.html with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.html("<p>test html</p>", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_html_default_width(self):
+        """Test that st.html defaults to stretch width."""
+        st.html("<p>test html</p>")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.html.body == "<p>test html</p>"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
+    def test_st_html_style_only_no_width_config(self):
+        """Test that st.html with only style tags doesn't apply width configuration."""
+        st.html("<style>.test { color: red; }</style>", width=300)
+
+        # The style tag should be enqueued to the event delta generator
+        style_msg = self.get_message_from_queue()
+        assert style_msg.metadata.delta_path == [2, 0]
+
+        # Check that html body is the expected style tag
+        style_el = self.get_delta_from_queue().new_element
+        assert style_el.html.body == "<style>.test { color: red; }</style>"
+
+        # Verify that no width configuration is applied for style-only HTML
+        assert not style_el.HasField("width_config")
+
     def test_st_html_with_nonhtml_filelike_str(self):
         """Test st.html with a string that's neither HTML-like nor a real file."""
-        st.html("foo/fake.html")
+        with patch(
+            "streamlit.elements.html.show_deprecation_warning"
+        ) as mock_show_warning:
+            st.html("foo/fake.html")
 
+        # A string that doesn't resolve to a file must not trigger the warning.
+        mock_show_warning.assert_not_called()
         el = self.get_delta_from_queue().new_element
         assert el.html.body == "foo/fake.html"

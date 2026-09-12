@@ -1,0 +1,115 @@
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
+
+import streamlit as st
+
+if TYPE_CHECKING:
+    from streamlit.elements.lib.layout_utils import Gap
+
+GAPS = cast(
+    "list[Gap | None]",
+    [
+        None,
+        "xxsmall",
+        "xsmall",
+        "small",
+        "medium",
+        "large",
+        "xlarge",
+        "xxlarge",
+    ],
+)
+
+# Integer pixel gap variants.
+PIXEL_GAPS: list[int] = [0, 20, 50]
+
+for gap in GAPS:
+    gap_name = str(gap).lower()
+
+    with st.container(
+        border=True,
+        gap=gap,
+        horizontal=True,
+        key=f"container-horizontal-gap-{gap_name}",
+    ):
+        st.html(
+            '<div style="background:lightblue">One</div>',
+            width="stretch",
+        )
+        st.html(
+            '<div style="background:lightblue">Two</div>',
+            width="stretch",
+        )
+        st.html(
+            '<div style="background:lightblue">Three</div>',
+            width="stretch",
+        )
+        st.html(
+            '<div style="background:lightblue">Four</div>',
+            width="stretch",
+        )
+
+for gap in GAPS:
+    gap_name = str(gap).lower()
+
+    with st.container(
+        border=True,
+        gap=gap,
+        horizontal=False,
+        key=f"container-vertical-gap-{gap_name}",
+    ):
+        st.html(
+            '<div style="background:lightblue">One</div>',
+            width="stretch",
+        )
+        st.html(
+            '<div style="background:lightblue">Two</div>',
+            width="stretch",
+        )
+        st.html(
+            '<div style="background:lightblue">Three</div>',
+            width="stretch",
+        )
+
+for pixel_gap in PIXEL_GAPS:
+    for horizontal in (True, False):
+        orientation = "horizontal" if horizontal else "vertical"
+        with st.container(
+            border=True,
+            gap=pixel_gap,
+            horizontal=horizontal,
+            key=f"container-{orientation}-gap-pixel-{pixel_gap}",
+        ):
+            st.html(
+                '<div style="background:lightblue">One</div>',
+                width="stretch",
+            )
+            st.html(
+                '<div style="background:lightblue">Two</div>',
+                width="stretch",
+            )
+            st.html(
+                '<div style="background:lightblue">Three</div>',
+                width="stretch",
+            )
+
+# Columns with pixel gap
+with st.container(key="columns-pixel-gap"):
+    cols = st.columns(3, gap=20)
+    for i, col in enumerate(cols):
+        col.html(f'<div style="background:lightblue">Col {i}</div>')

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import React, { CSSProperties, ReactElement, ReactNode } from "react"
+import { ReactElement, ReactNode } from "react"
 
+import { DialogType } from "@streamlit/app/src/components/StreamlitDialog/constants"
 import {
   BaseButtonKind,
   Modal,
@@ -23,41 +24,20 @@ import {
   ModalButton,
   ModalFooter,
   ModalHeader,
-  SessionInfo,
+  StreamlitErrorCodeBlock,
   StreamlitMarkdown,
-  StreamlitSyntaxHighlighter,
 } from "@streamlit/lib"
-import { IException } from "@streamlit/protobuf"
-import { STREAMLIT_HOME_URL } from "@streamlit/app/src/urls"
-import { DialogType } from "@streamlit/app/src/components/StreamlitDialog/constants"
+import { type Exception } from "@streamlit/protobuf"
 
-import { SettingsDialog, Props as SettingsDialogProps } from "./SettingsDialog"
-import ThemeCreatorDialog, {
-  Props as ThemeCreatorDialogProps,
-} from "./ThemeCreatorDialog"
-import { DeployDialog, DeployDialogProps } from "./DeployDialog"
-import {
-  StyledAboutInfo,
-  StyledAboutLink,
-  StyledDeployErrorContent,
-} from "./styled-components"
+import { DeployDialog, DeployDialogProps } from "./DeployDialog/DeployDialog"
+import { StyledDeployErrorContent } from "./styled-components"
 
 export type PlainEventHandler = () => void
-
-interface SettingsProps extends SettingsDialogProps {
-  type: DialogType.SETTINGS
-}
-
-interface ThemeCreatorProps extends ThemeCreatorDialogProps {
-  type: DialogType.THEME_CREATOR
-}
 
 export type DialogProps =
   | AboutProps
   | ClearCacheProps
-  | SettingsProps
   | ScriptCompileErrorProps
-  | ThemeCreatorProps
   | WarningProps
   | DeployErrorProps
   | DeployDialogProps
@@ -69,12 +49,8 @@ export function StreamlitDialog(dialogProps: DialogProps): ReactNode {
       return <AboutDialog {...dialogProps} />
     case DialogType.CLEAR_CACHE:
       return <ClearCacheDialog {...dialogProps} />
-    case DialogType.SETTINGS:
-      return <SettingsDialog {...dialogProps} />
     case DialogType.SCRIPT_COMPILE_ERROR:
       return <ScriptCompileErrorDialog {...dialogProps} />
-    case DialogType.THEME_CREATOR:
-      return <ThemeCreatorDialog {...dialogProps} />
     case DialogType.WARNING:
     case DialogType.CONNECTION_ERROR:
       return <WarningDialog {...dialogProps} />
@@ -92,8 +68,6 @@ export function StreamlitDialog(dialogProps: DialogProps): ReactNode {
 interface AboutProps {
   type: DialogType.ABOUT
 
-  sessionInfo: SessionInfo
-
   /** Callback to close the dialog */
   onClose: PlainEventHandler
 
@@ -102,58 +76,13 @@ interface AboutProps {
 
 /** About Dialog */
 function AboutDialog(props: AboutProps): ReactElement {
-  if (props.aboutSectionMd) {
-    const markdownStyle: CSSProperties = {
-      overflowY: "auto",
-      overflowX: "hidden",
-      maxHeight: "35vh",
-    }
-
-    // Markdown New line is 2 spaces + \n
-    const newLineMarkdown = "  \n"
-    const StreamlitInfo = [
-      `Made with Streamlit v${props.sessionInfo.current.streamlitVersion}`,
-      STREAMLIT_HOME_URL,
-      `Copyright ${new Date().getFullYear()} Snowflake Inc. All rights reserved.`,
-    ].join(newLineMarkdown)
-
-    const source = `${props.aboutSectionMd} ${newLineMarkdown} ${newLineMarkdown} ${StreamlitInfo}`
-
-    return (
-      <Modal isOpen onClose={props.onClose}>
-        <ModalHeader>About</ModalHeader>
-        <ModalBody>
-          <StyledAboutInfo>
-            <StreamlitMarkdown
-              source={source}
-              allowHTML={false}
-              style={markdownStyle}
-            />
-          </StyledAboutInfo>
-        </ModalBody>
-      </Modal>
-    )
-  }
   return (
     <Modal isOpen onClose={props.onClose}>
-      <ModalHeader>Made with</ModalHeader>
+      <ModalHeader>About</ModalHeader>
       <ModalBody>
-        <div>
-          {/* Show our version string only if SessionInfo has been created. If Streamlit
-          hasn't yet connected to the server, the SessionInfo singleton will be null. */}
-          {props.sessionInfo.isSet && (
-            <>
-              Streamlit v{props.sessionInfo.current.streamlitVersion}
-              <br />
-            </>
-          )}
-          <StyledAboutLink href={STREAMLIT_HOME_URL}>
-            {STREAMLIT_HOME_URL}
-          </StyledAboutLink>
-          <br />
-          Copyright {new Date().getFullYear()} Snowflake Inc. All rights
-          reserved.
-        </div>
+        {props.aboutSectionMd && (
+          <StreamlitMarkdown source={props.aboutSectionMd} allowHTML={false} />
+        )}
       </ModalBody>
     </Modal>
   )
@@ -166,9 +95,6 @@ interface ClearCacheProps {
 
   /** callback to close the dialog */
   onClose: PlainEventHandler
-
-  /** callback to run the default action */
-  defaultAction: () => void
 }
 
 /**
@@ -194,11 +120,14 @@ function ClearCacheDialog(props: ClearCacheProps): ReactElement {
           <StreamlitMarkdown source={clearCacheInfo} allowHTML={false} />
         </ModalBody>
         <ModalFooter>
-          <ModalButton kind={BaseButtonKind.GHOST} onClick={props.onClose}>
+          <ModalButton
+            autoFocus
+            kind={BaseButtonKind.GHOST}
+            onClick={props.onClose}
+          >
             Cancel
           </ModalButton>
           <ModalButton
-            autoFocus
             kind={BaseButtonKind.SECONDARY}
             onClick={props.confirmCallback}
           >
@@ -212,7 +141,7 @@ function ClearCacheDialog(props: ClearCacheProps): ReactElement {
 
 export interface ScriptCompileErrorProps {
   type: DialogType.SCRIPT_COMPILE_ERROR
-  exception: IException | null | undefined
+  exception: Exception.$Properties | null | undefined
   onClose: PlainEventHandler
 }
 
@@ -220,12 +149,12 @@ function ScriptCompileErrorDialog(
   props: ScriptCompileErrorProps
 ): ReactElement {
   return (
-    <Modal isOpen onClose={props.onClose} size="auto" autoFocus={false}>
+    <Modal isOpen onClose={props.onClose} size="auto">
       <ModalHeader>Script execution error</ModalHeader>
       <ModalBody>
-        <StreamlitSyntaxHighlighter showLineNumbers={false} wrapLines={false}>
+        <StreamlitErrorCodeBlock>
           {props.exception?.message ? props.exception.message : "No message"}
-        </StreamlitSyntaxHighlighter>
+        </StreamlitErrorCodeBlock>
       </ModalBody>
       <ModalFooter>
         <ModalButton kind={BaseButtonKind.SECONDARY} onClick={props.onClose}>

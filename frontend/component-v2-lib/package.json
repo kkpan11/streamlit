@@ -1,0 +1,68 @@
+{
+  "name": "@streamlit/component-v2-lib",
+  "version": "0.2.0",
+  "description": "Support code for Streamlit Components v2",
+  "type": "module",
+  "main": "./dist/streamlit-component-v2-lib.mjs",
+  "module": "./dist/streamlit-component-v2-lib.mjs",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/streamlit-component-v2-lib.mjs",
+      "default": "./dist/streamlit-component-v2-lib.mjs"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "apache-arrow": "^21.2.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "vite build",
+    "buildWatch": "env DEV_WATCH=1 vite build --watch",
+    "test": "vitest run",
+    "testWatch": "vitest",
+    "lint": "yarn run -T eslint --cache --max-warnings 0 src",
+    "typecheck": "yarn run typecheck:all",
+    "format": "yarn run -T oxfmt --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
+    "formatCheck": "yarn run -T oxfmt --check --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
+    "typesync": "typesync",
+    "typesync:ci": "typesync --dry=fail"
+  },
+  "devDependencies": {
+    "@streamlit/typescript-config": "workspace:^",
+    "typescript": "^6.0.3",
+    "typesync": "^0.14.3",
+    "vite": "^8.2.2",
+    "vite-plugin-dts": "^5.1.0",
+    "vitest": "^5.0.0"
+  },
+  "typesync": {
+    "ignorePackages": [
+      "apache-arrow"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/streamlit/streamlit.git"
+  },
+  "keywords": [
+    "streamlit"
+  ],
+  "author": "Streamlit",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/streamlit/streamlit/issues"
+  },
+  "homepage": "https://github.com/streamlit/streamlit#readme",
+  "packageManager": "yarn@4.13.0"
+}

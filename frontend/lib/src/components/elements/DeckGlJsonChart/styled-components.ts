@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,34 @@
 
 import styled from "@emotion/styled"
 
-import { hasLightBackgroundColor } from "~lib/theme"
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
 
-export interface StyledDeckGlChartProps {
-  height: number | string
+interface StyledDeckGlChartProps {
+  isStretchHeight?: boolean
 }
 
 export const StyledDeckGlChart = styled.div<StyledDeckGlChartProps>(
-  ({ height }) => ({
+  ({ isStretchHeight }) => ({
     position: "relative",
-    height,
+    height: "100%",
     width: "100%",
+    // Minimum height is not used when pixel height is provided by user so we don't restrict users from setting small heights.
+    ...(isStretchHeight && { minHeight: "6.25rem" }),
   })
 )
+
+/**
+ * Wrapper around the DeckGL component that clips the map content with border-radius.
+ * Kept separate from StyledDeckGlChart to avoid clipping the toolbar.
+ * Uses absolute positioning to fill the parent, which works even when the parent
+ * only has minHeight defined (e.g., height="stretch" outside a container).
+ */
+export const StyledMapContainer = styled.div(({ theme }) => ({
+  position: "absolute",
+  inset: 0,
+  borderRadius: theme.radii.default,
+  overflow: "hidden",
+}))
 
 export const StyledNavigationControlContainer = styled.div(({ theme }) => ({
   position: "absolute",

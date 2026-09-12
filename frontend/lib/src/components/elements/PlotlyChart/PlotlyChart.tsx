@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import React, {
+import {
   FC,
   memo,
   ReactElement,
@@ -24,22 +24,45 @@ import React, {
   useState,
 } from "react"
 
-import { useTheme } from "@emotion/react"
-import Plot, { Figure as PlotlyFigureType } from "react-plotly.js"
+import type * as Plotly from "plotly.js"
 
 import { PlotlyChart as PlotlyChartProto } from "@streamlit/protobuf"
 
-import { EmotionTheme } from "~lib/theme"
-import { WidgetStateManager } from "~lib/WidgetStateManager"
-import { FormClearHelper } from "~lib/components/widgets/Form/FormClearHelper"
 import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import withFullScreenWrapper from "~lib/components/shared/FullScreenWrapper/withFullScreenWrapper"
+import { FormClearHelper } from "~lib/components/widgets/Form/FormClearHelper"
+import { useCalculatedDimensions } from "~lib/hooks/useCalculatedDimensions"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 import { useRequiredContext } from "~lib/hooks/useRequiredContext"
-import { withFullScreenWrapper } from "~lib/components/shared/FullScreenWrapper"
+import useTimeout from "~lib/hooks/useTimeout"
+import Plot, {
+  type Figure as PlotlyFigureType,
+} from "~lib/util/reactPlotlyCompat"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
-import { applyTheming, handleSelection, sendEmptySelection } from "./utils"
+import {
+  migratePlotlyMapboxConfig,
+  migratePlotlyMapboxFigure,
+} from "./mapboxCompat"
+import { StyledPlotlyChartContainer } from "./styled-components"
+import {
+  applyTheming,
+  handleClickEvent,
+  handleSelection,
+  sendEmptySelection,
+} from "./utils"
 
 // Minimum width for Plotly charts
 const MIN_WIDTH = 150
+
+/**
+ * The timeout duration (milliseconds) for resetting selection info within the plotly figure.
+ * This is required to ensure the reset executes after the onUpdate callback,
+ * preventing the selection state from being immediately overwritten due to plotly's update cycle.
+ */
+const RESET_SELECTION_TIMEOUT_MS = 50
+// Default height for Plotly charts when no height is specified
+const DEFAULT_PLOTLY_HEIGHT = 450
 
 // Custom icon used in the fullscreen expand toolbar button:
 /* eslint-disable streamlit-custom/no-hardcoded-theme-values */
@@ -58,7 +81,7 @@ const FULLSCREEN_COLLAPSE_ICON = {
   path: "M160 64c0-17.7-14.3-32-32-32s-32 14.3-32 32v64H32c-17.7 0-32 14.3-32 32s14.3 32 32 32h96c17.7 0 32-14.3 32-32V64zM32 320c-17.7 0-32 14.3-32 32s14.3 32 32 32H96v64c0 17.7 14.3 32 32 32s32-14.3 32-32V352c0-17.7-14.3-32-32-32H32zM352 64c0-17.7-14.3-32-32-32s-32 14.3-32 32v96c0 17.7 14.3 32 32 32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32H352V64zM320 320c-17.7 0-32 14.3-32 32v96c0 17.7 14.3 32 32 32s32-14.3 32-32V384h64c17.7 0 32-14.3 32-32s-14.3-32-32-32H320z",
 }
 
-export interface PlotlyChartProps {
+interface PlotlyChartProps {
   element: PlotlyChartProto
   widgetMgr: WidgetStateManager
   disabled: boolean
@@ -67,11 +90,6 @@ export interface PlotlyChartProps {
   width: number
 }
 
-/**
- * Note: we do not have any React-testing-library tests because Plotly doesn't support it
- * https://github.com/plotly/react-plotly.js/issues/176
- */
-
 export function PlotlyChart({
   element,
   widgetMgr,
@@ -79,40 +97,46 @@ export function PlotlyChart({
   fragmentId,
   disableFullscreenMode,
 }: Readonly<PlotlyChartProps>): ReactElement {
-  const theme: EmotionTheme = useTheme()
+  const theme = useEmotionTheme()
   const {
     expanded: isFullScreen,
     width: elWidth,
-    height,
+    height: fullScreenHeight,
     expand,
     collapse,
   } = useRequiredContext(ElementFullscreenContext)
+
+  const { height: chartContainerHeight, elementRef: containerRef } =
+    useCalculatedDimensions([], 0)
+
   const width = elWidth || 0
 
   // Load the initial figure spec from the element message
   const initialFigureSpec = useMemo<PlotlyFigureType>(() => {
     if (!element.spec) {
-      return {
+      const emptyFigure: PlotlyFigureType = {
         layout: {},
         data: [],
-        frames: undefined,
+        frames: null,
       }
+      return emptyFigure
     }
 
-    return JSON.parse(element.spec)
+    return migratePlotlyMapboxFigure(JSON.parse(element.spec))
     // We want to reload the initialFigureSpec object whenever the element id changes
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
   }, [element.id, element.spec])
 
   const [plotlyFigure, setPlotlyFigure] = useState<PlotlyFigureType>(() => {
     // If there was already a state with a figure using the same id,
     // use that to recover the state. This happens in some situations
     // where a component un-mounts and mounts again.
-    const initialFigureState = widgetMgr.getElementState(element.id, "figure")
+    const initialFigureState = widgetMgr.getElementState<PlotlyFigureType>(
+      element.id,
+      "figure"
+    )
     if (initialFigureState) {
-      return initialFigureState
+      return migratePlotlyMapboxFigure(initialFigureState)
     }
     return applyTheming(initialFigureSpec, element.theme, theme)
   })
@@ -129,12 +153,9 @@ export function PlotlyChart({
     element.selectionMode.includes(PlotlyChartProto.SelectionMode.POINTS)
 
   const plotlyConfig = useMemo(() => {
-    if (!element.config) {
-      // If there is no config, return an empty object
-      return {}
-    }
-
-    const config = JSON.parse(element.config)
+    const config = migratePlotlyMapboxConfig(
+      element.config ? JSON.parse(element.config) : {}
+    )
 
     // Customize the plotly toolbar:
     if (!disableFullscreenMode) {
@@ -157,37 +178,51 @@ export function PlotlyChart({
       ]
     }
 
-    if (!config.modeBarButtonsToRemove) {
-      // Only modify the mode bar buttons if it's not already set
-      // in the config provided by the user.
-
-      // Hide the logo by default
-      config.displaylogo = false
-
-      const modeBarButtonsToRemove = ["sendDataToCloud"]
-
-      if (!isSelectionActivated) {
-        // Remove lasso & select buttons in read-only charts:
-        modeBarButtonsToRemove.push("lasso2d", "select2d")
-      } else {
-        if (!isLassoSelectionActivated) {
-          // Remove the lasso button if lasso selection is not activated
-          modeBarButtonsToRemove.push("lasso2d")
-        }
-
-        if (!isBoxSelectionActivated) {
-          // Remove the box select button if box selection is not activated
-          modeBarButtonsToRemove.push("select2d")
-        }
-      }
-
-      config.modeBarButtonsToRemove = modeBarButtonsToRemove
+    // plotly.js v4 adds `sendChartToCloud` when `showSendToCloud` is true.
+    // Default the flag off, and also remove the button so layout.modebar.add
+    // cannot put it back unless the app opts in with showSendToCloud: true.
+    if (config.showSendToCloud === undefined) {
+      config.showSendToCloud = false
     }
+
+    if (config.displaylogo === undefined) {
+      // Hide the Plotly logo unless the user explicitly opts in.
+      config.displaylogo = false
+    }
+
+    const modeBarButtonsToRemove: string[] = Array.isArray(
+      config.modeBarButtonsToRemove
+    )
+      ? [...config.modeBarButtonsToRemove]
+      : []
+
+    const removeModeBarButton = (name: string): void => {
+      if (!modeBarButtonsToRemove.includes(name)) {
+        modeBarButtonsToRemove.push(name)
+      }
+    }
+
+    if (!isSelectionActivated) {
+      // Remove lasso & select buttons in read-only charts
+      removeModeBarButton("lasso2d")
+      removeModeBarButton("select2d")
+    } else {
+      if (!isLassoSelectionActivated) {
+        removeModeBarButton("lasso2d")
+      }
+      if (!isBoxSelectionActivated) {
+        removeModeBarButton("select2d")
+      }
+    }
+
+    if (config.showSendToCloud !== true) {
+      removeModeBarButton("sendChartToCloud")
+    }
+
+    config.modeBarButtonsToRemove = modeBarButtonsToRemove
     return config
     // We want to reload the plotlyConfig object whenever the element id changes
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
   }, [
     element.id,
     element.config,
@@ -277,9 +312,7 @@ export function PlotlyChart({
     })
     // We want to reload these options whenever the element id changes
     // or the selection modes change.
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
   }, [
     element.id,
     isSelectionActivated,
@@ -296,19 +329,20 @@ export function PlotlyChart({
         // width in this case.
         plotlyFigure.layout?.width
       : Math.max(
-          element.useContainerWidth
-            ? width
-            : Math.min(initialFigureSpec.layout.width ?? width, width ?? 0),
+          width,
           // Apply a min width to prevent the chart running into issues with negative
           // width values if the browser window is too small:
           MIN_WIDTH
         )
 
-  let calculatedHeight = initialFigureSpec.layout.height
+  let calculatedHeight =
+    chartContainerHeight > 0
+      ? chartContainerHeight
+      : (plotlyFigure.layout?.height ?? DEFAULT_PLOTLY_HEIGHT)
 
   if (isFullScreen) {
     calculatedWidth = width
-    calculatedHeight = height
+    calculatedHeight = fullScreenHeight ?? DEFAULT_PLOTLY_HEIGHT
   }
 
   if (
@@ -335,12 +369,48 @@ export function PlotlyChart({
     (event: Readonly<Plotly.PlotSelectionEvent>): void => {
       handleSelection(event, widgetMgr, element, fragmentId)
     },
-    // We are using element.id here instead of element since we don't
-    // shallow reference equality will not work correctly for element.
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
+    // Using element.id instead of element: the proto object gets a new reference
+    // on each render, but element.id only changes when the element actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [element.id, widgetMgr, fragmentId]
+  )
+
+  /**
+   * Callback to handle click events on hierarchical charts (treemap, sunburst).
+   */
+  const handleClickCallback = useCallback(
+    (event: Readonly<Plotly.PlotMouseEvent>): void => {
+      handleClickEvent(event, widgetMgr, element, fragmentId)
+    },
+    // Using element.id instead of element: the proto object gets a new reference
+    // on each render, but element.id only changes when the element actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [element.id, widgetMgr, fragmentId]
+  )
+
+  const { restart: restartResetSelectionTimeout } = useTimeout(
+    () => {
+      // Reset the selection info within the plotly figure
+      setPlotlyFigure((prevFigure: PlotlyFigureType) => {
+        return {
+          ...prevFigure,
+          data: prevFigure.data.map(trace => {
+            return {
+              ...trace,
+              // Set to null to clear the selection an empty
+              // array here would still show everything as opaque
+              selectedpoints: null,
+            }
+          }),
+          layout: {
+            ...prevFigure.layout,
+            selections: [],
+          },
+        }
+      })
+    },
+    RESET_SELECTION_TIMEOUT_MS,
+    { autoStart: false }
   )
 
   /**
@@ -356,36 +426,13 @@ export function PlotlyChart({
         // the onUpdate callback seems to overwrite the selection state
         // that we set here. The timeout will make sure that this is executed
         // after the onUpdate callback.
-        setTimeout(() => {
-          // Reset the selection info within the plotly figure
-          setPlotlyFigure((prevFigure: PlotlyFigureType) => {
-            return {
-              ...prevFigure,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-              data: prevFigure.data.map((trace: any) => {
-                return {
-                  ...trace,
-                  // Set to null to clear the selection an empty
-                  // array here would still show everything as opaque
-                  selectedpoints: null,
-                }
-              }),
-              layout: {
-                ...prevFigure.layout,
-                // selections is not part of the plotly typing:
-                selections: [],
-              },
-            }
-          })
-        }, 50)
+        restartResetSelectionTimeout()
       }
     },
-    // We are using element.id here instead of element since we don't
-    // shallow reference equality will not work correctly for element.
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [element.id, widgetMgr, fragmentId]
+    // Using element.id instead of element: the proto object gets a new reference
+    // on each render, but element.id only changes when the element actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- element intentionally omitted; use stable id.
+    [element.id, widgetMgr, fragmentId, restartResetSelectionTimeout]
   )
 
   // This is required for the form clearing functionality:
@@ -447,15 +494,16 @@ export function PlotlyChart({
       })
     }
     // We only want to trigger this effect if the dragmode changes.
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
   }, [plotlyFigure.layout?.dragmode])
 
   return (
-    <div className="stPlotlyChart" data-testid="stPlotlyChart">
+    <StyledPlotlyChartContainer
+      ref={containerRef}
+      className="stPlotlyChart"
+      data-testid="stPlotlyChart"
+    >
       <Plot
-        key={isFullScreen ? "fullscreen" : "original"}
         data={plotlyFigure.data}
         layout={plotlyFigure.layout}
         config={plotlyConfig}
@@ -465,8 +513,14 @@ export function PlotlyChart({
           // to prevent flickering issues.
           visibility:
             plotlyFigure.layout?.width === undefined ? "hidden" : undefined,
+          // If the scrollbars are activated, it leads to flickering issues.
+          // We don't need overflow here since the parent container and plot dimensions are in sync.
+          overflow: "hidden",
         }}
         onSelected={isSelectionActivated ? handleSelectionCallback : () => {}}
+        // Handle click events for hierarchical charts (treemap, sunburst)
+        // that don't emit plotly_selected but do emit plotly_click
+        onClick={isPointsSelectionActivated ? handleClickCallback : undefined}
         // Double click is needed to make it easier to the user to
         // reset the selection. The default handling can be a bit annoying
         // sometimes.
@@ -493,7 +547,7 @@ export function PlotlyChart({
           setPlotlyFigure(figure)
         }}
       />
-    </div>
+    </StyledPlotlyChartContainer>
   )
 }
 

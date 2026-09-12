@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,17 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
+import numpy.typing as npt
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    from streamlit.elements.lib.layout_utils import Gap
 
 LOREM_IPSUM = (
     "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor "
     "incididunt ut labore et dolore magna aliqua."
 )
 
-BLACK_IMG = np.repeat(0, 601350).reshape(633, 950)
+BLACK_IMG: npt.NDArray[np.int64] = np.repeat(0, 601350).reshape(633, 950)
 
 # Basic columns:
 c1, c2, c3 = st.columns(3)
@@ -51,29 +58,28 @@ with st.expander("Variable-width columns (absolute numbers)", expanded=True):
         c.image(BLACK_IMG)
 
 # Various column gaps
-with st.expander("Column gap small", expanded=True):
-    c4, c5, c6 = st.columns(3, gap="small")
-    c4.image(BLACK_IMG)
-    c5.image(BLACK_IMG)
-    c6.image(BLACK_IMG)
 
-with st.expander("Column gap medium", expanded=True):
-    c7, c8, c9 = st.columns(3, gap="medium")
-    c7.image(BLACK_IMG)
-    c8.image(BLACK_IMG)
-    c9.image(BLACK_IMG)
+GAPS = cast(
+    "list[Gap|None]",
+    [
+        None,
+        "xxsmall",
+        "xsmall",
+        "small",
+        "medium",
+        "large",
+        "xlarge",
+        "xxlarge",
+    ],
+)
 
-with st.expander("Column gap large", expanded=True):
-    c10, c11, c12 = st.columns(3, gap="large")
-    c10.image(BLACK_IMG)
-    c11.image(BLACK_IMG)
-    c12.image(BLACK_IMG)
+for gap in GAPS:
+    gap_name = str(gap).lower()
 
-with st.expander("Column gap none", expanded=True):
-    c13, c14, c15 = st.columns(3, gap=None)
-    c13.image(BLACK_IMG)
-    c14.image(BLACK_IMG)
-    c15.image(BLACK_IMG)
+    with st.expander(f"Column gap {gap_name}", expanded=True):
+        cols = st.columns(3, gap=gap)
+        for col in cols:
+            col.image(BLACK_IMG)
 
 with st.expander("Nested columns - one level", expanded=True):
     col1, col2 = st.columns(2)
@@ -96,23 +102,58 @@ with st.expander("Nested columns - one level", expanded=True):
 with st.expander("Vertical alignment - top", expanded=True):
     col1, col2, col3 = st.columns(3, vertical_alignment="top")
     col1.text_input("Text input (top)")
-    col2.button("Button (top)", use_container_width=True)
+    col2.button("Button (top)", width="stretch")
     col3.checkbox("Checkbox 1 (top)")
     col3.checkbox("Checkbox 2 (top)")
+
+with st.expander("Nested horizontal container in top-aligned column", expanded=True):
+    # Regression coverage for #13162: checkboxes nested inside a horizontal
+    # container within a TOP-aligned column should NOT receive the
+    # alignment margin-top — only direct-child checkboxes of the column
+    # should.
+    col1, col2 = st.columns(2, vertical_alignment="top")
+    with col1:
+        st.button("Button 1 (nested)", width="stretch")
+        st.button("Button 2 (nested)", width="stretch")
+    with col2:
+        with st.container(horizontal=True):
+            st.checkbox("Nested checkbox 1", key="cb_nested_1")
+            st.checkbox("Nested checkbox 2", key="cb_nested_2")
+            st.checkbox("Nested checkbox 3", key="cb_nested_3")
 
 with st.expander("Vertical alignment - center", expanded=True):
     col1, col2, col3 = st.columns(3, vertical_alignment="center")
     col1.text_input("Text input (center)")
-    col2.button("Button (center)", use_container_width=True)
+    col2.button("Button (center)", width="stretch")
     col3.checkbox("Checkbox (center)")
 
 
 with st.expander("Vertical alignment - bottom", expanded=True):
     col1, col2, col3 = st.columns(3, vertical_alignment="bottom")
     col1.text_input("Text input (bottom)")
-    col2.button("Button (bottom)", use_container_width=True)
+    col2.button("Button (bottom)", width="stretch")
     col3.checkbox("Checkbox 1 (bottom)")
     col3.checkbox("Checkbox 2 (bottom)")
+
+# Toggle counterpart to the checkbox vertical-alignment fixtures above.
+# Two toggles per column so the :first-of-type and :last-of-type alignment rules
+# land on different widgets.
+with st.expander("Vertical alignment - toggle", expanded=True):
+    with st.container(key="vertical_alignment_toggle_top"):
+        top_col1, top_col2, top_col3 = st.columns(3, vertical_alignment="top")
+        top_col1.text_input("Text input (top toggle)")
+        top_col2.button("Button (top toggle)", width="stretch")
+        top_col3.toggle("Toggle 1 (top)")
+        top_col3.toggle("Toggle 2 (top)")
+
+    with st.container(key="vertical_alignment_toggle_bottom"):
+        bottom_col1, bottom_col2, bottom_col3 = st.columns(
+            3, vertical_alignment="bottom"
+        )
+        bottom_col1.text_input("Text input (bottom toggle)")
+        bottom_col2.button("Button (bottom toggle)", width="stretch")
+        bottom_col3.toggle("Toggle 1 (bottom)")
+        bottom_col3.toggle("Toggle 2 (bottom)")
 
 if st.button("Nested columns - two levels"):
     col1, col2 = st.columns(2)
@@ -135,3 +176,32 @@ if st.button("Nested columns - in sidebar"):
         col3.text_input("Text input 3")
         col4.text_input("Text input 4")
         st.text_input("Text input 5")
+
+with st.expander("Columns with width configuration", expanded=True):
+    col1, col2, col3 = st.columns(3, width=300, border=True)
+    col1.write("column one")
+    col2.write("column two")
+    col3.write("column three")
+
+    st.divider()
+
+    col4, col5, col6 = st.columns(3, width="stretch", border=True)
+    col4.write("column four")
+    col5.write("column five")
+    col6.write("column six")
+
+with st.container(key="columns_wrap_false"):
+    wrap_false_cols = st.columns(6, gap="xsmall", wrap=False, border=True)
+    for i, col in enumerate(wrap_false_cols):
+        col.write(f"Col {i + 1}")
+
+with st.container(key="columns_wrap_false_relative"):
+    relative_cols = st.columns([3, 1, 2], wrap=False, border=True)
+    relative_cols[0].write("Wide")
+    relative_cols[1].write("Narrow")
+    relative_cols[2].write("Medium")
+
+with st.container(key="columns_wrap_true"):
+    wrap_true_cols = st.columns(3, wrap=True, border=True)
+    for i, col in enumerate(wrap_true_cols):
+        col.write(f"Wrap true {i + 1}")

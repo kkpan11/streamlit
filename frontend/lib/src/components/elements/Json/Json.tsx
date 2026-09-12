@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,22 @@
  * limitations under the License.
  */
 
-import React, { memo, ReactElement, useRef } from "react"
+import { memo, ReactElement, useCallback } from "react"
 
 import JSON5 from "json5"
-import Clipboard from "clipboard"
-import ReactJson from "react-json-view"
-import { useTheme } from "@emotion/react"
 
 import { Json as JsonProto } from "@streamlit/protobuf"
 
-import ErrorElement from "~lib/components/shared/ErrorElement"
-import { EmotionTheme, hasLightBackgroundColor } from "~lib/theme"
+import ErrorElement from "~lib/components/shared/ErrorElement/ErrorElement"
+import { useCopyToClipboard } from "~lib/hooks/useCopyToClipboard"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
 import { ensureError } from "~lib/util/ErrorHandling"
+import ReactJson, { type OnCopyProps } from "~lib/util/reactJsonViewCompat"
 
+import JsonPathTooltip from "./JsonPathTooltip"
 import { StyledJsonWrapper } from "./styled-components"
+import { useJsonTooltip } from "./useJsonTooltip"
 
 export interface JsonProps {
   element: JsonProto
@@ -37,23 +39,31 @@ export interface JsonProps {
  * Functional element representing JSON structured text.
  */
 function Json({ element }: Readonly<JsonProps>): ReactElement {
-  const theme: EmotionTheme = useTheme()
+  const theme = useEmotionTheme()
+  const { tooltip, handleSelect, clearTooltip } = useJsonTooltip()
 
-  const elementRef = useRef<HTMLDivElement>(null)
+  const { copyToClipboard } = useCopyToClipboard()
+
+  const handleCopy = useCallback(
+    (copy: OnCopyProps): void => {
+      copyToClipboard(JSON.stringify(copy.src))
+    },
+    [copyToClipboard]
+  )
 
   let bodyObject
   try {
     bodyObject = JSON.parse(element.body)
   } catch (e) {
     const error = ensureError(e)
+
     try {
       bodyObject = JSON5.parse(element.body)
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    } catch (json5Error) {
+    } catch {
       // If content fails to parse as Json, rebuild the error message
       // to show where the problem occurred.
-      const pos = parseInt(error.message.replace(/[^0-9]/g, ""), 10)
-      error.message += `\n${element.body.substring(0, pos + 1)} ← here`
+      const pos = parseInt(error.message.replaceAll(/[^0-9]/g, ""), 10)
+      error.message += `\n${element.body.slice(0, pos + 1)} ← here`
       return <ErrorElement name={"Json Parse Error"} message={error.message} />
     }
   }
@@ -62,22 +72,8 @@ function Json({ element }: Readonly<JsonProps>): ReactElement {
   // theme's background is light or dark.
   const jsonTheme = hasLightBackgroundColor(theme) ? "rjv-default" : "monokai"
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TODO: Replace 'any' with a more specific type.
-  const handleCopy = (copy: any): void => {
-    // we use ClipboardJS to do the copying, because it allows
-    // us to specify a container element. This is necessary because
-    // otherwise copying doesn't work in dialogs.
-    Clipboard.copy(JSON.stringify(copy.src), {
-      container: elementRef.current ?? undefined,
-    })
-  }
-
   return (
-    <StyledJsonWrapper
-      className="stJson"
-      data-testid="stJson"
-      ref={elementRef}
-    >
+    <StyledJsonWrapper className="stJson" data-testid="stJson">
       <ReactJson
         src={bodyObject}
         collapsed={element.maxExpandDepth ?? !element.expanded}
@@ -86,13 +82,24 @@ function Json({ element }: Readonly<JsonProps>): ReactElement {
         name={false}
         theme={jsonTheme}
         enableClipboard={handleCopy}
+        onSelect={handleSelect}
+        showComma={false}
         style={{
           fontFamily: theme.genericFonts.codeFont,
-          fontSize: theme.fontSizes.sm,
+          fontSize: theme.fontSizes.codeFontSize,
+          fontWeight: theme.fontWeights.code,
           backgroundColor: theme.colors.bgColor,
           whiteSpace: "pre-wrap", // preserve whitespace
         }}
       />
+      {tooltip && (
+        <JsonPathTooltip
+          top={tooltip.y}
+          left={tooltip.x}
+          path={tooltip.path}
+          clearTooltip={clearTooltip}
+        />
+      )}
     </StyledJsonWrapper>
   )
 }

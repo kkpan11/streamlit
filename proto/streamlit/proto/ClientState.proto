@@ -1,5 +1,5 @@
 /**!
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,7 @@
 
 syntax = "proto3";
 
-option java_package = "com.snowflake.apps.streamlit";
-option java_outer_classname = "ClientStateProto";
-
 import "streamlit/proto/WidgetStates.proto";
-
 
 message ContextInfo {
   optional string timezone = 1;
@@ -28,6 +24,7 @@ message ContextInfo {
   optional string locale = 3;
   optional string url = 4;
   optional bool is_embedded = 5;
+  optional string color_scheme = 6;
 }
 
 message ClientState {

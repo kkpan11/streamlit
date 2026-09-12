@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,13 +25,18 @@ from streamlit.cursor import make_delta_path
 from streamlit.elements import arrow
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
 from streamlit.proto.RootContainer_pb2 import RootContainer
-from streamlit.runtime.forward_msg_queue import ForwardMsgQueue
+from streamlit.runtime.forward_msg_queue import (
+    ForwardMsgQueue,
+)
 
 # For the messages below, we don't really care about their contents so much as
 # their general type.
 
 NEW_SESSION_MSG = ForwardMsg()
 NEW_SESSION_MSG.new_session.config.allow_run_on_save = True
+
+PAGE_INFO_CHANGED_MSG = ForwardMsg()
+PAGE_INFO_CHANGED_MSG.page_info_changed.query_string = "foo=bar"
 
 TEXT_DELTA_MSG1 = ForwardMsg()
 TEXT_DELTA_MSG1.delta.new_element.text.body = "text1"
@@ -46,16 +51,30 @@ ADD_BLOCK_MSG.metadata.delta_path[:] = make_delta_path(RootContainer.MAIN, (), 0
 
 DF_DELTA_MSG = ForwardMsg()
 arrow.marshall(
-    DF_DELTA_MSG.delta.new_element.arrow_data_frame,
+    DF_DELTA_MSG.delta.new_element.dataframe.arrow_data,
     {"col1": [0, 1, 2], "col2": [10, 11, 12]},
 )
 DF_DELTA_MSG.metadata.delta_path[:] = make_delta_path(RootContainer.MAIN, (), 0)
 
-ADD_ROWS_MSG = ForwardMsg()
-arrow.marshall(
-    ADD_ROWS_MSG.delta.arrow_add_rows.data, {"col1": [3, 4, 5], "col2": [13, 14, 15]}
+TOAST_DELTA_MSG = ForwardMsg()
+TOAST_DELTA_MSG.delta.new_element.toast.body = "toast body"
+TOAST_DELTA_MSG.metadata.delta_path[:] = make_delta_path(RootContainer.EVENT, (), 0)
+
+# A toast emitted from within a fragment (its delta carries the fragment id).
+FRAGMENT_TOAST_DELTA_MSG = ForwardMsg()
+FRAGMENT_TOAST_DELTA_MSG.delta.new_element.toast.body = "fragment toast body"
+FRAGMENT_TOAST_DELTA_MSG.delta.fragment_id = "some_fragment"
+FRAGMENT_TOAST_DELTA_MSG.metadata.delta_path[:] = make_delta_path(
+    RootContainer.EVENT, (), 0
 )
-ADD_ROWS_MSG.metadata.delta_path[:] = make_delta_path(RootContainer.MAIN, (), 0)
+
+# A regular (non-toast) delta emitted from within the same fragment.
+FRAGMENT_TEXT_DELTA_MSG = ForwardMsg()
+FRAGMENT_TEXT_DELTA_MSG.delta.new_element.text.body = "fragment text"
+FRAGMENT_TEXT_DELTA_MSG.delta.fragment_id = "some_fragment"
+FRAGMENT_TEXT_DELTA_MSG.metadata.delta_path[:] = make_delta_path(
+    RootContainer.MAIN, (), 0
+)
 
 
 class ForwardMsgQueueTest(unittest.TestCase):
@@ -185,10 +204,6 @@ class ForwardMsgQueueTest(unittest.TestCase):
             msg.metadata.delta_path[:] = make_delta_path(container, path, 1)
             fmq.enqueue(msg)
 
-            msg = copy.deepcopy(ADD_ROWS_MSG)
-            msg.metadata.delta_path[:] = make_delta_path(container, path, 1)
-            fmq.enqueue(msg)
-
         enqueue_deltas(RootContainer.MAIN, ())
         enqueue_deltas(RootContainer.SIDEBAR, (0, 0, 1))
 
@@ -198,10 +213,10 @@ class ForwardMsgQueueTest(unittest.TestCase):
             assert queue[idx].delta.new_element.text.body == "text1"
 
         queue = fmq.flush()
-        assert len(queue) == 7
+        assert len(queue) == 5
 
         assert_deltas(RootContainer.MAIN, (), 1)
-        assert_deltas(RootContainer.SIDEBAR, (0, 0, 1), 4)
+        assert_deltas(RootContainer.SIDEBAR, (0, 0, 1), 3)
 
     def test_clear_retain_lifecycle_msgs(self):
         fmq = ForwardMsgQueue()
@@ -222,6 +237,7 @@ class ForwardMsgQueueTest(unittest.TestCase):
         fmq.enqueue(script_finished_msg)
         fmq.enqueue(session_status_changed_msg)
         fmq.enqueue(parent_msg)
+        fmq.enqueue(PAGE_INFO_CHANGED_MSG)
 
         expected_new_finished_message = ForwardMsg()
         expected_new_finished_message.script_finished = (
@@ -234,10 +250,68 @@ class ForwardMsgQueueTest(unittest.TestCase):
             expected_new_finished_message,
             session_status_changed_msg,
             parent_msg,
+            PAGE_INFO_CHANGED_MSG,
         ]
         assert fmq._queue == expected_retained_messages
 
         fmq.clear()
+        assert fmq._queue == []
+
+    def test_clear_retains_toast_deltas(self):
+        """Toast deltas survive a lifecycle-retaining clear (issue #7740).
+
+        A ``st.toast()`` immediately followed by ``st.rerun()`` interrupts the
+        run and clears the queue with ``retain_lifecycle_msgs=True`` before it is
+        flushed. The toast delta must be preserved so the toast still reaches the
+        browser, while regular (non-toast) deltas are still dropped.
+        """
+        fmq = ForwardMsgQueue()
+
+        fmq.enqueue(NEW_SESSION_MSG)
+        fmq.enqueue(TEXT_DELTA_MSG1)
+        fmq.enqueue(TOAST_DELTA_MSG)
+
+        fmq.clear(retain_lifecycle_msgs=True)
+
+        # The toast delta is retained, the regular text delta is dropped.
+        assert NEW_SESSION_MSG in fmq._queue
+        assert TOAST_DELTA_MSG in fmq._queue
+        assert TEXT_DELTA_MSG1 not in fmq._queue
+
+    def test_clear_retains_toast_deltas_during_fragment_rerun(self):
+        """Toast deltas survive a fragment-scoped lifecycle-retaining clear.
+
+        ``_is_toast_delta`` is a top-level condition, so a toast is retained even
+        during a fragment rerun - including a toast emitted by the running
+        fragment itself, which would otherwise be dropped so it can be re-run.
+        This locks in that ``st.toast()`` + ``st.rerun()`` inside a
+        ``@st.fragment`` is covered too. Regular deltas of the running fragment
+        are still dropped.
+        """
+        fmq = ForwardMsgQueue()
+
+        fmq.enqueue(NEW_SESSION_MSG)
+        fmq.enqueue(FRAGMENT_TEXT_DELTA_MSG)
+        fmq.enqueue(FRAGMENT_TOAST_DELTA_MSG)
+
+        fmq.clear(retain_lifecycle_msgs=True, fragment_ids_this_run=["some_fragment"])
+
+        # The fragment's toast is retained even though it belongs to the running
+        # fragment, while the fragment's regular text delta is dropped.
+        assert FRAGMENT_TOAST_DELTA_MSG in fmq._queue
+        assert FRAGMENT_TEXT_DELTA_MSG not in fmq._queue
+
+    def test_clear_without_retain_drops_toast_deltas(self):
+        """A full (non-lifecycle) clear still drops toast deltas.
+
+        Toast retention is specific to lifecycle-retaining clears (rerun/
+        interrupt); a normal flush must not leave stale toast deltas behind.
+        """
+        fmq = ForwardMsgQueue()
+
+        fmq.enqueue(TOAST_DELTA_MSG)
+        fmq.clear()
+
         assert fmq._queue == []
 
     def test_clear_with_fragmentid_preserve_unrelated_delta_messages(self):
@@ -358,3 +432,47 @@ class ForwardMsgQueueTest(unittest.TestCase):
         fmq.enqueue(TEXT_DELTA_MSG2)
 
         assert count == 0
+
+
+def test_get_debug_includes_queued_messages_and_delta_ids() -> None:
+    """``get_debug`` serializes queued messages and their delta-path indexes."""
+    fmq = ForwardMsgQueue()
+    fmq.enqueue(TEXT_DELTA_MSG1)
+    debug = fmq.get_debug()
+    assert len(debug["queue"]) == 1
+    assert debug["ids"] == [tuple(TEXT_DELTA_MSG1.metadata.delta_path)]
+
+
+def test_enqueue_composes_ref_hash_onto_existing_delta() -> None:
+    """A ``ref_hash`` message replaces the previous delta at the same path."""
+    fmq = ForwardMsgQueue()
+    old_msg = copy.deepcopy(TEXT_DELTA_MSG1)
+    old_msg.metadata.delta_path[:] = make_delta_path(RootContainer.MAIN, (), 0)
+    fmq.enqueue(old_msg)
+
+    ref_msg = ForwardMsg()
+    ref_msg.ref_hash = "abc123"
+    ref_msg.metadata.delta_path[:] = list(old_msg.metadata.delta_path)
+    fmq.enqueue(ref_msg)
+
+    queue = fmq.flush()
+    assert len(queue) == 1
+    assert queue[0].ref_hash == "abc123"
+
+
+def test_enqueue_keeps_same_path_transient_messages() -> None:
+    """Same-path ``new_transient`` deltas stay individually queued."""
+    fmq = ForwardMsgQueue()
+    old_msg = copy.deepcopy(TEXT_DELTA_MSG1)
+    old_msg.metadata.delta_path[:] = make_delta_path(RootContainer.MAIN, (), 0)
+    fmq.enqueue(old_msg)
+
+    transient_msg = ForwardMsg()
+    transient_msg.delta.new_transient.SetInParent()
+    transient_msg.metadata.delta_path[:] = list(old_msg.metadata.delta_path)
+    fmq.enqueue(transient_msg)
+
+    queue = fmq.flush()
+    assert len(queue) == 2
+    assert queue[0].delta.new_element.text.body == "text1"
+    assert queue[1].delta.WhichOneof("type") == "new_transient"

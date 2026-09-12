@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,17 @@
 
 import re
 
+import pytest
 from playwright.sync_api import Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction
-from e2e_playwright.shared.app_utils import check_top_level_class, expect_warning
+from e2e_playwright.shared.app_utils import (
+    check_top_level_class,
+    expect_warning,
+    get_element_by_key,
+    wait_for_all_images_to_be_loaded,
+)
+from e2e_playwright.shared.react18_utils import take_stable_snapshot
 
 
 def test_displays_a_pyplot_figures(
@@ -27,11 +34,11 @@ def test_displays_a_pyplot_figures(
 
     # pyplot graph assertion
     expect(themed_app.get_by_test_id("stImage").last.locator("img")).to_have_attribute(
-        "src", re.compile("localhost*")
+        "src", re.compile(r".*/media/.*")
     )
 
     pyplot_elements = themed_app.get_by_test_id("stImage").locator("img")
-    expect(pyplot_elements).to_have_count(8)
+    expect(pyplot_elements).to_have_count(13)
 
     assert_snapshot(pyplot_elements.nth(0), name="st_pyplot-normal_figure")
     assert_snapshot(pyplot_elements.nth(1), name="st_pyplot-resized_figure")
@@ -40,16 +47,83 @@ def test_displays_a_pyplot_figures(
     assert_snapshot(pyplot_elements.nth(4), name="st_pyplot-seaborn")
     assert_snapshot(pyplot_elements.nth(5), name="st_pyplot-seaborn_using_kwargs")
 
-    # Snapshot testing the global object is flaky. But we anyways want to remove this,
-    # functionality so we can just comment it out for now.
-    # assert_snapshot(pyplot_elements.nth(6), name="st_pyplot-global_figure")  # noqa: ERA001
-
 
 def test_shows_deprecation_warning(app: Page):
-    """Test that the deprecation warning is displayed correctly."""
-    expect_warning(app, "without providing a figure argument has been deprecated")
+    """Test that st.pyplot shows the deprecation warning for savefig kwargs."""
+    expect_warning(app, "Passing Matplotlib savefig keyword arguments")
+
+
+@pytest.mark.skip_browser("webkit")
+def test_width_parameter_content(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test the width parameter with content option."""
+    wait_for_all_images_to_be_loaded(app)
+
+    content_pyplot = (
+        get_element_by_key(app, "pyplot-width-content")
+        .get_by_test_id("stImage")
+        .locator("img")
+    )
+    expect(content_pyplot).to_be_visible()
+    take_stable_snapshot(
+        app, content_pyplot, assert_snapshot, name="st_pyplot-width_content"
+    )
+
+
+# Running this in webkit is a bit flaky, resulting in mismatched snapshots:
+@pytest.mark.skip_browser("webkit")
+def test_width_parameter_stretch(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test the width parameter with stretch option."""
+    wait_for_all_images_to_be_loaded(app)
+
+    stretch_pyplot = (
+        get_element_by_key(app, "pyplot-width-stretch")
+        .get_by_test_id("stImage")
+        .locator("img")
+    )
+    expect(stretch_pyplot).to_be_visible()
+    take_stable_snapshot(
+        app, stretch_pyplot, assert_snapshot, name="st_pyplot-width_stretch"
+    )
+
+
+def test_width_parameter_pixel(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test the width parameter with pixel value."""
+    wait_for_all_images_to_be_loaded(app)
+
+    pixel_pyplot = (
+        get_element_by_key(app, "pyplot-width-pixel")
+        .get_by_test_id("stImage")
+        .locator("img")
+    )
+    expect(pixel_pyplot).to_be_visible()
+    take_stable_snapshot(
+        app, pixel_pyplot, assert_snapshot, name="st_pyplot-width_pixel"
+    )
 
 
 def test_check_top_level_class(app: Page):
     """Check that the top level class is correctly set."""
     check_top_level_class(app, "stImage")
+
+
+# Some issues with flakiness in webkit where the chart doesn't load fully.
+@pytest.mark.skip_browser("webkit")
+def test_pyplot_in_container(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test pyplot with content width in container.
+
+    Regression test for #12678 where plots rendered at minimum width
+    when no explicit width was set.
+    """
+    wait_for_all_images_to_be_loaded(app)
+
+    container = get_element_by_key(app, "content-pyplot-in-container")
+    expect(container).to_be_visible()
+    assert_snapshot(container, name="st_pyplot-content-width-in-container")
+
+    container = get_element_by_key(app, "pixel-pyplot-in-container")
+    expect(container).to_be_visible()
+    assert_snapshot(container, name="st_pyplot-pixel-width-in-container")
+
+    container = get_element_by_key(app, "stretch-pyplot-in-container")
+    expect(container).to_be_visible()
+    assert_snapshot(container, name="st_pyplot-stretch-width-in-container")

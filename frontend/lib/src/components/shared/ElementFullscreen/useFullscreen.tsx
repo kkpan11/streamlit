@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,8 @@
 
 import { useCallback, useContext, useEffect, useMemo, useState } from "react"
 
-import { LibContext } from "~lib/components/core/LibContext"
-import { WindowDimensionsContext } from "~lib/components/shared/WindowDimensions"
-import { useRequiredContext } from "~lib/hooks/useRequiredContext"
+import { ViewStateContext } from "~lib/components/core/ViewStateContext"
+import { useWindowDimensionsContext } from "~lib/components/shared/WindowDimensions/useWindowDimensionsContext"
 
 export type UseEscapeToCollapseArgs = {
   expanded: boolean
@@ -34,9 +33,9 @@ export type UseFullscreenShape = {
 }
 
 export const useFullscreen = (): UseFullscreenShape => {
-  const { setFullScreen } = useContext(LibContext)
+  const { setFullScreen } = useContext(ViewStateContext)
   const [expanded, setExpanded] = useState(false)
-  const { fullHeight, fullWidth } = useRequiredContext(WindowDimensionsContext)
+  const { fullHeight, fullWidth } = useWindowDimensionsContext()
 
   const setExpandedState = useCallback(
     (isExpanded: boolean) => {
@@ -54,19 +53,13 @@ export const useFullscreen = (): UseFullscreenShape => {
   }, [setExpandedState])
 
   const zoomOut = useCallback(() => {
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-hooks/react-compiler
     document.body.style.overflow = "unset"
     setExpandedState(false)
   }, [setExpandedState])
 
   const controlKeys = useCallback(
     (event: KeyboardEvent) => {
-      /**
-       * keyCode 27 is the ESC key
-       * @see https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/keyCode
-       */
-      if (event.keyCode === 27 && expanded) {
+      if (event.key === "Escape" && expanded) {
         // Exit fullscreen
         zoomOut()
       }

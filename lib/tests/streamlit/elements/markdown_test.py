@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,9 +14,67 @@
 
 from unittest.mock import patch
 
+import pytest
+from parameterized import parameterized
+
 import streamlit as st
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitIncompatibleParametersError,
+    StreamlitValueError,
+)
+from streamlit.proto.Markdown_pb2 import Markdown as MarkdownProto
 from streamlit.runtime.caching import cached_message_replay
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
+
+
+class StInternalMarkdownTest(DeltaGeneratorTestCase):
+    """Test internal _markdown method."""
+
+    def test_unterminated_parsing_sets_proto_field(self):
+        """Test that _markdown with unterminated_parsing=True sets the proto field."""
+        st._main._markdown("**incomplete markdown", unterminated_parsing=True)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "**incomplete markdown"
+        assert el.markdown.unterminated_parsing is True
+
+    def test_unterminated_parsing_defaults_to_false(self):
+        """Test that _markdown without unterminated_parsing leaves proto field as False."""
+        st._main._markdown("complete markdown")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "complete markdown"
+        assert el.markdown.unterminated_parsing is False
+
+
+class StMarkdownAnchorsTest(DeltaGeneratorTestCase):
+    """Test the ``anchors`` parameter of st.markdown."""
+
+    @parameterized.expand(
+        [
+            ("default", {}, False),
+            ("explicit_true", {"anchors": True}, False),
+            ("explicit_false", {"anchors": False}, True),
+        ]
+    )
+    def test_anchors_sets_proto(self, _name, kwargs, expected_hide_anchors):
+        """``anchors`` forwards to the proto ``hide_anchors`` field (negated)."""
+        st.markdown("# Heading", **kwargs)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.hide_anchors is expected_hide_anchors
+
+    def test_anchors_false_does_not_affect_body(self):
+        """``anchors=False`` doesn't alter body, allow_html, or help fields."""
+        st.markdown("# Heading", anchors=False, help="tip")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "# Heading"
+        assert el.markdown.help == "tip"
+        assert el.markdown.allow_html is False
+        assert el.markdown.hide_anchors is True
 
 
 class StMarkdownAPITest(DeltaGeneratorTestCase):
@@ -37,15 +95,133 @@ class StMarkdownAPITest(DeltaGeneratorTestCase):
         assert el.markdown.allow_html
 
         # test the help keyword
-        st.markdown("    some markdown  ", help="help text")
+        st.markdown("    some markdown  ", help="    help text")
         el = self.get_delta_from_queue().new_element
         assert el.markdown.body == "some markdown"
         assert el.markdown.help == "help text"
 
+    def test_st_markdown_wrap(self):
+        """Test that wrap is True by default and can be set to False."""
+        st.markdown("some markdown")
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is True
+
+        st.markdown("some markdown", wrap=False)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is False
+
+        st.markdown("some markdown", wrap=True)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is True
+
+    def test_st_markdown_wrap_false_rejects_unsafe_html(self):
+        """wrap=False cannot be combined with unsafe_allow_html=True."""
+        with pytest.raises(
+            StreamlitIncompatibleParametersError, match="unsafe_allow_html"
+        ):
+            st.markdown("<b>html</b>", wrap=False, unsafe_allow_html=True)
+
+        st.markdown("<b>html</b>", wrap=True, unsafe_allow_html=True)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is True
+        assert el.markdown.allow_html is True
+
+        st.markdown("<b>html</b>", wrap=False)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is False
+        assert el.markdown.allow_html is False
+
+    def test_st_markdown_invalid_wrap(self):
+        """Test that a non-bool wrap value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError):
+            st.markdown("some markdown", wrap="yes")  # type: ignore[arg-type]
+
+    def test_st_markdown_with_width(self):
+        """Test st.markdown with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.markdown("some markdown", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.markdown.body == "some markdown"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_markdown_with_invalid_width(self):
+        """Test st.markdown with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.markdown("some markdown", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_markdown_default_width(self):
+        """Test that st.markdown defaults to auto width (no width config)."""
+        st.markdown("some markdown")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "some markdown"
+        # When width="auto" (default), no width config should be set
+        assert el.width_config.WhichOneof("width_spec") is None
+        # Verify that use_stretch is NOT set (negative assertion)
+        assert el.width_config.use_stretch is False
+        assert el.width_config.use_content is False
+
+    def test_st_markdown_auto_width(self):
+        """Test that st.markdown with width='auto' does not set width config."""
+        st.markdown("some markdown", width="auto")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "some markdown"
+        # When width="auto", no width config should be set
+        assert el.width_config.WhichOneof("width_spec") is None
+        # Verify that neither stretch nor content is set (negative assertion)
+        assert el.width_config.use_stretch is False
+        assert el.width_config.use_content is False
+
+    def test_st_markdown_explicit_stretch_width(self):
+        """Test that st.markdown with explicit width='stretch' sets width config."""
+        st.markdown("some markdown", width="stretch")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "some markdown"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
     def test_works_with_element_replay(self):
         """Test that element replay works for a markdown element."""
 
-        @st.cache_data
+        @st.cache_data(show_spinner=False)
         def cache_element():
             st.markdown("some markdown")
 
@@ -81,6 +257,91 @@ class StCaptionAPITest(DeltaGeneratorTestCase):
         el = self.get_delta_from_queue().new_element
         assert el.markdown.help == "help text"
 
+    def test_st_caption_wrap(self):
+        """Test that wrap is True by default and can be set to False."""
+        st.caption("some caption")
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is True
+
+        st.caption("some caption", wrap=False)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is False
+
+    def test_st_caption_wrap_false_rejects_unsafe_html(self):
+        """wrap=False cannot be combined with unsafe_allow_html=True."""
+        with pytest.raises(
+            StreamlitIncompatibleParametersError, match="unsafe_allow_html"
+        ):
+            st.caption("<b>html</b>", wrap=False, unsafe_allow_html=True)
+
+        st.caption("<b>html</b>", wrap=True, unsafe_allow_html=True)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.wrap is True
+        assert el.markdown.allow_html is True
+
+    def test_st_caption_invalid_wrap(self):
+        """Test that a non-bool wrap value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError):
+            st.caption("some caption", wrap="yes")  # type: ignore[arg-type]
+
+    def test_st_caption_with_width(self):
+        """Test st.caption with different width types."""
+        test_cases = [
+            (400, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 400),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.caption("some caption", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.markdown.body == "some caption"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_caption_with_invalid_width(self):
+        """Test st.caption with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -50,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                75.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.caption("some caption", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_caption_default_width(self):
+        """Test that st.caption defaults to stretch width."""
+        st.caption("some caption")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "some caption"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
 
 class StLatexAPITest(DeltaGeneratorTestCase):
     """Test st.latex APIs."""
@@ -97,6 +358,7 @@ class StLatexAPITest(DeltaGeneratorTestCase):
         )
         el = self.get_delta_from_queue().new_element
         assert el.markdown.help == "help text"
+        assert not el.markdown.HasField("wrap")
 
 
 class StBadgeAPITest(DeltaGeneratorTestCase):
@@ -121,3 +383,181 @@ class StBadgeAPITest(DeltaGeneratorTestCase):
         st.badge("Simple badge")
         el = self.get_delta_from_queue().new_element
         assert el.markdown.body == ":blue-badge[Simple badge]"
+        assert not el.markdown.HasField("wrap")
+
+    @parameterized.expand(
+        [
+            ("",),
+            ("   ",),
+        ]
+    )
+    def test_st_badge_empty_or_whitespace_icon(self, icon: str) -> None:
+        """Empty or whitespace icons do not insert a leading space in the badge."""
+        st.badge("Simple badge", icon=icon)
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == ":blue-badge[Simple badge]"
+
+    def test_st_badge_with_width(self):
+        """Test st.badge with different width types."""
+        test_cases = [
+            (200, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 200),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.badge("test badge", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.markdown.body == ":blue-badge[test badge]"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_badge_with_invalid_width(self):
+        """Test st.badge with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -25,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                50.7,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.badge("test badge", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_badge_default_width(self):
+        """Test that st.badge defaults to content width."""
+        st.badge("test badge")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == ":blue-badge[test badge]"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_CONTENT.value
+        )
+        assert el.width_config.use_content is True
+
+    def test_st_badge_with_help(self):
+        """Test st.badge with help parameter."""
+        st.badge("Badge with help", help="Tooltip text")
+        el = self.get_delta_from_queue().new_element
+
+        assert el.markdown.body == ":blue-badge[Badge with help]"
+        assert el.markdown.help == "Tooltip text"
+
+    def test_st_badge_help_not_set_when_none(self):
+        """Test that st.badge does not set help when help is None."""
+        st.badge("Badge without help")
+        el = self.get_delta_from_queue().new_element
+
+        assert el.markdown.body == ":blue-badge[Badge without help]"
+        assert not getattr(el.markdown, "help", None)
+
+
+class StMarkdownTextAlignmentTest(DeltaGeneratorTestCase):
+    """Test st.markdown text_alignment parameter."""
+
+    @parameterized.expand(
+        [
+            ("left", 1),
+            ("center", 2),
+            ("right", 3),
+            ("justify", 4),
+            (None, 1),  # Default case
+        ]
+    )
+    def test_st_markdown_text_alignment(
+        self, text_alignment: str | None, expected_alignment: int
+    ):
+        """Test st.markdown with various text_alignment values.
+
+        Parameters
+        ----------
+        text_alignment : str | None
+            The text alignment value to test, or None for default behavior.
+        expected_alignment : int
+            The expected protobuf alignment enum value (1=LEFT, 2=CENTER, 3=RIGHT, 4=JUSTIFY).
+        """
+        if text_alignment is None:
+            st.markdown("Test")
+        else:
+            st.markdown("Test", text_alignment=text_alignment)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "Test"
+        assert el.text_alignment_config.alignment == expected_alignment
+
+    def test_st_markdown_text_alignment_invalid(self):
+        """Test st.markdown with invalid text_alignment raises error."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.markdown("Test", text_alignment="invalid")
+
+        assert "Invalid `text_alignment` value" in str(exc.value)
+        assert "left" in str(exc.value)
+        assert "center" in str(exc.value)
+        assert "right" in str(exc.value)
+        assert "justify" in str(exc.value)
+
+
+class StCaptionTextAlignmentTest(DeltaGeneratorTestCase):
+    """Test st.caption text_alignment parameter."""
+
+    @parameterized.expand(
+        [
+            ("left", 1),
+            ("center", 2),
+            ("right", 3),
+            ("justify", 4),
+            (None, 1),  # Default case
+        ]
+    )
+    def test_st_caption_text_alignment(
+        self, text_alignment: str | None, expected_alignment: int
+    ):
+        """Test st.caption with various text_alignment values.
+
+        Parameters
+        ----------
+        text_alignment : str | None
+            The text alignment value to test, or None for default behavior.
+        expected_alignment : int
+            The expected protobuf alignment enum value.
+        """
+        if text_alignment is None:
+            st.caption("Caption text")
+        else:
+            st.caption("Caption text", text_alignment=text_alignment)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.markdown.body == "Caption text"
+        assert el.markdown.element_type == MarkdownProto.Type.CAPTION
+        assert el.text_alignment_config.alignment == expected_alignment
+
+    def test_st_caption_text_alignment_invalid(self):
+        """Test st.caption with invalid text_alignment raises error."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.caption("Caption text", text_alignment="top")
+
+        assert "Invalid `text_alignment` value" in str(exc.value)
+        assert "left" in str(exc.value)
+        assert "center" in str(exc.value)
+        assert "right" in str(exc.value)
+        assert "justify" in str(exc.value)

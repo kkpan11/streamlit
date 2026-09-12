@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 
 import time
+from typing import Literal
 
 import streamlit as st
 
@@ -27,20 +28,13 @@ with st.sidebar:
         - [Disabled - Segmented Control](#disabled-segmented-control)
         - [Segmented Control in form](#segmented-control-in-form)
         - [Segmented Control in fragment](#segmented-control-in-fragment)
+        - [Hover border regression - Segmented Control](#hover-border-regression-segmented-control)
         - [Unmounted - Segmented Control](#unmounted-segmented-control)
         """
     )
 
 st.header("Multi Select - Segmented Control", anchor="multi-select-segmented-control")
-if st.checkbox("Set default values", value=False):
-    st.session_state.default_segmented_control_options = [
-        "Foobar",
-        "🧰 General widgets",
-    ]
-else:
-    st.session_state.default_segmented_control_options = []
 
-default = st.session_state.default_segmented_control_options
 
 s1 = st.segmented_control(
     "Select some options",
@@ -54,12 +48,15 @@ s1 = st.segmented_control(
         "🌇 Images",
         "🎥 Video",
         "📝 Text",
-        "This is a very long text 📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝"
-        ", yes, long long long long text",
+        (
+            "This is a very long text 📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝📝"
+            ", yes, long long long long text"
+            ", yes, long long long long text"
+            ", yes, long long long long text"
+        ),
     ],
     key="segmented_control_multi_selection",
     selection_mode="multi",
-    default=default,
     help="You can choose multiple options",
 )
 st.write(f"Multi selection: {s1}")
@@ -147,7 +144,7 @@ st.write(
 st.header("Segmented Control in fragment", anchor="segmented-control-in-fragment")
 
 
-@st.experimental_fragment()
+@st.fragment
 def test_fragment():
     s5 = st.segmented_control(
         "Select an emotion:",
@@ -158,6 +155,59 @@ def test_fragment():
 
 
 test_fragment()
+
+_HOVER_BORDER_OPTIONS = ["North", "East", "South", "West"]
+
+
+def _render_hover_border_regression_case(
+    *,
+    label: str,
+    key: str,
+    selection_mode: Literal["single", "multi"],
+    default: str | None = None,
+) -> None:
+    selection: str | list[str] | None
+    if selection_mode == "single":
+        selection = st.segmented_control(
+            label,
+            _HOVER_BORDER_OPTIONS,
+            key=key,
+            selection_mode="single",
+            default=default,
+        )
+    else:
+        selection = st.segmented_control(
+            label,
+            _HOVER_BORDER_OPTIONS,
+            key=key,
+            selection_mode="multi",
+        )
+    st.write(f"{label} selection: {selection}")
+
+
+st.header(
+    "Hover border regression - Segmented Control",
+    anchor="hover-border-regression-segmented-control",
+)
+_render_hover_border_regression_case(
+    label="Hover border multi",
+    key="segmented_control_hover_border_multi",
+    selection_mode="multi",
+)
+_render_hover_border_regression_case(
+    label="Hover border single",
+    key="segmented_control_hover_border_single",
+    selection_mode="single",
+    default="North",
+)
+adjacent_selected_border_multi = st.segmented_control(
+    "Adjacent selected border multi",
+    _HOVER_BORDER_OPTIONS,
+    key="segmented_control_adjacent_selected_border_multi",
+    selection_mode="multi",
+    default=["North", "East"],
+)
+st.write(f"Adjacent selected border multi selection: {adjacent_selected_border_multi}")
 
 
 st.header("Unmounted - Segmented Control", anchor="unmounted-segmented-control")
@@ -175,8 +225,210 @@ s6 = st.segmented_control(
 )
 st.write("segmented-control-after-sleep:", str(s6))
 
+st.segmented_control(
+    "Segmented control with content width",
+    ["Option 1", "Option 2", "Option 3 with more content"],
+    width="content",
+    key="segmented_control_content_width",
+)
+
+st.segmented_control(
+    "Segmented control with stretch width",
+    ["Option 1", "Option 2", "Option 3 more content"],
+    width="stretch",
+    key="segmented_control_stretch_width",
+)
+
+st.segmented_control(
+    "Segmented control with 300px width",
+    ["Option 1", "Option 2", "Option 3 with more content"],
+    width=300,
+    key="segmented_control_300px_width",
+)
 
 if "runs" not in st.session_state:
     st.session_state.runs = 0
 st.session_state.runs += 1
 st.write("Runs:", st.session_state.runs)
+
+if st.checkbox("Set default values", value=False):
+    st.session_state.default_segmented_control_options = [
+        "🧰 General widgets",
+        "🎥 Video",
+    ]
+else:
+    st.session_state.default_segmented_control_options = []
+
+# The test will only work if this doesn't use a user-specified key:
+val = st.segmented_control(
+    "Segmented control with default options",
+    [
+        "🧰 General widgets",
+        "📊 Charts",
+        "🌇 Images",
+        "🎥 Video",
+        "📝 Text",
+    ],
+    selection_mode="multi",
+    default=st.session_state.default_segmented_control_options,
+)
+st.write("Segmented control with default options:", str(val))
+
+st.markdown("Dynamic segmented control:")
+
+if st.toggle("Update segmented control props"):
+    dyn_val = st.segmented_control(
+        "Updated dynamic segmented control",
+        key="dynamic_segmented_control_with_key",
+        help="updated help",
+        width=300,
+        default="papaya",
+        on_change=lambda a, param: print(
+            f"Updated segmented control - callback triggered: {a} {param}"
+        ),
+        args=("Updated segmented control arg",),
+        kwargs={"param": "updated kwarg param"},
+        # "mango" exists in both lists at different indices for testing preservation
+        # mango is at index 0 here, default is index 1 (papaya)
+        options=["mango", "papaya", "grape", "apple"],
+        selection_mode="single",
+        # Changing format_func is allowed, but selection is based on the
+        # formatted string labels. If the formatted label changes (e.g.,
+        # "Apple" vs "APPLE"), previously selected options may become
+        # unselected.
+        format_func=lambda text: text.capitalize(),
+    )
+    st.write("Updated segmented control value:", dyn_val)
+else:
+    dyn_val = st.segmented_control(
+        "Initial dynamic segmented control",
+        key="dynamic_segmented_control_with_key",
+        help="initial help",
+        width="content",
+        default="apple",
+        on_change=lambda a, param: print(
+            f"Initial segmented control - callback triggered: {a} {param}"
+        ),
+        args=("Initial segmented control arg",),
+        kwargs={"param": "initial kwarg param"},
+        # "mango" exists in both lists at different indices for testing preservation
+        # mango is at index 2 here, default is index 0 (apple)
+        options=["apple", "banana", "mango", "orange"],
+        selection_mode="single",
+        format_func=lambda text: text.capitalize(),
+    )
+    st.write("Initial segmented control value:", dyn_val)
+
+# --- Bound segmented control widgets (query-params) ---
+
+st.header("Segmented control - bound to query params")
+
+bound_sc_single = st.segmented_control(
+    "Bound single segmented control",
+    ["cat", "dog", "bird"],
+    key="bound_sc",
+    bind="query-params",
+)
+st.text(f"bound_sc: {bound_sc_single}")
+
+bound_sc_default = st.segmented_control(
+    "Bound single segmented control with default",
+    ["Red", "Green", "Blue"],
+    default="Red",
+    key="bound_sc_default",
+    bind="query-params",
+)
+st.text(f"bound_sc_default: {bound_sc_default}")
+
+bound_sc_multi = st.segmented_control(
+    "Bound multi segmented control",
+    ["Red", "Green", "Blue", "Yellow"],
+    selection_mode="multi",
+    key="bound_sc_multi",
+    bind="query-params",
+)
+st.text(f"bound_sc_multi: {bound_sc_multi}")
+
+
+# --- Required parameter tests ---
+
+st.header("Segmented control - required parameter")
+
+required_sc_with_default = st.segmented_control(
+    "Required with default",
+    ["Mode A", "Mode B", "Mode C"],
+    default="Mode A",
+    required=True,
+    key="sc_required_with_default",
+)
+st.text(f"required_sc_with_default: {required_sc_with_default}")
+
+required_sc_without_default = st.segmented_control(
+    "Required without default",
+    ["View", "Edit", "Admin"],
+    required=True,
+    key="sc_required_without_default",
+)
+st.text(f"required_sc_without_default: {required_sc_without_default}")
+
+not_required_sc = st.segmented_control(
+    "Not required",
+    ["Item 1", "Item 2", "Item 3"],
+    default="Item 1",
+    required=False,
+    key="sc_not_required",
+)
+st.text(f"not_required_sc: {not_required_sc}")
+
+# --- Wrap parameter ---
+
+st.header("Segmented control - wrap")
+
+_WRAP_OPTIONS = [
+    "Today",
+    "7 days",
+    "30 days",
+    "Quarter",
+    "Year",
+    "All time",
+    "Custom range",
+    "Last 90 days",
+    "Last 180 days",
+    "Year to date",
+    "Previous year",
+    "Lifetime",
+]
+
+st.segmented_control(
+    "Wrap false scroll",
+    _WRAP_OPTIONS,
+    wrap=False,
+    width=220,
+    key="sc_wrap_false",
+)
+
+with st.container(horizontal=True, width=260, key="sc_wrap_auto_horizontal"):
+    st.segmented_control(
+        "Wrap auto horizontal",
+        _WRAP_OPTIONS,
+        key="sc_wrap_auto_h",
+    )
+
+st.segmented_control(
+    "Wrap false selected into view",
+    _WRAP_OPTIONS,
+    default="Lifetime",
+    wrap=False,
+    width=220,
+    key="sc_wrap_selected_into_view",
+)
+
+_sc_wrap_toggle = st.toggle("Enable SC wrap", value=False, key="sc_wrap_toggle")
+_sc_wrap_val = st.segmented_control(
+    "Wrap toggle preserves selection",
+    ["Alpha", "Beta", "Gamma"],
+    default="Beta",
+    wrap=_sc_wrap_toggle,
+    key="sc_wrap_preserve",
+)
+st.text(f"sc_wrap_preserve: {_sc_wrap_val}")

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { ReactElement } from "react"
 
-import { IconSize, ThemeColor } from "~lib/theme"
+import type { IconSizeProp } from "~lib/theme/types"
 
 import {
   StyledMaterialIcon,
@@ -26,8 +26,8 @@ import {
 interface MaterialIconProps {
   iconName: string
   pack: string
-  size?: IconSize
-  color?: ThemeColor
+  size?: IconSizeProp
+  color?: string
   margin?: string
   padding?: string
   testid?: string

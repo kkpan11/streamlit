@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2025)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import { screen, waitFor } from "@testing-library/react"
+import { act, screen, waitFor } from "@testing-library/react"
 import { userEvent } from "@testing-library/user-event"
 
 import {
-  LabelVisibilityMessage as LabelVisibilityMessageProto,
+  Element,
+  LabelVisibility as LabelVisibilityProto,
   TextArea as TextAreaProto,
 } from "@streamlit/protobuf"
 
@@ -29,6 +28,15 @@ import { render } from "~lib/test_util"
 import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import TextArea, { Props } from "./TextArea"
+
+// Mock Element for tests
+class MockElement implements Element {
+  constructor() {}
+
+  toJSON(): MockElement {
+    return this
+  }
+}
 
 const getProps = (
   elementProps: Partial<TextAreaProto> = {},
@@ -46,7 +54,7 @@ const getProps = (
     sendRerunBackMsg: vi.fn(),
     formsDataChanged: vi.fn(),
   }),
-
+  outerElement: new MockElement(),
   ...widgetProps,
 })
 
@@ -65,10 +73,9 @@ describe("TextArea widget", () => {
     render(<TextArea {...props} />)
 
     expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       props.element.default,
-      { fromUi: false },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: false }
     )
   })
 
@@ -78,10 +85,13 @@ describe("TextArea widget", () => {
     render(<TextArea {...props} />)
 
     expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       props.element.default,
-      { fromUi: false },
-      "myFragmentId"
+      {
+        formId: props.element.formId,
+        fragmentId: "myFragmentId",
+        fromUser: false,
+      }
     )
   })
 
@@ -104,7 +114,7 @@ describe("TextArea widget", () => {
   it("pass labelVisibility prop to StyledWidgetLabel correctly when hidden", () => {
     const props = getProps({
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.HIDDEN,
+        value: LabelVisibilityProto.LabelVisibilityOptions.HIDDEN,
       },
     })
     render(<TextArea {...props} />)
@@ -116,7 +126,7 @@ describe("TextArea widget", () => {
   it("pass labelVisibility prop to StyledWidgetLabel correctly when collapsed", () => {
     const props = getProps({
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.COLLAPSED,
+        value: LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED,
       },
     })
     render(<TextArea {...props} />)
@@ -159,12 +169,9 @@ describe("TextArea widget", () => {
     await user.tab()
 
     expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       "testing",
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
   })
 
@@ -179,19 +186,15 @@ describe("TextArea widget", () => {
     await user.keyboard("{Control>}{Enter}")
 
     expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
-      props.element,
+      props.element.id,
       "testing",
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
   })
 
   it("limits the length if max_chars is passed", async () => {
     const user = userEvent.setup()
     const props = getProps({
-      height: 500,
       maxChars: 10,
     })
     render(<TextArea {...props} />)
@@ -215,12 +218,9 @@ describe("TextArea widget", () => {
 
     // Check that the last call was in componentDidMount.
     expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
-      props.element,
+      props.element.id,
       props.element.default,
-      {
-        fromUi: false,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: false }
     )
   })
 
@@ -272,17 +272,16 @@ describe("TextArea widget", () => {
     expect(textArea).toHaveValue("TEST")
 
     // "Submit" the form
-    props.widgetMgr.submitForm("form", undefined)
+    act(() => {
+      props.widgetMgr.submitForm("form", undefined)
+    })
 
     // Our widget should be reset, and the widgetMgr should be updated
     await waitFor(() => expect(textArea).toHaveValue(props.element.default))
     expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
-      props.element,
+      props.element.id,
       props.element.default,
-      {
-        fromUi: true,
-      },
-      undefined
+      { formId: props.element.formId, fragmentId: undefined, fromUser: true }
     )
   })
 
@@ -327,13 +326,17 @@ describe("TextArea widget", () => {
     await user.keyboard("TEST")
 
     // Remove focus
-    textArea.blur()
+    act(() => {
+      textArea.blur()
+    })
     await waitFor(() => {
       expect(screen.queryByTestId("InputInstructions")).not.toBeInTheDocument()
     })
 
     // Then focus again
-    textArea.focus()
+    act(() => {
+      textArea.focus()
+    })
     await waitFor(() => {
       expect(screen.getByText("Press ⌘+Enter to submit form")).toBeVisible()
     })
@@ -381,12 +384,9 @@ describe("TextArea widget", () => {
       await user.keyboard("{Meta>}{Enter}")
 
       expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
-        props.element,
+        props.element.id,
         "testing",
-        {
-          fromUi: true,
-        },
-        undefined
+        { formId: props.element.formId, fragmentId: undefined, fromUser: true }
       )
     })
   })
@@ -402,11 +402,78 @@ describe("TextArea widget", () => {
     // Make some change to cause a rerender
     const textArea = screen.getByRole("textbox")
     await user.type(textArea, "testing")
-    textArea.blur()
+    act(() => {
+      textArea.blur()
+    })
 
     const textAreaLabel2 = screen.getByTestId("stWidgetLabel")
     const forId2 = textAreaLabel2.getAttribute("for")
 
     expect(forId2).toBe(forId1)
+  })
+})
+
+describe("TextArea query param binding", () => {
+  it("registers query param binding on mount when queryParamKey is set", () => {
+    const props = getProps({ queryParamKey: "my_text" })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<TextArea {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_text",
+      "string_value",
+      props.element.default,
+      true,
+      undefined
+    )
+  })
+
+  it("unregisters query param binding on unmount", () => {
+    const props = getProps({ queryParamKey: "my_text" })
+    const unregisterSpy = vi.spyOn(
+      props.widgetMgr,
+      "unregisterQueryParamBinding"
+    )
+
+    const { unmount } = render(<TextArea {...props} />)
+
+    // Clear any calls from React Strict Mode's initial mount/unmount/remount cycle
+    unregisterSpy.mockClear()
+
+    unmount()
+
+    expect(props.widgetMgr.unregisterQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id
+    )
+  })
+
+  it("does not register query param binding when queryParamKey is not set", () => {
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<TextArea {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).not.toHaveBeenCalled()
+  })
+
+  it("registers query param binding with custom default value", () => {
+    const props = getProps({
+      queryParamKey: "bio",
+      default: "initial bio",
+    })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<TextArea {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "bio",
+      "string_value",
+      "initial bio",
+      true,
+      undefined
+    )
   })
 })
